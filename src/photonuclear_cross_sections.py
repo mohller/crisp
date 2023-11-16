@@ -196,7 +196,7 @@ def cs_photomeson(Evals, A):
         from pickle import load as pickle_load
         from scipy.interpolate import UnivariateSpline
 
-        with open('EXFOR_data/universal-spline.pkl', 'rb') as f:
+        with open('data/universal-spline.pkl', 'rb') as f:
             tck = pickle_load(f, encoding='latin1')
     
         univ_spl = UnivariateSpline._from_tck(tck)
