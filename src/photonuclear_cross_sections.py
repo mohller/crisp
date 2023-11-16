@@ -5,7 +5,8 @@ nuclear species.
 import numpy as np
 from scipy.integrate import cumtrapz
 from scipy.interpolate import InterpolatedUnivariateSpline
-
+import os
+main_path = os.path.abspath('../')
 
 def pgamma(eps_r):
     """Photonuclear cross section in the energy range .1-1e4 GeV
@@ -196,7 +197,8 @@ def cs_photomeson(Evals, A):
         from pickle import load as pickle_load
         from scipy.interpolate import UnivariateSpline
 
-        with open('data/universal-spline.pkl', 'rb') as f:
+        path_to_file = os.path.join(main_path, 'data/universal-spline.pkl')
+        with open(path_to_file, 'rb') as f:
             tck = pickle_load(f, encoding='latin1')
     
         univ_spl = UnivariateSpline._from_tck(tck)
