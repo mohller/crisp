@@ -1,11 +1,13 @@
 import numpy as np
+from astropy.constants import c
+from astropy.units import erg, km
 from numpy import log, log10, logspace
 from photonuclear_cross_sections import *
 
 # physical constants
-c = 3e10  # cm/s (light speed constant)
-ergs2GeV = 624.151  # energy conversion factor from ergs to GeV
-km2cm = 1e5  # distance conversion factor from km to cm
+c = c.to('cm/s').value # speed of light
+ergs2GeV = erg.to('GeV').value  # energy conversion factor from ergs to GeV
+km2cm = km.to('cm').value  # distance conversion factor from km to cm
 
 
 def target_photons_spectrum(Emin=1e-6, Emax=1e4, Ebr=1e3, si1=1, si2=2,
