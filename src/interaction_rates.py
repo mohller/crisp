@@ -6,8 +6,8 @@ from photonuclear_cross_sections import *
 
 # physical constants
 c = c.to('cm/s').value # speed of light
-ergs2GeV = erg.to('GeV').value  # energy conversion factor from ergs to GeV
-km2cm = km.to('cm').value  # distance conversion factor from km to cm
+ergs2GeV = erg.to('GeV')  # energy conversion factor from ergs to GeV
+km2cm = km.to('cm')  # distance conversion factor from km to cm
 
 
 def target_photons_spectrum(Emin=1e-6, Emax=1e4, Ebr=1e3, si1=1, si2=2,
