@@ -6,7 +6,7 @@ import numpy as np
 from scipy.integrate import cumtrapz
 from scipy.interpolate import InterpolatedUnivariateSpline
 import os
-main_path = os.path.abspath(__file__)
+main_path = os.path.abspath(os.path.join(os.path.dirname( __file__ ), '..'))
 
 def pgamma(eps_r):
     """Photonuclear cross section in the energy range .1-1e4 GeV
