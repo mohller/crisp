@@ -31,6 +31,7 @@ def merge_marginal_rates(mrates1, mrates2):
 
 def get_marginal_rates(nuclei, rates, boosts, branchings=None):
     """Makes a marginal rates matrix with branchings file from crpropa.
+    
     If no branchings are provided, the returned matrix contains
     only rates for n or p emission with probabilities N/A and Z/A,
     and the corresponding remnants.
@@ -55,7 +56,7 @@ def get_marginal_rates(nuclei, rates, boosts, branchings=None):
             rates_large[1, :2] = Z, A - 1
             rates_large[1, 2:] = total_rate * float(N)/A
             mrates_large.append(rates_large)
-        elif branchings == 'minimal': # case for only one nucleon loss
+        elif branchings is 'minimal': # case for only one nucleon loss
             total_rate = rates[k]
 
             rates_large = np.zeros((2, 2 + len(boosts)))
@@ -74,21 +75,37 @@ def get_marginal_rates(nuclei, rates, boosts, branchings=None):
 
                 # Creating remnant nucleus from channel
                 Zrem, Arem = Z - Zd.dot(prods), A - Ad.dot(prods)
-                
-                if Arem > 4:
-                    # Largest fragment is not one of the small ones
-                    if np.any([(mr[0] == Zrem) and (mr[1] == Arem) for mr in mrates_large]):
-                        idx = [j for j, mr in enumerate(mrates_large) if (mr[0] == Zrem) and (mr[1] == Arem)][0]
-                        mrates_large[idx][2:] += rates[k, 2:] * br[3:]
-                    else:
-                        rates_large = np.zeros(203)
-                        rates_large[:2] = Zrem, Arem
-                        rates_large[2:] = rates[k, 2:] * br[3:]
-                        mrates_large.append(rates_large)
-                else:
-                    all_rates_small = np.outer(prods, br[3:] * rates[k, 2:])
 
-                    for dau, rs in zip(daughters, all_rates_small):
+                if (Zrem, Arem) not in nuclei:
+                    # Change remnant isomer. 
+                    # This only affects produced protons and neutrons since
+                    # the yields of other light particles do not change.
+                    if (Zrem-1, Arem) in nuclei:
+                        Zrem -= 1
+                    elif (Zrem+1, Arem) in nuclei:
+                        Zrem += 1
+                    elif (Z == 3) and (A == 6):
+                        # nprods = np.array(get_particle_numbers(110000))
+                        # prods = np.array([int(np > 0) for np in nprods])
+                        print()
+                        Zrem, Arem = 2, 4
+                    else:
+                        print(f'No suitable isomer found for remnant ({Zrem:2d}, {Arem:2d})')
+                
+                # Largest fragment is not one of the small ones
+                if np.any([(mr[0] == Zrem) and (mr[1] == Arem) for mr in mrates_large]):
+                    idx = [j for j, mr in enumerate(mrates_large) if (mr[0] == Zrem) and (mr[1] == Arem)][0]
+                    mrates_large[idx][2:] += rates[k, 2:] * br[3:]
+                else:
+                    rates_large = np.zeros(203)
+                    rates_large[:2] = Zrem, Arem
+                    rates_large[2:] = rates[k, 2:] * br[3:]
+                    mrates_large.append(rates_large)
+            
+                if Arem <= 4:
+                    all_rates_small = np.outer(prods, br[3:] * rates[k, 2:])
+                    
+                    for rs in all_rates_small:
                         if np.any(rs):
                             if np.any([(mr[0] == rs[0]) and (mr[1] == rs[1]) for mr in mrates_small]):
                                 idx = [j for j, mr in enumerate(mrates_small) if (mr[0] == rs[0]) and (mr[1] == rs[1])][0]
@@ -98,12 +115,10 @@ def get_marginal_rates(nuclei, rates, boosts, branchings=None):
                                 rates_small[:2] = rs[0], rs[1]
                                 rates_small[2:] = rs
                                 mrates_small.append(rates_small)
-                            
-                            break
         
         mrates = mrates_large + mrates_small
         marginal_rates.append(np.vstack(mrates))
-
+    
     return marginal_rates
 
 def get_particle_numbers(channel):
@@ -607,8 +622,7 @@ class InteractionCore_UHECR_Source(InteractionCore):
 
         e_pmes = np.logspace(-1, 4, 100)  # in GeV
         eps_crpropa = np.genfromtxt(data_directory + 'eps.txt') / 1e3 # in GeV
-        d2sum = np.genfromtxt(data_directory + 'xs_pd_sum.txt', dtype=[('Z', int), ('N', int), ('xs', '%if8' % len(eps_crpropa))])
-        # d2sum[:, 2:] = d2sum[:, 2:] * mb_to_cm2 # in cm2
+        d2sum = np.genfromtxt(data_directory + 'xs_pd_sum.txt', dtype=[('Z', int), ('N', int), ('xs', '%if8' % len(eps_crpropa))]) # in cm2
 
         nuclei, all_rates, pdis_rates, pprates, all_branchings = [], [], [], [], []
         for Z, N, cs_crpropa in d2sum:
