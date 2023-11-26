@@ -489,94 +489,6 @@ class InteractionCore_CRPropA_CMB_pdis(InteractionCore_CRPropA):
         """CRPropA data is structured in different files depending on the 
         interaction and the photon field.
         """
-        def get_marginal_rates(nuclei, rates, branchings=None):
-            """Makes a marginal rates matrix with branchings file from crpropa.
-            If no branchings are provided, the returned matrix contains
-            only rates for n or p emission with probabilities N/A and Z/A,
-            and the corresponding remnants.
-            """    
-            # He4, He3, H3, H2, p, n
-            daughters = [(2, 4), (2, 3), (1, 3), (1, 2), (1, 1), (0, 1)]
-            Zd = np.array([d[0] for d in daughters])
-            Ad = np.array([d[1] for d in daughters])
-
-            marginal_rates = []
-            for k, (Z, A) in enumerate(nuclei):
-                N = A - Z
-                
-                if branchings is None: # case for photopion
-                    total_rate = np.interp(boosts, 10**rates[:, 0], Z*rates[:, 1] + N*rates[:, 2])
-                    
-                    rates_large = np.zeros((2, 203))
-                    rates_large[0, :2] = Z - 1, A - 1
-                    rates_large[0, 2:] = total_rate * float(Z)/A
-                    rates_large[1, :2] = Z, A - 1
-                    rates_large[1, 2:] = total_rate * float(N)/A
-                    mrates_large.append(rates_large)
-                else:
-                    # select all channels of a specific nucleus
-                    spec_branchings = branchings[np.logical_and(branchings[:, 0] == Z, branchings[:, 1] == N)]
-
-                    num_products = np.vstack([get_particle_numbers(int(ch)) for ch in spec_branchings[:, 2]]).T
-
-                    mrates_small = np.zeros((len(daughters), 203))
-                    mrates_small[:, :2] = np.vstack([Zd, Ad]).T
-                    mrates_small[:, 2:] = num_products.dot(spec_branchings[:, 3:])
-
-                    Arems = A - Ad.dot(num_products)
-                    Zrems = Z - Zd.dot(num_products)
-
-                    mrates_large = np.zeros((len(Arems), 203))
-                    mrates_large[:, :2] = np.vstack([Zrems, Arems]).T
-                    mrates_large[:, 2:] = spec_branchings[:, 3:]
-
-                    # Reducing species by summing contributions from different channels to same remnant
-                    unique_rems = np.unique(mrates_large[:, :2], axis=0)
-                    mrates_large_reduced = np.zeros((unique_rems.shape[0], 203))
-                    mrates_large_reduced[:, :2] = unique_rems
-
-                    for i, nuc in enumerate(unique_rems):
-                        mask_vector = np.all(mrates_large[:, :2] == nuc, axis=1)
-                        mrates_large_reduced[i, 2:] = mask_vector.dot(mrates_large[:, 2:])
-
-
-                    mrates = np.vstack([mrates_large_reduced, mrates_small])
-                    mrates[:, 2:] *= rates[k, 2:]
-
-                marginal_rates.append(mrates)
-
-            return marginal_rates
-
-        def get_particle_numbers(channel):
-            """Extracts the info from the channel number in CRPropa's branching files
-            The channel number is a number between 1 and 1000000 where the digits
-            represents the amounts of different particles produced in an interaction.
-            The channel number (CN) is as follows:
-            CN = nN * 100000 +
-                nP * 10000 +
-                nH2 * 1000 +
-                nH3 * 100 +
-                nHe3 * 10 +
-                nHe4 * 1
-            nN   : Number of neutrons
-            nP   : Number of protons
-            nH2  : Number of deuterium
-            nH3  : Number of tritium
-            nHe3 : Number of helium three
-            nHe4 : Number of helium four
-
-            The function returns the values in the following order
-            [nHe4, nHe3, nH3, nH2, nP, nN]
-            """
-
-            val = channel
-            digits = []
-            for _ in range(6):
-                val, d = divmod(val, 10)
-                digits.append(d)
-
-            return digits
-
         boosts = np.logspace(6, 14, 201)
 
         pdis_rates_cmb = np.genfromtxt(os.path.join(self.data_files['path'], 
@@ -604,6 +516,104 @@ class InteractionCore_UHECR_Source(InteractionCore):
         self._construct_from_files(data_directory, target_photon_spectrum)
         self._genenerate_complete_matrices()
 
+    def generate_marginal_rates(self, target_photons, data_directory, remove_dead_ends=True):
+        """Generate a marginal rates matrix with cross section files from crpropa.
+        
+        branchings is a 2d matrix where each row represents a disintegration channel.
+        The first three columns contain Z, N and a channel representation 6-digit number,
+        the remaining columns contain the cross section in mb for the channel as a function 
+        of energy.
+        """
+        import interaction_rates as ir
+        from astropy.constants import c
+        c_in_Mpc_sec = c.to('Mpc/s').value
+        mb_to_cm2 = 1e-27
+
+        Gamma = 10
+        boosts = np.logspace(-1, 12) # in GeV
+
+        eps_crpropa = np.genfromtxt(data_directory + 'eps.txt') / 1e3 # in GeV
+        branchings = np.genfromtxt(data_directory + 'xs_pd.txt')
+
+        # He4, He3, H3, H2, p, n
+        daughters = [(2, 4), (2, 3), (1, 3), (1, 2), (1, 1), (0, 1)]
+        Zd = np.array([d[0] for d in daughters])
+        Ad = np.array([d[1] for d in daughters])
+        
+        nuclei = daughters[2::-1] + [(int(Z), int(Z)+int(N)) for Z, N in list(sorted(set(zip(branchings[:, 0], branchings[:, 1]))))]
+
+        marginal_rates = [[] for _ in nuclei]
+        for count, br_row in enumerate(branchings[:, :]):
+            Z, N, A = int(br_row[0]), int(br_row[1]), int(br_row[1])+int(br_row[0])
+            UHECR_SRFenergy = A * boosts
+        
+            nprods = np.array(get_particle_numbers(int(br_row[2])))
+            prods = np.array([int(np > 0) for np in nprods])
+
+            # Creating remnant nucleus from channel
+            Zrem, Arem = Z - Zd.dot(prods), A - Ad.dot(prods)
+
+            cs_crpropa = br_row[3:]
+            r_pdis = ir.interaction_rate_from_cross_section(UHECR_SRFenergy / Gamma, A,
+                    target_photons, eps_crpropa, cs_crpropa*mb_to_cm2)  / c_in_Mpc_sec # 1/Mpc
+                                                            
+            if (Zrem, Arem) not in nuclei:
+                # Change remnant isomer. 
+                # This only affects produced protons and neutrons since
+                # the yields of other light particles do not change.
+                if (Zrem-1, Arem) in nuclei:
+                    Zrem -= 1
+                elif (Zrem+1, Arem) in nuclei:
+                    Zrem += 1
+                elif (Zrem-2, Arem) in nuclei:
+                    Zrem -= 2
+                elif (Zrem+2, Arem) in nuclei:
+                    Zrem += 2
+                elif (Zrem-1, Arem-1) in nuclei:
+                    Zrem -= 1
+                    Arem -= 1
+                elif (Zrem-2, Arem-1) in nuclei:
+                    Zrem -= 2
+                    Arem -= 1
+                elif (Z == 3) and (A == 6):
+                    Zrem, Arem = 2, 4
+                else:
+                    print(f'No suitable isomer found for remnant ({Zrem:2d}, {Arem:2d}) with mother ({Z:2d}, {A:2d})')
+                    Zrem, Arem = 0, 0
+                    # continue
+            
+            nucidx = nuclei.index((Z, A))
+            # Largest fragment is not one of the small ones
+            if np.any([(mr[0] == Zrem) and (mr[1] == Arem) for mr in marginal_rates[nucidx]]):
+                idx = [j for j, mr in enumerate(marginal_rates[nucidx]) if (mr[0] == Zrem) and (mr[1] == Arem)][0]
+                marginal_rates[nucidx][idx][2:] += r_pdis
+            else:
+                rates_large = np.zeros(len(boosts) + 2)
+                rates_large[:2] = Zrem, Arem
+                rates_large[2:] = r_pdis
+                marginal_rates[nucidx].append(rates_large)
+            
+        # Remove branchings leading to nuclei not included
+        if remove_dead_ends:
+            new_marginal_rates = []
+            for k, mr in enumerate(marginal_rates):
+                stacked_mr = np.array(mr)
+                if len(stacked_mr.shape) > 1:
+                    if np.any(stacked_mr[:, 1] == 0):
+                        tot = stacked_mr.sum(axis=0)
+                        new_mr = stacked_mr[np.where(stacked_mr[:, 1] != 0)]
+                        new_tot = new_mr.sum(axis=0)
+                        new_mr[:, 2:] *= np.divide(tot, new_tot, where=new_tot!=0, out=np.zeros_like(tot))[2:]
+
+                        new_marginal_rates.append([mr_row for mr_row in new_mr])
+                    else:
+                        new_marginal_rates.append(mr)
+                else:
+                    new_marginal_rates.append(mr)
+            marginal_rates = new_marginal_rates
+
+        return nuclei, marginal_rates
+
     def _construct_from_files(self, data_directory, target_photons):
         """Using CRPROPA cross sections to produce the rates for a source
         of UHECR with a background photon field as a broken power law.
@@ -612,44 +622,57 @@ class InteractionCore_UHECR_Source(InteractionCore):
         interaction and the photon field.
         """
         import interaction_rates as ir
-        # from background_photon_models import *
         from astropy.constants import c
         c_in_Mpc_sec = c.to('Mpc/s').value
-        mb_to_cm2 = 1e-27
 
         Gamma = 10
         boosts = np.logspace(-1, 12) # in GeV
-
         e_pmes = np.logspace(-1, 4, 100)  # in GeV
-        eps_crpropa = np.genfromtxt(data_directory + 'eps.txt') / 1e3 # in GeV
-        d2sum = np.genfromtxt(data_directory + 'xs_pd_sum.txt', dtype=[('Z', int), ('N', int), ('xs', '%if8' % len(eps_crpropa))]) # in cm2
 
-        nuclei, all_rates, pdis_rates, pprates, all_branchings = [], [], [], [], []
-        for Z, N, cs_crpropa in d2sum:
-            A = Z + N
-            nuclei.append((int(Z), int(A)))
+        nuclei, all_pdis_rates = self.generate_marginal_rates(target_photons, data_directory, False)
+
+        all_rates, pdis_rates, pprates, all_branchings, allmr_pdis = [], [], [], [], []
+        for nucidx, (_, A) in enumerate(nuclei):
             UHECR_SRFenergy = A * boosts
-
-            r_pdis = ir.interaction_rate_from_cross_section(UHECR_SRFenergy / Gamma, A,
-                                                        target_photons, eps_crpropa, cs_crpropa*mb_to_cm2) # 1/s
             
             cs_pmes = ir.cs_photomeson(e_pmes, A) # in cm2
             r_pmes = ir.interaction_rate_from_cross_section(UHECR_SRFenergy / Gamma, A,
-                                                        target_photons, e_pmes, cs_pmes) # 1/s
+                                                        target_photons, e_pmes, cs_pmes) / c_in_Mpc_sec # 1/Mpc
+            # r_pmes = np.zeros_like(r_pmes)
+            pprates.append(r_pmes) # 1/Mpc
+
+            if A < 6:
+                # 4He and below do not have photodis. channels
+                all_rates.append(r_pmes)
+
+                mrval = np.zeros((2, len(r_pmes) + 2))
+                mrval[0, 0], mrval[0, 1] = 0, 1
+                mrval[1, 0], mrval[1, 1] = 1, 1
+                allmr_pdis.append(mrval)
+                continue
+
+            if len(all_pdis_rates[nucidx]) > 1:
+                r_pdis = np.array(all_pdis_rates[nucidx]).sum(axis=0)[2:]
+            else:
+                r_pdis = np.array(all_pdis_rates[nucidx])[2:]
+
+            pdis_rates.append(r_pdis)
+            mr_pdis = [[chr[0], chr[1]] + list(chr[2:]) for chr in all_pdis_rates[nucidx]]
+
+            if len(mr_pdis) > 1:
+                allmr_pdis.append(np.vstack(mr_pdis))
+            else:
+                allmr_pdis.append(np.array(mr_pdis))
             
-            pdis_rates.append(r_pdis / c_in_Mpc_sec) # 1/Mpc
-            pprates.append(r_pmes / c_in_Mpc_sec) # 1/Mpc
-            total_rate = (r_pdis + r_pmes) / c_in_Mpc_sec # 1/Mpc
-            # total_rate = r_pdis / c_in_Mpc_sec # 1/Mpc
+            total_rate = (r_pdis + r_pmes) # 1/Mpc
             all_rates.append(total_rate)
 
-        allmr_pdis = get_marginal_rates(nuclei, pdis_rates, boosts, 'minimal')
+        all_rates = np.vstack(all_rates)
         allmr_phpi = get_marginal_rates(nuclei, pprates, boosts, 'minimal')
-
+        
         for mr1, mr2 in zip(allmr_pdis, allmr_phpi):
             all_branchings.append(merge_marginal_rates(mr1, mr2))
-
-
+        
         self.boosts = boosts 
         self.nuclei = nuclei
         self.all_rates = all_rates
