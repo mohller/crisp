@@ -529,8 +529,7 @@ class InteractionCore_UHECR_Source(InteractionCore):
         c_in_Mpc_sec = c.to('Mpc/s').value
         mb_to_cm2 = 1e-27
 
-        Gamma = 10
-        boosts = np.logspace(-1, 12) # in GeV
+        boosts = np.logspace(-1, 12)
 
         eps_crpropa = np.genfromtxt(data_directory + 'eps.txt') / 1e3 # in GeV
         branchings = np.genfromtxt(data_directory + 'xs_pd.txt')
@@ -545,7 +544,7 @@ class InteractionCore_UHECR_Source(InteractionCore):
         marginal_rates = [[] for _ in nuclei]
         for count, br_row in enumerate(branchings[:, :]):
             Z, N, A = int(br_row[0]), int(br_row[1]), int(br_row[1])+int(br_row[0])
-            UHECR_SRFenergy = A * boosts
+            UHECR_SRFenergy = A * boosts # in GeV
         
             nprods = np.array(get_particle_numbers(int(br_row[2])))
             prods = np.array([int(np > 0) for np in nprods])
@@ -554,7 +553,7 @@ class InteractionCore_UHECR_Source(InteractionCore):
             Zrem, Arem = Z - Zd.dot(prods), A - Ad.dot(prods)
 
             cs_crpropa = br_row[3:]
-            r_pdis = ir.interaction_rate_from_cross_section(UHECR_SRFenergy / Gamma, A,
+            r_pdis = ir.interaction_rate_from_cross_section(UHECR_SRFenergy, A,
                     target_photons, eps_crpropa, cs_crpropa*mb_to_cm2)  / c_in_Mpc_sec # 1/Mpc
                                                             
             if (Zrem, Arem) not in nuclei:
@@ -625,18 +624,17 @@ class InteractionCore_UHECR_Source(InteractionCore):
         from astropy.constants import c
         c_in_Mpc_sec = c.to('Mpc/s').value
 
-        Gamma = 10
-        boosts = np.logspace(-1, 12) # in GeV
+        boosts = np.logspace(-1, 12)
         e_pmes = np.logspace(-1, 4, 100)  # in GeV
 
         nuclei, all_pdis_rates = self.generate_marginal_rates(target_photons, data_directory, False)
 
         all_rates, pdis_rates, pprates, all_branchings, allmr_pdis = [], [], [], [], []
         for nucidx, (_, A) in enumerate(nuclei):
-            UHECR_SRFenergy = A * boosts
+            UHECR_SRFenergy = A * boosts # in GeV
             
             cs_pmes = ir.cs_photomeson(e_pmes, A) # in cm2
-            r_pmes = ir.interaction_rate_from_cross_section(UHECR_SRFenergy / Gamma, A,
+            r_pmes = ir.interaction_rate_from_cross_section(UHECR_SRFenergy, A,
                                                         target_photons, e_pmes, cs_pmes) / c_in_Mpc_sec # 1/Mpc
             # r_pmes = np.zeros_like(r_pmes)
             pprates.append(r_pmes) # 1/Mpc
