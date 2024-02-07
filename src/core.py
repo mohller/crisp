@@ -503,6 +503,38 @@ class InteractionCore_CRPropA_CMB_pdis(InteractionCore_CRPropA):
         self.all_branchings = get_marginal_rates(self.nuclei, pdis_rates_cmb, branchings_cmb)
 
 
+class InteractionCore_CRPropA_pdis(InteractionCore_CRPropA):
+    def _construct_from_files(self):
+        """CRPropA data is structured in different files depending on the 
+        interaction and the photon field.
+        """
+        boosts = np.logspace(6, 14, 201)
+
+        pdis_rates_cmb = np.genfromtxt(os.path.join(self.data_files['path'], 
+            self.data_files['photodisintegration']['rates_cmb']))
+        pdis_rates_ebl = np.genfromtxt(os.path.join(self.data_files['path'], 
+            self.data_files['photodisintegration']['rates_ebl']))
+
+        branchings_cmb = np.genfromtxt(os.path.join(self.data_files['path'], 
+            self.data_files['photodisintegration']['branchings_cmb']))
+        branchings_ebl = np.genfromtxt(os.path.join(self.data_files['path'], 
+            self.data_files['photodisintegration']['branchings_ebl']))
+
+        nuclei = [(int(Z), int(Z + N)) for Z, N in zip(pdis_rates_cmb[:, 0], pdis_rates_cmb[:, 1])]
+
+        allmr_cmb = get_marginal_rates(nuclei, pdis_rates_cmb, boosts, branchings_cmb) 
+        allmr_ebl = get_marginal_rates(nuclei, pdis_rates_ebl, boosts, branchings_ebl) 
+
+        all_branchings = []
+        for mr1, mr2 in zip(allmr_cmb, allmr_ebl):
+            all_branchings.append(merge_marginal_rates(mr1, mr2))
+            
+        self.boosts = boosts 
+        self.nuclei = nuclei
+        self.all_rates = pdis_rates_cmb[:, 2:] + pdis_rates_ebl[:, 2:]
+        self.all_branchings = all_branchings
+
+
 class InteractionCore_UHECR_Source(InteractionCore):
     """Producing interaction matrices from CRPropA interaction files.
     It requires files for photodisintegration and for photomeson.  
