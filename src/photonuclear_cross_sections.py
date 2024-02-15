@@ -71,6 +71,43 @@ class GDR_atlas(object):
 
         return Strk * (S1 * F1 + S2 * F2) 
 
+
+class PSB_model(object):
+    """Models the cross sections from the Puget Stecker Bredekamp 1976 paper
+       Source: https://ui.adsabs.harvard.edu/abs/1976ApJ...205..638P/abstract
+    """
+    def __init__(self):
+        object.__init__(self)
+
+        self.PSB_filename = os.path.join(main_path, 'data/PSB1976.csv')
+        self.params = pd.read_csv(self.PSB_filename, header=1)
+        self.params.fillna(0, inplace=True)
+
+    def cross_section(self, eps, Z, A, nloss=1):
+        """The cross section as modeled in the reference to compute the
+        interaction rates.
+        """
+        from scipy.special import erf
+        params = self.params[np.logical_and(self.params['Z'] == Z, self.params['A'] == A)]
+
+        f_i = float(params[f'{nloss}'])
+        zeta = float(params['zeta'])
+        Sigma_d = 59.8 * (A - Z) * Z / A # in MeV * mb
+        theta_plus = lambda z : np.heaviside(eps - z, 1)
+        theta_minus = lambda z : np.heaviside(z - eps, 1)
+
+        csec = zeta * f_i * Sigma_d * theta_plus(30) / 120 # applies for all nloss values
+
+        if nloss in [1, 2]:
+            eps0 = float(params[f'eps0{nloss}'])
+            xi = float(params[f'xi{nloss}'])
+            D = float(params[f'Delta{nloss}'])
+            W = np.sqrt(np.pi/8) * (erf( (30 - eps0) / D * np.sqrt(2)) + erf( (eps0 - 2) / D * np.sqrt(2)))
+            csec += 1/W * xi * Sigma_d / D * theta_plus(2) * theta_minus(30) * np.exp(-2 * ((eps - eps0) / D)**2)
+        
+        return csec
+        
+
 def pgamma(eps_r):
     """Photonuclear cross section in the energy range .1-1e4 GeV
     taken from Rachen PhD Thesis. 
