@@ -3,10 +3,73 @@ nuclear species.
 """
 
 import numpy as np
+import pandas as pd
 from scipy.integrate import cumtrapz
 from scipy.interpolate import InterpolatedUnivariateSpline
 import os
 main_path = os.path.abspath(os.path.join(os.path.dirname( __file__ ), '..'))
+
+class GDR_atlas(object):
+    """Models the Giant Dipole Resonance of a large number of nuclei.
+       Data and models obtained from https://www-nds.iaea.org/PSFdatabase/atlas-gdr.html
+    """
+    def __init__(self):
+        object.__init__(self)
+
+        self.slo_filename = os.path.join(main_path, 'data/gdr_parameters_exp&systematics/gdr-parameters_exp&systematics_slo.dat')
+        self.slo_params = pd.read_fwf(self.slo_filename, widths=2*[4,] + 9*[9,] + [5,], header=3)
+        self.slo_params.rename(columns={'#  Z':'Z'}, inplace=True)
+
+        self.smlo_filename = os.path.join(main_path, 'data/gdr_parameters_exp&systematics/gdr-parameters_exp&systematics_smlo.dat')
+        self.smlo_params = pd.read_fwf(self.smlo_filename, widths=2*[4,] + 9*[9,] + [5,], header=3)
+        self.smlo_params.rename(columns={'#  Z':'Z'}, inplace=True)
+
+    def sigma_gdr(self, eps, Z, A, gdr_type='slo'):
+        """Returns the cross section in mb, takes energy eps in MeV
+        """
+        Strk = 15 * A * (1 - (A - 2*Z)/A) # in MeV * mb
+
+        if gdr_type == 'slo':
+            params = self.slo_params[(self.slo_params['Z']==Z) & (self.slo_params['A']==A)]
+
+            S1 = params['S1'].values[0] # in MeV
+            E1 = params['Er1'].values[0] # in MeV
+            G1 = params['Wr1'].values[0] # in MeV
+
+            F1 = 2 / np.pi * eps**2 * G1 / ((eps**2 - E1**2)**2 + (eps*G1)**2)
+
+            if not np.isnan(params['E2'].values[0]):
+                S2 = params['S2'].values[0] # in MeV
+                E2 = params['E2'].values[0] # in MeV
+                G2 = params['Wr2'].values[0] # in MeV
+
+                F2 = 2 / np.pi * eps**2 * G2 / ((eps**2 - E2**2)**2 + (eps*G2)**2)
+            else:
+                S2, F2 = 0, 0
+        
+        elif gdr_type == 'smlo':
+            params = self.smlo_params[(self.smlo_params['Z']==Z) & (self.smlo_params['A']==A)]
+
+            S1 = params['S1'].values[0] # in MeV
+            E1 = params['Er1'].values[0] # in MeV
+            G1 = params['Wr1'].values[0] # in MeV
+
+            G1 *= eps / E1
+
+            F1 = 2 / np.pi * eps**2 * G1 / ((eps**2 - E1**2)**2 + (eps*G1)**2)
+
+            if not np.isnan(params['E2'].values[0]):
+                S2 = params['S2'].values[0] # in MeV
+                E2 = params['E2'].values[0] # in MeV
+                G2 = params['Wr2'].values[0] # in MeV
+
+                G2 *= eps / E2
+
+                F2 = 2 / np.pi * eps**2 * G2 / ((eps**2 - E2**2)**2 + (eps*G2)**2)
+            else:
+                S2, F2 = 0, 0
+
+        return Strk * (S1 * F1 + S2 * F2) 
 
 def pgamma(eps_r):
     """Photonuclear cross section in the energy range .1-1e4 GeV
