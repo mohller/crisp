@@ -102,8 +102,10 @@ class PSB_model(object):
             eps0 = float(params[f'eps0{nloss}'])
             xi = float(params[f'xi{nloss}'])
             D = float(params[f'Delta{nloss}'])
-            W = np.sqrt(np.pi/8) * (erf( (30 - eps0) / D * np.sqrt(2)) + erf( (eps0 - 2) / D * np.sqrt(2)))
-            csec += 1/W * xi * Sigma_d / D * theta_plus(2) * theta_minus(30) * np.exp(-2 * ((eps - eps0) / D)**2)
+            
+            if D != 0:
+                W = np.sqrt(np.pi/8) * (erf( (30 - eps0) / D * np.sqrt(2)) + erf( (eps0 - 2) / D * np.sqrt(2)))
+                csec += 1/W * xi * Sigma_d / D * theta_plus(2) * theta_minus(30) * np.exp(-2 * ((eps - eps0) / D)**2)
         
         return csec
         

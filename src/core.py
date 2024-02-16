@@ -707,3 +707,45 @@ class InteractionCore_UHECR_Source(InteractionCore):
         self.nuclei = nuclei
         self.all_rates = all_rates
         self.all_branchings = all_branchings
+
+
+class InteractionCore_PSB_CMB(InteractionCore):
+    def _construct_from_files(self):
+        """Based on PSB-model of nuclear cascades
+        """
+        from scipy.constants import c, parsec
+        from interaction_rates import interaction_rate_from_cross_section
+        from background_photon_models import cmb_photon_density_GeVcm3
+        from photonuclear_cross_sections import PSB_model
+        
+        boosts = np.logspace(6, 14, 201)
+        eps = 1e-3 * np.linspace(5, 50, 200) # in GeV
+
+        psb_model = PSB_model()
+        psb_model.params.drop(51, inplace=True) # unclear info on deuterium
+
+        nuclei, pdis_rates_cmb, branchings_cmb = [], [], []
+        for Z, A in zip(psb_model.params['Z'], psb_model.params['A']):
+            nuclei.append((int(Z), int(A)))
+
+            branchings = []
+            for nloss in range(1, 3): # up to 15 possible
+                Arem = int(A - nloss)
+                try:
+                    Zrem = int(psb_model.params[psb_model.params['A'] == Arem]['Z'])
+                except:
+                    continue
+
+                cross_section = 1e-27 * psb_model.cross_section(eps * 1e3, Z, A, nloss)
+                pdis_rates = interaction_rate_from_cross_section(A*boosts, A, cmb_photon_density_GeVcm3, eps, cross_section)
+                pdis_rates /= c / parsec / 1e6 # ito Mpc
+
+                branchings.append(np.append([Zrem, Arem], pdis_rates))
+
+            pdis_rates_cmb.append(np.sum(branchings, axis=0))
+            branchings_cmb.append(branchings)
+            
+        self.boosts = boosts 
+        self.nuclei = nuclei
+        self.all_rates = pdis_rates_cmb
+        self.all_branchings = branchings_cmb
