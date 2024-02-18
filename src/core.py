@@ -359,8 +359,7 @@ class InteractionCore_CRPropA(InteractionCore):
         else:
             self.data_files = data_files
         
-        self._construct_from_files()
-        self._genenerate_complete_matrices()
+        InteractionCore.__init__(self)
 
     def _construct_from_files(self):
         """CRPropA data is structured in different files depending on the 
@@ -772,8 +771,6 @@ class InteractionCore_PSB_CMB(InteractionCore):
                     Arem, Zrem = 4, 2
                 else:
                     Zrem = int(psb_model.params[psb_model.params['A'] == Arem]['Z'])
-                except:
-                    continue
 
                 cross_section = 1e-27 * psb_model.cross_section(eps * 1e3, Z, A, nloss) # to cm2
                 pdis_rates = interaction_rate_from_cross_section(A*boosts, A, cmb_photon_density_GeVcm3, eps, cross_section)
