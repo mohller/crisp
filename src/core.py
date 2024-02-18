@@ -158,6 +158,7 @@ class InteractionCore():
 
     def __init__(self):
         self._construct_from_files()
+        self._genenerate_complete_matrices()
 
     def _construct_from_files():
         """Function to load the interaction data from given files
@@ -504,6 +505,37 @@ class InteractionCore_CRPropA_CMB_pdis(InteractionCore_CRPropA):
 
 
 class InteractionCore_CRPropA_pdis(InteractionCore_CRPropA):
+    def get_marginal_rates(self, rates, branchings=None):
+        daughters = [(2, 4), (2, 3), (1, 3), (1, 2), (1, 1), (0, 1)]
+        Ad = np.array([d[1] for d in daughters])
+        Zd = np.array([d[0] for d in daughters])
+
+        nprods = np.vstack([get_particle_numbers(channel) for channel in branchings[:, 2]])
+        Aprods = nprods.dot(Ad)
+        Zprods = nprods.dot(Zd)
+
+        redundant_rates = np.vstack([rates[np.all(row == rates[:, :2], axis=1)] for row in branchings[:, :2]])
+        allmr = np.hstack([branchings[:, :3], redundant_rates[:, 2:] * branchings[:, 3:]])
+
+        marginal_rates = []
+        for nuc in rates[:, :2]:
+            selection = np.all(nuc == allmr[:, :2], axis=1)
+            channels = allmr[selection]
+            remnants = channels[:, :2] - np.column_stack([Zprods[selection], Aprods[selection] - Zprods[selection]])
+            # setting as (Z, A)
+            remnants[:, 1] = np.sum(remnants, axis=1)
+            # sorting by Z and A
+            sorted_remnants = remnants[remnants[:,0].argsort()]
+            sorted_remnants = sorted_remnants[sorted_remnants[:,1].argsort(kind='mergesort')]
+            # Reducing by remmnant (merging channels w/ the same remnant)
+            reduced_channels = []
+            for Z, A in np.unique(sorted_remnants, axis=0):
+                reduced_channels.append(np.hstack([Z, A, np.sum(channels[np.all([Z, A] == remnants, axis=1)], axis=0)[3:]]))
+
+            marginal_rates.append(np.vstack(reduced_channels))
+
+        return marginal_rates
+
     def _construct_from_files(self):
         """CRPropA data is structured in different files depending on the 
         interaction and the photon field.
@@ -522,8 +554,8 @@ class InteractionCore_CRPropA_pdis(InteractionCore_CRPropA):
 
         nuclei = [(int(Z), int(Z + N)) for Z, N in zip(pdis_rates_cmb[:, 0], pdis_rates_cmb[:, 1])]
 
-        allmr_cmb = get_marginal_rates(nuclei, pdis_rates_cmb, boosts, branchings_cmb) 
-        allmr_ebl = get_marginal_rates(nuclei, pdis_rates_ebl, boosts, branchings_ebl) 
+        allmr_cmb = self.get_marginal_rates(pdis_rates_cmb, branchings_cmb)
+        allmr_ebl = self.get_marginal_rates(pdis_rates_ebl, branchings_ebl)
 
         all_branchings = []
         for mr1, mr2 in zip(allmr_cmb, allmr_ebl):
@@ -717,32 +749,39 @@ class InteractionCore_PSB_CMB(InteractionCore):
         from interaction_rates import interaction_rate_from_cross_section
         from background_photon_models import cmb_photon_density_GeVcm3
         from photonuclear_cross_sections import PSB_model
-        
+
         boosts = np.logspace(6, 14, 201)
         eps = 1e-3 * np.linspace(5, 50, 200) # in GeV
 
         psb_model = PSB_model()
-        psb_model.params.drop(51, inplace=True) # unclear info on deuterium
+        reversed_by_mass = psb_model.params.sort_values(by=['A', 'Z'], ascending=True)
 
         nuclei, pdis_rates_cmb, branchings_cmb = [], [], []
-        for Z, A in zip(psb_model.params['Z'], psb_model.params['A']):
+        for Z, A in zip(reversed_by_mass['Z'], reversed_by_mass['A']):
             nuclei.append((int(Z), int(A)))
 
             branchings = []
-            for nloss in range(1, 3): # up to 15 possible
+            for nloss in range(1, 16): # only up to 15 possible
                 Arem = int(A - nloss)
-                try:
+
+                if Arem < 1:
+                    continue
+                elif Arem == 1:
+                    Zrem = 1
+                elif Arem in [5, 6, 7, 8]:
+                    Arem, Zrem = 4, 2
+                else:
                     Zrem = int(psb_model.params[psb_model.params['A'] == Arem]['Z'])
                 except:
                     continue
 
-                cross_section = 1e-27 * psb_model.cross_section(eps * 1e3, Z, A, nloss)
+                cross_section = 1e-27 * psb_model.cross_section(eps * 1e3, Z, A, nloss) # to cm2
                 pdis_rates = interaction_rate_from_cross_section(A*boosts, A, cmb_photon_density_GeVcm3, eps, cross_section)
                 pdis_rates /= c / parsec / 1e6 # ito Mpc
 
                 branchings.append(np.append([Zrem, Arem], pdis_rates))
-
-            pdis_rates_cmb.append(np.sum(branchings, axis=0))
+            
+            pdis_rates_cmb.append(np.sum(np.atleast_2d((branchings)), axis=0)[2:])
             branchings_cmb.append(branchings)
             
         self.boosts = boosts 
