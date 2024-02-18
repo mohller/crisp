@@ -216,7 +216,7 @@ def get_injection_parameters(species, mass_lims=(56, 11), injection_type=('flat'
     if itype == 'flat':
         alpha /= sum(alpha)
     elif itype == 'only mass':
-        masses = range(*mass_lims)
+        masses = params
         indices = np.array([k for k, idx in enumerate(mass_range) if species[idx][1] not in masses])
         alpha[indices] = 0
         alpha /= sum(alpha)
