@@ -9,60 +9,6 @@ c = c.to('cm/s').value # speed of light
 ergs2GeV = erg.to('GeV')  # energy conversion factor from ergs to GeV
 km2cm = km.to('cm')  # distance conversion factor from km to cm
 
-
-def target_photons_spectrum(Emin=1e-6, Emax=1e4, Ebr=1e3, si1=1, si2=2,
-                            normal=None):
-    """Returns a photon spectrum modeled as a broken power law
-
-    Arguments:
-    ----------
-    Emin: [float]
-        lower energy for which the spectrum has a non zero value in GeV
-    Emax: [float] 
-        higher energy for which the spectrum has a non zero value in GeV
-    Ebr : [float]
-        break-point energy for of the spectrum in GeV
-    si1 : [float]
-        power law index of the lower energy part
-    si2 : [float]
-        power law index of the higher energy part
-    normal: [(e1, e2), norm]
-        Normalization parameters:
-            (e1, e2) - energy range
-            norm - value of integral of fluence over the 
-            given range (integral of E**2 * dN/dE)
-    Returns:
-    --------
-
-    """
-
-    if normal is None:
-        e1, e2, norm = Emin, Emax, 1.
-    else:
-        (e1, e2), norm = normal
-        print('normal parameters:', e1, e2, norm)
-
-    A = 1.  # normalization constant of the spectrum
-
-    def spectrum(e):
-        if (e < Emin) or (e > Emax):
-            nk = 0
-        elif e <= Ebr:
-            nk = (Ebr / e)**si1
-        else:
-            nk = (Ebr / e)**si2
-
-        return A * nk
-
-    egrid = logspace(log10(e1), log10(e2), 1000)
-    dnde = np.array([spectrum(e) for e in egrid])
-    Fluence_integral = np.trapz(egrid**2 * dnde * log(10), x=log10(egrid))
-
-    A = norm / Fluence_integral  # renormalizing the spectrum
-
-    return np.vectorize(spectrum)
-
-
 def interaction_rate_adiabatic(energies, radius, boost):
     """Returns the adiabatic interaction rate
 
