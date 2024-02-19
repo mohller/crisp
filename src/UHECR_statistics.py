@@ -243,11 +243,11 @@ def pdf(x, T, alpha=None, eta=None):
 
     if alpha is None:
         alpha = np.zeros((1, dim))
+        # inject only first element
         alpha[0, 0] = 1
 
     if eta is None:
-        eta = np.zeros((dim, 1))
-        eta[-1, 0] = -T[-1, -1]
+        eta = -np.matmul(T, np.ones_like(alpha))
 
     pdf_nonvectorized = lambda t: np.dot(np.dot(alpha, expm(T * t)), eta)
     pdf_vectorized = np.vectorize(pdf_nonvectorized)
