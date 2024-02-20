@@ -179,7 +179,7 @@ class InteractionCore():
         """
 
         if boost_range is None:
-            boost_range = self.boosts       
+            boost_range = self.boosts
 
         if mass_range is None:
             reduced_tensor = self.interpolator(boost_range)
@@ -194,7 +194,41 @@ class InteractionCore():
 
         total = np.matmul(alpha, expmatL)
 
-        return self.boosts, total
+        return total
+    
+    def light_secondaries_production(self, L, alpha=None, mass_range=None, boost_range=None):
+        """Returns the production of each light species at positions L for a range of boosts.
+
+        Arguments:
+        ----------
+        L : a float or an array of distances at which the pdf will be evaluated
+        alpha : injection vector (sum of entries must equal one).
+        mass_range : species to be included in the matrix. If None, all species are included.
+        boost_range : A two element variable with the limits minimum and maximum. The whole range by default (None). 
+        """
+
+        if boost_range is None:
+            boost_range = self.boosts
+
+        reduced_tensor = self.interpolator(boost_range)
+        
+        if mass_range is not None:
+            reduced_tensor = reduced_tensor[np.ix_(mass_range, mass_range, range(len(boost_range)))]
+        
+        P = self.species_evolution_boost_range(L, alpha, mass_range, boost_range)
+
+        reduced_tensor = reduced_tensor[np.ix_(mass_range, mass_range, range(len(boost_range)))]
+
+        # Generating temporary production matrix, needs improvement!!!
+        mat_i = np.repeat([self.species[idx][1] for idx in mass_range], len(mass_range)).reshape(len(mass_range), -1)
+        prod_mat = mat_i.T - mat_i # proton production proportional to mass loss
+        prod_mat[prod_mat < 0] = 0 # negative elements for forbidden jumps
+
+        LamYp = prod_mat.T[:, :, None] * reduced_tensor # production rate matrix, independent of distance
+
+        production = np.sum(np.einsum('lmi, ijl -> lmj', P, LamYp), axis=2)
+
+        return production
 
     def cdf_boost_range(self, L, alpha=None, mass_range=None, boost_range=None):
         """Returns the probability (cumulative) distribution values at positions L for a range of boosts
