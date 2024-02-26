@@ -151,6 +151,76 @@ def get_particle_numbers(channel):
 
     return digits
 
+def load_rates(filename):
+    from pandas import read_csv, MultiIndex
+    cols = [f'{i}' for i in range(201)]
+    df_rates = read_csv(filename, header=1, sep='\t', names=['Z', 'N'] + cols)
+
+    df_rates.insert(1, 'A', df_rates['Z'] + df_rates['N'])
+    df_rates.drop('N', axis=1, inplace=True)
+
+    df_rates.index = MultiIndex.from_arrays(df_rates[['A', 'Z']].values.T)
+    df_rates.sort_index(inplace=True)
+
+    return df_rates
+
+def load_branchings(filename):
+    from pandas import read_csv, MultiIndex
+    cols = [f'{i}' for i in range(201)]
+    df_brnch = read_csv(filename, header=1, sep='\t', names=['Z', 'N', 'channel'] + cols)
+    
+    # Nuclei in file which have no decay implemented
+    correction_channels = [
+        [(2, 5), (2, 4), [0, 0, 0, 0, 0, 1]],
+        [(2, 6), (2, 4), [0, 0, 0, 0, 0, 2]],
+        [(3, 5), (2, 4), [0, 0, 0, 0, 1, 0]],
+        [(4, 8), (2, 4), [1, 0, 0, 0, 0, 0]],
+        [(5, 9), (4, 9), [0, 0, 0, 0, 1, -1]],
+        [(5, 12), (6, 12), [0, 0, 0, 0, -1, 1]],
+        [(9, 16), (8, 16), [0, 0, 0, 0, 1, -1]],
+        [(11, 20), (10, 20), [0, 0, 0, 0, 1, -1]],
+        [(13, 31), (13, 30), [0, 0, 0, 0, 0, 1]],
+        [(20, 39), (19, 39), [0, 0, 0, 0, 1, -1]],
+        [(21, 42), (20, 42), [0, 0, 0, 0, 1, -1]],
+        [(24, 47), (23, 47), [0, 0, 0, 0, 1, -1]],
+    ]
+    daughter_names = ['a', 'he3', 't', 'd', 'p', 'n']
+    daughters = [(2, 4), (2, 3), (1, 3), (1, 2), (1, 1), (0, 1)]
+    Ad = np.array([d[1] for d in daughters])
+    Zd = np.array([d[0] for d in daughters])
+
+    df_brnch.insert(1, 'A', df_brnch['Z'] + df_brnch['N'])
+    df_brnch.drop('N', axis=1, inplace=True)
+
+    df_brnch.loc[:, 'channel'] = df_brnch.channel.apply(get_particle_numbers)
+    Zr = df_brnch['channel'].apply(Zd.dot)
+    Ar = df_brnch['channel'].apply(Ad.dot)
+
+    df_brnch.insert(2, 'Ar', df_brnch['A'] - Ar)
+    df_brnch.insert(2, 'Zr', df_brnch['Z'] - Zr)
+
+    df_brnch.index = MultiIndex.from_arrays(df_brnch[['A', 'Z', 'Ar', 'Zr']].values.T)
+
+    # Replacing channels with dead ends
+    for nuc0, nucr, prods in correction_channels:
+        new_prods = np.vstack(df_brnch[np.all(df_brnch[['Zr', 'Ar']] == nuc0, axis=1)]['channel']) + np.array(prods)
+        df_brnch.loc[np.all(df_brnch[['Zr', 'Ar']] == nuc0, axis=1), ['channel']] = [[list(row)] for row in new_prods]
+        df_brnch.loc[np.all(df_brnch[['Zr', 'Ar']] == nuc0, axis=1), ['Zr', 'Ar']] = nucr
+
+    # Splitting light products into individual columns
+    channel_array = np.vstack(df_brnch['channel'].values)
+    for k, cn in enumerate(daughter_names):
+        df_brnch.insert(loc=3, column=cn, value=channel_array[:, k])
+    df_brnch.drop(columns='channel', inplace=True)
+
+    # Merging channels with the same heavy product
+    merged_yields = []
+    for col in daughter_names:
+        df_brnch_no_channels = df_brnch.drop(columns=daughter_names)
+        df_brnch_no_channels[cols] = df_brnch_no_channels.multiply(df_brnch[col].values, axis='index')[cols]
+        merged_yields.append( df_brnch_no_channels )
+
+    return df_brnch, merged_yields
 
 class InteractionCore():
     """Base class to produce interaction matrices
@@ -548,12 +618,12 @@ class InteractionCore_CRPropA_pdis(InteractionCore_CRPropA):
         Zprods = nprods.dot(Zd)
 
         redundant_rates = np.vstack([rates[np.all(row == rates[:, :2], axis=1)] for row in branchings[:, :2]])
-        allmr = np.hstack([branchings[:, :3], redundant_rates[:, 2:] * branchings[:, 3:]])
+        yields = np.hstack([branchings[:, :3], redundant_rates[:, 2:] * branchings[:, 3:]])
 
-        marginal_rates = []
+        marginal_rates, marginal_light_yields = [], []
         for nuc in rates[:, :2]:
-            selection = np.all(nuc == allmr[:, :2], axis=1)
-            channels = allmr[selection]
+            selection = np.all(nuc == yields[:, :2], axis=1)
+            channels = yields[selection]
             remnants = channels[:, :2] - np.column_stack([Zprods[selection], Aprods[selection] - Zprods[selection]])
             # setting as (Z, A)
             remnants[:, 1] = np.sum(remnants, axis=1)
@@ -561,43 +631,64 @@ class InteractionCore_CRPropA_pdis(InteractionCore_CRPropA):
             sorted_remnants = remnants[remnants[:,0].argsort()]
             sorted_remnants = sorted_remnants[sorted_remnants[:,1].argsort(kind='mergesort')]
             # Reducing by remmnant (merging channels w/ the same remnant)
-            reduced_channels = []
+            reduced_channels, light_yields = [], []
             for Z, A in np.unique(sorted_remnants, axis=0):
-                reduced_channels.append(np.hstack([Z, A, np.sum(channels[np.all([Z, A] == remnants, axis=1)], axis=0)[3:]]))
+                same_remnant = np.all([Z, A] == remnants, axis=1)
+                reduced_channels.append(np.hstack([Z, A, np.sum(channels[same_remnant], axis=0)[3:]]))
+                # numbers of light products per channel
+                light_yields.append(np.hstack([Z, A, np.sum(nprods[selection][same_remnant], axis=0)]))
 
             marginal_rates.append(np.vstack(reduced_channels))
+            marginal_light_yields.append(np.vstack(light_yields))
 
-        return marginal_rates
+        return marginal_rates, marginal_light_yields
+
 
     def _construct_from_files(self):
         """CRPropA data is structured in different files depending on the 
         interaction and the photon field.
         """
-        boosts = np.logspace(6, 14, 201)
+        cols = [f'{i}' for i in range(201)]
+        daughter_names = ['a', 'he3', 't', 'd', 'p', 'n']
 
-        pdis_rates_cmb = np.genfromtxt(os.path.join(self.data_files['path'], 
-            self.data_files['photodisintegration']['rates_cmb']))
-        pdis_rates_ebl = np.genfromtxt(os.path.join(self.data_files['path'], 
-            self.data_files['photodisintegration']['rates_ebl']))
+        df_rates_cmb = load_rates(os.path.join(self.data_files['path'], self.data_files['photodisintegration']['rates_cmb']))
+        df_brnch_cmb, merged_yields_cmb = load_branchings(os.path.join(self.data_files['path'], self.data_files['photodisintegration']['branchings_cmb']))
 
-        branchings_cmb = np.genfromtxt(os.path.join(self.data_files['path'], 
-            self.data_files['photodisintegration']['branchings_cmb']))
-        branchings_ebl = np.genfromtxt(os.path.join(self.data_files['path'], 
-            self.data_files['photodisintegration']['branchings_ebl']))
+        df_rates_ebl = load_rates(os.path.join(self.data_files['path'], self.data_files['photodisintegration']['rates_ebl']))
+        df_brnch_ebl, merged_yields_ebl = load_branchings(os.path.join(self.data_files['path'], self.data_files['photodisintegration']['branchings_ebl']))
 
-        nuclei = [(int(Z), int(Z + N)) for Z, N in zip(pdis_rates_cmb[:, 0], pdis_rates_cmb[:, 1])]
+        df_rates = df_rates_cmb.groupby(by=['A', 'Z']).sum() + df_rates_ebl.groupby(by=['A', 'Z']).sum()
+        # nuclei = list(zip(df_rates['Z'], df_rates['A']))
+        nuclei = [(z, a) for a, z in df_rates.index.values]
 
-        allmr_cmb = self.get_marginal_rates(pdis_rates_cmb, branchings_cmb)
-        allmr_ebl = self.get_marginal_rates(pdis_rates_ebl, branchings_ebl)
+        df_brnch_cmb[cols] = df_brnch_cmb.multiply(df_rates_cmb.reindex(df_brnch_cmb.index, method='ffill'))[cols]
+        merged_cmb = df_brnch_cmb.groupby(by=['Z', 'A', 'Zr', 'Ar']).sum()
+        allmr_cmb = [np.hstack([np.vstack(merged_cmb.loc[nuc].index.values), merged_cmb.loc[nuc][cols].values]) for nuc in nuclei]
 
+        df_brnch_ebl[cols] = df_brnch_ebl.multiply(df_rates_ebl.reindex(df_brnch_ebl.index, method='ffill'))[cols]
+        merged_ebl = df_brnch_ebl.groupby(by=['Z', 'A', 'Zr', 'Ar']).sum()
+        allmr_ebl = [np.hstack([np.vstack(merged_ebl.loc[nuc].index.values), merged_ebl.loc[nuc][cols].values]) for nuc in nuclei]
+
+        all_merged = []
+        for mycmb, myebl in zip(merged_yields_cmb, merged_yields_ebl):
+            merged = mycmb.copy()
+                    
+            light_yield_cmb = mycmb[cols].multiply(df_rates_cmb.reindex(mycmb[cols].index, method='ffill'))
+            light_yield_ebl = myebl[cols].multiply(df_rates_ebl.reindex(myebl[cols].index, method='ffill'))
+            merged[cols] = ( light_yield_cmb + light_yield_ebl )[cols]
+            merged[cols] = merged.divide(df_rates.reindex(merged.index, method='ffill'))[cols]
+            merged = merged.groupby(by=['Z', 'A', 'Zr', 'Ar']).sum()
+            all_merged.append([np.hstack([np.vstack(merged.loc[nuc].index.values), merged.loc[nuc][cols].values]) for nuc in nuclei])
+    
         all_branchings = []
         for mr1, mr2 in zip(allmr_cmb, allmr_ebl):
             all_branchings.append(merge_marginal_rates(mr1, mr2))
-            
-        self.boosts = boosts 
+
+        self.boosts = np.logspace(6, 14, 201)
         self.nuclei = nuclei
-        self.all_rates = pdis_rates_cmb[:, 2:] + pdis_rates_ebl[:, 2:]
+        self.all_rates = df_rates.values
         self.all_branchings = all_branchings
+        self.marginal_light_yields = all_merged
 
 
 class InteractionCore_UHECR_Source(InteractionCore):
