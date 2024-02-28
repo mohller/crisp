@@ -281,22 +281,17 @@ class InteractionCore():
             boost_range = self.boosts
 
         reduced_tensor = self.interpolator(boost_range)
-        
+        prod_mat = self.interpyields(boost_range)
+
         if mass_range is not None:
             reduced_tensor = reduced_tensor[np.ix_(mass_range, mass_range, range(len(boost_range)))]
+            prod_mat = prod_mat[np.ix_(range(prod_mat.shape[0]), mass_range, mass_range, range(len(boost_range)))]
         
         P = self.species_evolution_boost_range(L, alpha, mass_range, boost_range)
 
-        reduced_tensor = reduced_tensor[np.ix_(mass_range, mass_range, range(len(boost_range)))]
+        LamYp = prod_mat * reduced_tensor # production rate matrix, independent of distance
 
-        # Generating temporary production matrix, needs improvement!!!
-        mat_i = np.repeat([self.species[idx][1] for idx in mass_range], len(mass_range)).reshape(len(mass_range), -1)
-        prod_mat = mat_i.T - mat_i # proton production proportional to mass loss
-        prod_mat[prod_mat < 0] = 0 # negative elements for forbidden jumps
-
-        LamYp = prod_mat.T[:, :, None] * reduced_tensor # production rate matrix, independent of distance
-
-        production = np.sum(np.einsum('lmi, ijl -> lmj', P, LamYp), axis=2)
+        production = np.sum(np.einsum('lmi, kijl -> klmj', P, LamYp), axis=3)
 
         return production
 
@@ -429,15 +424,42 @@ class InteractionCore():
 
         species = prepare_species_list(self.nuclei, Zmax, Amax, Amax-1)
         self.species = species
-        
-        matrices = [complete_matrix(self.nuclei, self.all_rates, self.all_branchings, species, idx=idx)
-            for idx, _ in enumerate(self.boosts)]
-        
+
+        # generate interaction tensor by slices
+        tensor = np.zeros((len(species)+2, len(species)+2, len(self.boosts)))
+        for i, nuc_branches in enumerate(self.all_branchings[::-1]):
+            for branch in nuc_branches:
+                try:
+                    j = (self.species + [(1, 1), (0, 1)]).index(tuple(branch[:2]))
+                    # j = (ic1.species).index(tuple(branch[:2]))
+                    tensor[i, j, :] = branch[2:]
+                except:
+                    print('problem with product', branch[:2], 'of nucleus', self.species[i])
+                    continue
+
+        tensor -= np.stack([np.diag(row) for row in tensor.sum(axis=1).T], axis=2)
+
+        # generate light production tensors by slices
+        ly_all_mats = []
+        for light_yield in self.marginal_light_yields:
+            ly_matrices = np.zeros((len(species)+2, len(species)+2, len(self.boosts)))
+            for i, nuc_branches in enumerate(light_yield[::-1]):
+                for branch in nuc_branches:
+                    try:
+                        j = (self.species + [(1, 1), (0, 1)]).index(tuple(branch[:2]))
+                        ly_matrices[i, j, :] = branch[2:]
+                    except:
+                        print('problem with product', branch[:2], 'of nucleus', self.species[i])
+                        continue
+            ly_all_mats.append( ly_matrices )
+
         # check that all rows add up to one!!!
+        # np.all(np.isclose(np.einsum('ijk, j -> ik', tensor, np.ones(186)), 0))
 
-        self.tensor = np.dstack(matrices)
+        self.tensor = tensor
+        self.light_prod_tensor = np.stack(ly_all_mats)
         self.interpolator = interp1d(self.boosts, self.tensor, 'cubic')
-
+        self.interpyields = interp1d(self.boosts, self.light_prod_tensor, 'cubic')
 
 class InteractionCore_CRPropA(InteractionCore):
     """Producing interaction matrices from CRPropA interaction files 
