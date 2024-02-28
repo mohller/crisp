@@ -630,48 +630,11 @@ class InteractionCore_CRPropA_CMB_pdis(InteractionCore_CRPropA):
 
 
 class InteractionCore_CRPropA_pdis(InteractionCore_CRPropA):
-    def get_marginal_rates(self, rates, branchings=None):
-        daughters = [(2, 4), (2, 3), (1, 3), (1, 2), (1, 1), (0, 1)]
-        Ad = np.array([d[1] for d in daughters])
-        Zd = np.array([d[0] for d in daughters])
-
-        nprods = np.vstack([get_particle_numbers(channel) for channel in branchings[:, 2]])
-        Aprods = nprods.dot(Ad)
-        Zprods = nprods.dot(Zd)
-
-        redundant_rates = np.vstack([rates[np.all(row == rates[:, :2], axis=1)] for row in branchings[:, :2]])
-        yields = np.hstack([branchings[:, :3], redundant_rates[:, 2:] * branchings[:, 3:]])
-
-        marginal_rates, marginal_light_yields = [], []
-        for nuc in rates[:, :2]:
-            selection = np.all(nuc == yields[:, :2], axis=1)
-            channels = yields[selection]
-            remnants = channels[:, :2] - np.column_stack([Zprods[selection], Aprods[selection] - Zprods[selection]])
-            # setting as (Z, A)
-            remnants[:, 1] = np.sum(remnants, axis=1)
-            # sorting by Z and A
-            sorted_remnants = remnants[remnants[:,0].argsort()]
-            sorted_remnants = sorted_remnants[sorted_remnants[:,1].argsort(kind='mergesort')]
-            # Reducing by remmnant (merging channels w/ the same remnant)
-            reduced_channels, light_yields = [], []
-            for Z, A in np.unique(sorted_remnants, axis=0):
-                same_remnant = np.all([Z, A] == remnants, axis=1)
-                reduced_channels.append(np.hstack([Z, A, np.sum(channels[same_remnant], axis=0)[3:]]))
-                # numbers of light products per channel
-                light_yields.append(np.hstack([Z, A, np.sum(nprods[selection][same_remnant], axis=0)]))
-
-            marginal_rates.append(np.vstack(reduced_channels))
-            marginal_light_yields.append(np.vstack(light_yields))
-
-        return marginal_rates, marginal_light_yields
-
-
     def _construct_from_files(self):
         """CRPropA data is structured in different files depending on the 
         interaction and the photon field.
         """
         cols = [f'{i}' for i in range(201)]
-        daughter_names = ['a', 'he3', 't', 'd', 'p', 'n']
 
         df_rates_cmb = load_rates(os.path.join(self.data_files['path'], self.data_files['photodisintegration']['rates_cmb']))
         df_brnch_cmb, merged_yields_cmb = load_branchings(os.path.join(self.data_files['path'], self.data_files['photodisintegration']['branchings_cmb']))
