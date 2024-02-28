@@ -615,18 +615,33 @@ class InteractionCore_CRPropA_CMB_pdis(InteractionCore_CRPropA):
         """CRPropA data is structured in different files depending on the 
         interaction and the photon field.
         """
-        boosts = np.logspace(6, 14, 201)
+        cols = [f'{i}' for i in range(201)]
 
-        pdis_rates_cmb = np.genfromtxt(os.path.join(self.data_files['path'], 
-            self.data_files['photodisintegration']['rates_cmb']))
-      
-        branchings_cmb = np.genfromtxt(os.path.join(self.data_files['path'], 
-            self.data_files['photodisintegration']['branchings_cmb']))
+        df_rates_cmb = load_rates(os.path.join(self.data_files['path'], self.data_files['photodisintegration']['rates_cmb']))
+        df_brnch_cmb, merged_yields_cmb = load_branchings(os.path.join(self.data_files['path'], self.data_files['photodisintegration']['branchings_cmb']))
 
-        self.boosts = boosts 
-        self.nuclei = [(int(Z), int(Z + N)) for Z, N in zip(pdis_rates_cmb[:, 0], pdis_rates_cmb[:, 1])]
-        self.all_rates = pdis_rates_cmb[:, 2:]
-        self.all_branchings = get_marginal_rates(self.nuclei, pdis_rates_cmb, branchings_cmb)
+        df_rates = df_rates_cmb.groupby(by=['A', 'Z']).sum()
+        nuclei = [(z, a) for a, z in df_rates.index.values]
+
+        df_brnch_cmb[cols] = df_brnch_cmb.multiply(df_rates_cmb.reindex(df_brnch_cmb.index, method='ffill'))[cols]
+        merged_cmb = df_brnch_cmb.groupby(by=['Z', 'A', 'Zr', 'Ar']).sum()
+        allmr_cmb = [np.hstack([np.vstack(merged_cmb.loc[nuc].index.values), merged_cmb.loc[nuc][cols].values]) for nuc in nuclei]
+
+        all_merged = []
+        for mycmb in merged_yields_cmb:
+            merged = mycmb.copy()
+                    
+            light_yield_cmb = mycmb[cols].multiply(df_rates_cmb.reindex(mycmb[cols].index, method='ffill'))
+            merged[cols] = light_yield_cmb[cols]
+            merged[cols] = merged.divide(df_rates.reindex(merged.index, method='ffill'))[cols]
+            merged = merged.groupby(by=['Z', 'A', 'Zr', 'Ar']).sum()
+            all_merged.append([np.hstack([np.vstack(merged.loc[nuc].index.values), merged.loc[nuc][cols].values]) for nuc in nuclei])
+    
+        self.boosts = np.logspace(6, 14, 201)
+        self.nuclei = nuclei
+        self.all_rates = df_rates.values
+        self.all_branchings = allmr_cmb
+        self.marginal_light_yields = all_merged
 
 
 class InteractionCore_CRPropA_pdis(InteractionCore_CRPropA):
