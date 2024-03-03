@@ -5,7 +5,7 @@ import os
 import numpy as np
 from scipy.linalg import expm
 from scipy.interpolate import interp1d
-from UHECR_statistics import complete_matrix, prepare_species_list
+from UHECR_statistics import prepare_species_list
 
 def merge_marginal_rates(mrates1, mrates2):
     """Joining rates for different species
@@ -221,6 +221,125 @@ def load_branchings(filename):
         merged_yields.append( df_brnch_no_channels )
 
     return df_brnch, merged_yields
+
+def generate_photodisinteg_tables_from_cross_sections(cs_egrid, cs_array, target_photons, nboosts=41, boosts=None):
+    """ Takes an array with cross sections and produces the lists of rates and light particle yields
+
+        The cross sections should be in milibarn
+    """
+    from pandas import DataFrame, MultiIndex
+    import interaction_rates as ir
+    from astropy.constants import c
+    c_in_Mpc_sec = c.to('Mpc/s').value
+    mb_to_cm2 = 1e-27
+    
+    # He4, He3, H3, H2, p, n
+    daughter_names = ['a', 'he3', 't', 'd', 'p', 'n']
+    daughters = [(2, 4), (2, 3), (1, 3), (1, 2), (1, 1), (0, 1)]
+    Zd = np.array([d[0] for d in daughters])
+    Ad = np.array([d[1] for d in daughters])
+
+    if boosts is None:
+        boosts = np.logspace(5, 14, nboosts)
+    
+    cols = [f'{i}' for i in range(len(boosts))]
+    
+    all_nprods = np.vstack([get_particle_numbers(int(br_row[2])) for br_row in cs_array])
+    Z, A = cs_array[:, 0], cs_array[:, 0] + cs_array[:, 1]
+    Zrem, Arem = Z - all_nprods.dot(Zd), A - all_nprods.dot(Ad)
+
+    all_rates = []
+    for br_row in cs_array:
+        Am = int(br_row[1]) + int(br_row[0])
+        UHECR_SRFenergy = Am * boosts # in GeV
+
+        cs_crpropa = br_row[3:]
+        r_pdis = ir.interaction_rate_from_cross_section(UHECR_SRFenergy, Am,
+                target_photons, cs_egrid, cs_crpropa*mb_to_cm2)  / c_in_Mpc_sec # 1 / Mpc
+        
+        all_rates.append(r_pdis)
+        
+    df_brnch_pdis = DataFrame(data=np.hstack([np.vstack([A, Z, Arem, Zrem]).T, all_nprods, np.vstack(np.abs(all_rates))]), index=MultiIndex.from_arrays(np.vstack([A, Z, Arem, Zrem])), columns=['A', 'Z', 'Ar', 'Zr'] + daughter_names + cols)
+    df_rates_pdis = df_brnch_pdis.groupby(by=['A', 'Z']).sum()[cols]
+
+    df_brnch_pdis[cols] = df_brnch_pdis.drop(columns=daughter_names).divide(df_rates_pdis.reindex(df_brnch_pdis.index, method='ffill'))[cols]
+    df_brnch_pdis.fillna(0, inplace=True)
+
+    # Merging channels with the same heavy product
+    merged_yields = []
+    for col in daughter_names:
+        df_brnch_no_channels = df_brnch_pdis.drop(columns=daughter_names)
+        df_brnch_no_channels[cols] = df_brnch_no_channels.multiply(df_brnch_pdis[col].values, axis='index')[cols]
+        merged_yields.append( df_brnch_no_channels )
+    
+    return df_rates_pdis, df_brnch_pdis, merged_yields
+
+def generate_photomeson_tables_from_cross_sections(nuclei, xsp, xsn, target_photons, nboosts=41, boosts=None):
+    """ Takes an array with cross sections and produces the lists of rates and light particle yields
+
+        The cross sections should be in milibarn
+    """
+    from pandas import DataFrame, MultiIndex
+    import interaction_rates as ir
+    from astropy.constants import c
+    c_in_Mpc_sec = c.to('Mpc/s').value
+    mb_to_cm2 = 1e-27
+    
+    # He4, He3, H3, H2, p, n
+    daughter_names = ['a', 'he3', 't', 'd', 'p', 'n']
+    daughters = [(2, 4), (2, 3), (1, 3), (1, 2), (1, 1), (0, 1)]
+    Zd = np.array([d[0] for d in daughters])
+    Ad = np.array([d[1] for d in daughters])
+
+    if boosts is None:
+        boosts = np.logspace(5, 14, nboosts)
+    
+    cols = [f'{i}' for i in range(len(boosts))]
+    
+    # Computing individual rates for proton and neutron
+    pr_pmes = ir.interaction_rate_from_cross_section(boosts, 1, target_photons, 
+                xsp[:, 0], xsp[:, 0]*mb_to_cm2*1e-3)  / c_in_Mpc_sec # 1 / Mpc
+    nr_pmes = ir.interaction_rate_from_cross_section(boosts, 1, target_photons, 
+                xsn[:, 0], xsn[:, 0]*mb_to_cm2*1e-3)  / c_in_Mpc_sec # 1 / Mpc
+
+    pprates = np.zeros((len(nuclei), len(boosts)))
+    for k, (Z, A) in enumerate(nuclei):
+        pprates[k] = np.interp(boosts, boosts/A, Z * pr_pmes + (A-Z) * nr_pmes)
+    print(np.hstack([np.vstack(nuclei), pprates]).shape)
+    df_rates_pmes = DataFrame(data=np.hstack([np.vstack(nuclei), pprates]), index=MultiIndex.from_arrays(np.vstack(nuclei).T), columns=['Z', 'A'] + cols)
+
+    pmes_branchings = []
+    pmes_marginal_yields = []
+    for idx, (Z, A) in enumerate(nuclei):
+        remnants = [(Z, A-1), (Z-1, A-1)]
+        for br, (Zrem, Arem) in zip([(1-Z/A), Z/A], remnants):
+            if (Zrem, Arem) in nuclei:
+                pmes_branchings.append(np.hstack([A, Z, Arem, Zrem, br * pprates[idx]]))
+                pmes_marginal_yields.append(np.hstack([A, Z, Arem, Zrem, 0, 0, 0, 0, Z-Zrem, A-Arem-Z+Zrem, br * np.ones(nboosts)]))
+
+        if not np.all([rem in nuclei for rem in remnants]):
+            if np.any([rem in nuclei for rem in remnants]):
+                pmes_branchings[-1][4:] = pprates[idx]
+                pmes_marginal_yields[-1][10:] = np.ones(nboosts)
+            else:
+                # No remnant in nuclei, add dummy channel with zeros
+                pmes_branchings.append(np.hstack([A, Z, A-1, Z, np.zeros(nboosts)]))
+                pmes_marginal_yields.append(np.hstack([A, Z, A-1, Z, 0, 0, 0, 0, 0, 0, np.zeros(nboosts)]))
+    
+    pmes_branchings = np.vstack(pmes_branchings)
+    pmes_branchings = DataFrame(data=pmes_branchings, index=MultiIndex.from_arrays(pmes_branchings[:, :4].T), columns=['A', 'Z', 'Ar', 'Zr'] + cols)
+
+    pmes_marginal_yields = np.vstack(pmes_marginal_yields)
+    pmes_marginal_yields = DataFrame(data=pmes_marginal_yields, index=MultiIndex.from_arrays(pmes_marginal_yields[:, :4].T), columns=['A', 'Z', 'Ar', 'Zr'] + daughter_names + cols)
+
+    # Merging channels with the same heavy product
+    merged_yields = []
+    for col in daughter_names:
+        df_brnch_no_channels = pmes_marginal_yields.drop(columns=daughter_names)
+        df_brnch_no_channels[cols] = df_brnch_no_channels.multiply(pmes_marginal_yields[col].values, axis='index')[cols]
+        merged_yields.append( df_brnch_no_channels )
+        
+    return df_rates_pmes, pmes_branchings, merged_yields
 
 class InteractionCore():
     """Base class to produce interaction matrices
