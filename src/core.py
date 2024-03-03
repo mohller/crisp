@@ -666,7 +666,7 @@ class InteractionCore_CRPropA(InteractionCore):
            - all_rates: the interaction rates including all processes and CMB+EBL
            - all_branches: the marginal interaction rates including all processes and CMB+EBL
         """
-        from pandas import DataFrame, MultiIndex
+        from pandas import DataFrame
         cols = [f'{i}' for i in range(201)]
 
         df_rates_cmb = load_rates(os.path.join(self.data_files['path'], self.data_files['photodisintegration']['rates_cmb']))
@@ -881,7 +881,7 @@ class InteractionCore_CRPropA_pdis(InteractionCore_CRPropA):
         self.marginal_light_yields = all_merged
 
 
-class InteractionCore_UHECR_Source(InteractionCore):
+class InteractionCore_UHECR_Source_old(InteractionCore):
     """Producing interaction matrices from CRPropA interaction files.
     It requires files for photodisintegration and for photomeson.  
     """
@@ -1053,6 +1053,75 @@ class InteractionCore_UHECR_Source(InteractionCore):
         self.nuclei = nuclei
         self.all_rates = all_rates
         self.all_branchings = all_branchings
+
+
+class InteractionCore_UHECR_Source(InteractionCore):
+    """ Producing interaction matrices from CRPropA interaction files.
+        It requires files for photodisintegration and for photomeson.  
+    """
+    
+    def __init__(self, data_directory, target_photon_spectrum):
+        """ Requires a string specifying the directory where CRPropa 
+            cross section files are stored (argument data_directory) 
+        """
+        
+        self._construct_from_files(data_directory, target_photon_spectrum)
+        self._genenerate_complete_matrices()
+
+    def _construct_from_files(self, data_directory, target_photons):
+        """Using CRPROPA cross sections to produce the rates for a source
+        of UHECR with a background photon field as a broken power law.
+
+        CRPropA cross section file contains  is structured in different files depending on the 
+        interaction and the photon field.
+        """
+        from pandas import DataFrame
+        boosts = np.logspace(3, 12, 41)
+        cols = [f'{i}' for i in range(len(boosts))]
+
+        eps_crpropa = np.genfromtxt(data_directory + 'PD_Talys1.8_Khan/eps.txt') / 1e3 # in GeV
+        branchings = np.genfromtxt(data_directory + 'PD_Talys1.8_Khan/xs_pd.txt')
+        df_rates_pdis, df_brnch_pdis, merged_yields_pdis = \
+            generate_photodisinteg_tables_from_cross_sections(eps_crpropa, branchings, target_photons, boosts=boosts)
+        
+        nuclei = [(int(Z), int(A)) for A, Z in df_rates_pdis.index.values]
+
+        xsp = np.genfromtxt(data_directory + 'PPP/xs_proton.txt')
+        xsn = np.genfromtxt(data_directory + 'PPP/xs_neutron.txt')
+        df_rates_pmes, df_brnch_pmes, merged_yields_pmes = \
+            generate_photomeson_tables_from_cross_sections(nuclei, xsp, xsn, target_photons, boosts=boosts)
+
+        df_rates = df_rates_pdis.groupby(by=['A', 'Z']).sum() + df_rates_pmes.groupby(by=['A', 'Z']).sum()
+
+        df_brnch_pdis[cols] = df_brnch_pdis.multiply(df_rates_pdis.reindex(df_brnch_pdis.index, method='ffill'))[cols]
+        merged_pdis = df_brnch_pdis.groupby(by=['Z', 'A', 'Zr', 'Ar']).sum()
+        allmr_pdis = [np.hstack([np.vstack(merged_pdis.loc[nuc].index.values), merged_pdis.loc[nuc][cols].values]) for nuc in nuclei]
+
+        df_brnch_pmes[cols] = df_brnch_pmes.multiply(df_rates_pmes.reindex(df_brnch_pmes.index, method='ffill'))[cols]
+        merged_pmes = df_brnch_pmes.groupby(by=['Z', 'A', 'Zr', 'Ar']).sum()
+        allmr_pmes = [np.hstack([np.vstack(merged_pmes.loc[nuc].index.values), merged_pmes.loc[nuc][cols].values]) for nuc in nuclei]
+
+        all_branchings = []
+        for mr1, mr2 in zip(allmr_pdis, allmr_pmes):
+            all_branchings.append(merge_marginal_rates(mr1, mr2))
+
+        all_merged = []
+        for mypdis, mypmes in zip(merged_yields_pdis, merged_yields_pmes):                    
+            light_yield_pdis = mypdis[cols].multiply(df_rates_pdis.reindex(mypdis[cols].index, method='ffill'))
+            light_yield_pmes = mypmes[cols].multiply(df_rates_pmes.reindex(mypmes[cols].index, method='ffill'))
+
+            merged_cols = light_yield_pdis.add(light_yield_pmes, fill_value=0)[cols]
+            merged = DataFrame(data=np.hstack([np.vstack(merged_cols.index.values), merged_cols.values]), index=merged_cols.index, columns=['A', 'Z', 'Ar', 'Zr'] + cols)
+
+            merged[cols] = merged.divide(df_rates.reindex(merged.index, method='ffill'))[cols]
+            merged = merged.groupby(by=['Z', 'A', 'Zr', 'Ar']).sum()
+            all_merged.append([np.hstack([np.vstack(merged.loc[nuc].index.values), merged.loc[nuc][cols].values]) for nuc in nuclei])
+
+        self.boosts = boosts
+        self.nuclei = nuclei
+        self.all_rates = df_rates.values
+        self.all_branchings = all_branchings
+        self.marginal_light_yields = all_merged
 
 
 class InteractionCore_PSB_CMB(InteractionCore):
