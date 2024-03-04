@@ -1,5 +1,4 @@
-
-from numpy import pi, exp, array, vectorize, logspace, log10, trapz
+from numpy import pi, exp, array, vectorize, logspace, log, log10, trapz
 from scipy.constants import h, c, electron_volt, Boltzmann
 
 
