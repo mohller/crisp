@@ -497,10 +497,9 @@ class InteractionCore():
         if boost_range is None:
             boost_range = self.boosts       
 
-        if mass_range is None:
-            reduced_tensor = self.interpolator(boost_range)
-        else:
-            reduced_tensor = self.interpolator(boost_range)
+        reduced_tensor = self.interpolator(boost_range)
+        
+        if mass_range is not None:
             reduced_tensor = reduced_tensor[np.ix_(mass_range, mass_range, range(len(boost_range)))]
 
         inverse = np.linalg.inv(np.moveaxis(reduced_tensor, -1, 0))
@@ -579,6 +578,7 @@ class InteractionCore():
         self.light_prod_tensor = np.stack(ly_all_mats)
         self.interpolator = interp1d(self.boosts, self.tensor, 'cubic')
         self.interpyields = interp1d(self.boosts, self.light_prod_tensor, 'cubic')
+
 
 class InteractionCore_CRPropA(InteractionCore):
     """Producing interaction matrices from CRPropA interaction files 
