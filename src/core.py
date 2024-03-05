@@ -448,7 +448,7 @@ class InteractionCore():
 
         return self.boosts, total
 
-    def pdf_boost_range(self, L, alpha=None, mass_range=None, omega=None, boost_range=None):
+    def pdf_boost_range(self, L, alpha=None, mass_range=None, omega=None, boost_range=None, true_range=None):
         """Returns the probability density value at positions L for a range of boosts
 
         Arguments:
@@ -463,14 +463,20 @@ class InteractionCore():
         if boost_range is None:
             boost_range = self.boosts       
 
-        if mass_range is None:
-            reduced_tensor = self.interpolator(boost_range)
-        else:
-            reduced_tensor = self.interpolator(boost_range)
-            reduced_tensor = reduced_tensor[np.ix_(mass_range, mass_range, range(len(boost_range)))]
+        reduced_tensor = self.interpolator(boost_range)
         
+        if mass_range is not None:
+            reduced_tensor = reduced_tensor[np.ix_(mass_range, mass_range, range(len(boost_range)))]
+
+        # make diagonal zero
+        reduced_tensor -= np.dstack([np.diag(np.diag(reduced_tensor[:, :, k])) for k in range(reduced_tensor.shape[-1])]) 
+        # recompute diagonal including absorption states
+        reduced_tensor -= np.stack([np.diag(row) for row in reduced_tensor.sum(axis=1).T], axis=2)
+        # reduce excluding absorption states
+        reduced_tensor = reduced_tensor[np.ix_(true_range, true_range, range(len(boost_range)))]
+
         if omega is None:
-            omega = - np.moveaxis(reduced_tensor, -1, 0).dot(np.ones_like(alpha))
+            omega = - np.moveaxis(reduced_tensor, -1, 0).dot(np.ones_like(alpha[true_range]))
 
         if type(L) is np.ndarray:
             expmatL = expm(np.moveaxis(L[:, None, None, None] * reduced_tensor, -1, 0))
@@ -480,9 +486,9 @@ class InteractionCore():
         if alpha.shape == omega.shape:
             total = np.matmul(np.matmul(alpha, expmatL), omega)
         else:
-            total = np.einsum('ijk,ik->ij', np.matmul(alpha, expmatL), omega)
+            total = np.einsum('ijk,ik->ij', np.matmul(alpha[true_range], expmatL), omega)
 
-        return self.boosts, total
+        return boost_range, total
 
     def pdf_moments_boost_range(self, alpha=None, mass_range=None, boost_range=None, degree=1):
         """Returns the moments for a range of boosts
