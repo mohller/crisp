@@ -355,7 +355,7 @@ class InteractionCore():
         """
         pass
 
-    def species_evolution_boost_range(self, L, alpha=None, mass_range=None, boost_range=None):
+    def species_evolution_boost_range(self, L, alpha=None, mass_range=None, boost_range=None, true_range=None):
         """Returns the probabilities of each species at positions L for a range of boosts.
         If the distances are negative and in decreasing order, it's equivalent to back propagation. 
 
@@ -364,24 +364,36 @@ class InteractionCore():
         L : a float or an array of distances at which the pdf will be evaluated
         alpha : injection vector (sum of entries must equal one).
         mass_range : species to be included in the matrix. If None, all species are included.
+        true_range : range of species not part of the absorption range (excluding indices for species that are part of the absorption state)
+                     if none is given, the last species in mass_range is considered the absorption state.
         boost_range : A two element variable with the limits minimum and maximum. The whole range by default (None). 
         """
 
         if boost_range is None:
             boost_range = self.boosts
 
-        if mass_range is None:
-            reduced_tensor = self.interpolator(boost_range)
-        else:
-            reduced_tensor = self.interpolator(boost_range)
+        reduced_tensor = self.interpolator(boost_range)
+
+        if mass_range is not None:
             reduced_tensor = reduced_tensor[np.ix_(mass_range, mass_range, range(len(boost_range)))]
 
-        if type(L) is np.ndarray:
-            expmatL = expm(np.moveaxis(L[:, None, None, None] * reduced_tensor, -1, 0))
-        else:
-            expmatL = expm(np.moveaxis(reduced_tensor * L, -1, 0))
+        # make diagonal zero
+        reduced_tensor -= np.dstack([np.diag(np.diag(reduced_tensor[:, :, k])) for k in range(reduced_tensor.shape[-1])]) 
+        # recompute diagonal including absorption states
+        reduced_tensor -= np.stack([np.diag(row) for row in reduced_tensor.sum(axis=1).T], axis=2)
+        # reduce excluding absorption states
+        reduced_tensor = reduced_tensor[np.ix_(true_range, true_range, range(len(boost_range)))]
 
-        total = np.matmul(alpha, expmatL)
+        _, c, d = reduced_tensor.shape
+        t_vs_boost = np.atleast_3d(reduced_tensor.sum(axis=1))
+        bigLambda = np.append(np.append(reduced_tensor, np.swapaxes(t_vs_boost, 1, 2), axis=1), np.zeros((1, c+1, d)), axis=0)
+
+        if type(L) is np.ndarray:
+            expmatL = expm(np.moveaxis(L[:, None, None, None] * bigLambda, -1, 0))
+        else:
+            expmatL = expm(np.moveaxis(bigLambda * L, -1, 0))
+
+        total = np.matmul(np.append(alpha[true_range], 0), expmatL)
 
         return total
     
@@ -457,6 +469,8 @@ class InteractionCore():
         alpha : injection vector (sum of entries must equal one).
         mass_range : species to be included in the matrix. If None, all species are included.
         omega : ending or production vector. By default is set to omega=-Te
+        true_range : range of species not part of the absorption range (excluding indices for species that are part of the absorption state)
+                     if none is given, the last species in mass_range is considered the absorption state.
         boost_range : A two element variable with the limits minimum and maximum. The whole range by default (None). 
         """
 
