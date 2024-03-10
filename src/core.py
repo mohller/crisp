@@ -397,7 +397,7 @@ class InteractionCore():
 
         return total
     
-    def light_secondaries_production(self, L, alpha=None, mass_range=None, boost_range=None):
+    def light_secondaries_production(self, L, alpha=None, mass_range=None, boost_range=None, true_range=None):
         """Returns the production of each light species at positions L for a range of boosts.
 
         Arguments:
@@ -407,7 +407,6 @@ class InteractionCore():
         mass_range : species to be included in the matrix. If None, all species are included.
         boost_range : A two element variable with the limits minimum and maximum. The whole range by default (None). 
         """
-
         if boost_range is None:
             boost_range = self.boosts
 
@@ -417,16 +416,30 @@ class InteractionCore():
         if mass_range is not None:
             reduced_tensor = reduced_tensor[np.ix_(mass_range, mass_range, range(len(boost_range)))]
             prod_mat = prod_mat[np.ix_(range(prod_mat.shape[0]), mass_range, mass_range, range(len(boost_range)))]
+
+        # make diagonal zero
+        reduced_tensor -= np.dstack([np.diag(np.diag(reduced_tensor[:, :, k])) for k in range(reduced_tensor.shape[-1])]) 
+        # recompute diagonal including absorption states
+        reduced_tensor -= np.stack([np.diag(row) for row in reduced_tensor.sum(axis=1).T], axis=2)
+
+        # Compute production
+        LamYp = prod_mat * reduced_tensor[None, :, :, :] # production rate matrix, independent of distance
+
+        # reduce excluding absorption states
+        LamYp = LamYp[np.ix_(range(6), true_range, true_range, range(len(boost_range)))]
+
+        d1, _, d3, d4 = LamYp.shape
+        t_vs_boost = np.atleast_3d(LamYp.sum(axis=2))
+        bigLamYp = np.append(np.append(np.moveaxis(LamYp, -1, 1), np.expand_dims(np.swapaxes(t_vs_boost, 1, 2), axis=3), axis=3), 
+                             np.zeros((d1, d4, 1, d3+1)), axis=2)
+
+        P = self.species_evolution_boost_range(L, alpha, mass_range, boost_range, true_range)
         
-        P = self.species_evolution_boost_range(L, alpha, mass_range, boost_range)
-
-        LamYp = prod_mat * reduced_tensor # production rate matrix, independent of distance
-
-        production = np.sum(np.einsum('lmi, kijl -> klmj', P, LamYp), axis=3)
+        production = np.sum(np.einsum('lmi, klij -> klmj', P, bigLamYp), axis=3)
 
         return production
 
-    def cdf_boost_range(self, L, alpha=None, mass_range=None, boost_range=None):
+    def cdf_boost_range(self, L, alpha=None, mass_range=None, boost_range=None, true_range=None):
         """Returns the probability (cumulative) distribution values at positions L for a range of boosts
 
         Arguments:
@@ -504,13 +517,15 @@ class InteractionCore():
 
         return boost_range, total
 
-    def pdf_moments_boost_range(self, alpha=None, mass_range=None, boost_range=None, degree=1):
+    def pdf_moments_boost_range(self, alpha=None, mass_range=None, boost_range=None, degree=1, true_range=None):
         """Returns the moments for a range of boosts
 
         Arguments:
         ----------
         alpha : injection vector (sum of entries must equal one).
         mass_range : species to be included in the matrix. If None, all species are included.
+        true_range : range of species not part of the absorption range (excluding indices for species that are part of the absorption state)
+                     if none is given, the last species in mass_range is considered the absorption state.
         boost_range : A two element variable with the limits minimum and maximum. The whole range by default (None). 
         """
 
@@ -521,6 +536,13 @@ class InteractionCore():
         
         if mass_range is not None:
             reduced_tensor = reduced_tensor[np.ix_(mass_range, mass_range, range(len(boost_range)))]
+
+        # make diagonal zero
+        reduced_tensor -= np.dstack([np.diag(np.diag(reduced_tensor[:, :, k])) for k in range(reduced_tensor.shape[-1])]) 
+        # recompute diagonal including absorption states
+        reduced_tensor -= np.stack([np.diag(row) for row in reduced_tensor.sum(axis=1).T], axis=2)
+        # reduce excluding absorption states
+        reduced_tensor = reduced_tensor[np.ix_(true_range, true_range, range(len(boost_range)))]
 
         inverse = np.linalg.inv(np.moveaxis(reduced_tensor, -1, 0))
         inverse_power = inverse**degree
