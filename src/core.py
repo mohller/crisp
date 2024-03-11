@@ -621,6 +621,52 @@ class InteractionCore():
         self.interpolator = interp1d(self.boosts, self.tensor, 'cubic')
         self.interpyields = interp1d(self.boosts, self.light_prod_tensor, 'cubic')
 
+    def get_distribution_parameters(self, mass_lims=(56, 11), injection_type=('only species', (26, 56)), absorption_type=('only mass', [54])):
+        """Produces the injection vector and mass_range required to
+        produce the distribution of nuclei starting from a certain mass
+        and producing mass lower than a minimum given value.
+
+        Arguments:
+        ----------
+        species : The list of species (Z, A) that are included in the full nuclear cascade.
+        mass_lims : a tuple (Amax, Amin) with the starting mass and the lower limit for mass
+        injection type : (type, params) (str, dict) info specifying the injection. Possible values
+                    - 'flat' : equal injection of all species included within the mass range mass_lims
+                    - 'only mass' : equal injection of all species specified by a mass value in a list
+                    - 'only species' : equal injection of all species specified as (Z, A)
+        """
+        Amax, Amin = mass_lims
+        
+        mass_range = np.array([k for k, spec in enumerate(self.species) if Amax >= spec[1] > Amin])
+        alpha = np.ones(len(self.species))[mass_range]
+
+        itype, iparams = injection_type
+        atype, aparams = absorption_type
+
+        if itype == 'flat':
+            alpha /= sum(alpha)
+        elif itype == 'only mass':
+            masses = iparams
+            indices = np.array([k for k, idx in enumerate(mass_range) if self.species[idx][1] not in masses])
+            alpha[indices] = 0
+            alpha /= sum(alpha)
+        elif itype == 'only species':
+            species = iparams
+            indices = np.array([k for k, idx in enumerate(mass_range) if self.species[idx] != species])
+            alpha[indices] = 0
+            alpha /= sum(alpha)
+
+        if atype == 'flat':
+            arange = np.array([k for k, idx in enumerate(mass_range) if self.species[idx][1] in range(*mass_range)])
+        elif atype == 'only mass':
+            masses = aparams
+            arange = np.array([k for k, idx in enumerate(mass_range) if self.species[idx][1] in masses])
+        elif atype == 'only species':
+            species = aparams
+            arange = np.array([k for k, idx in enumerate(mass_range) if self.species[idx] != species])
+
+        return alpha, mass_range, arange
+
 
 class InteractionCore_CRPropA(InteractionCore):
     """Producing interaction matrices from CRPropA interaction files 
