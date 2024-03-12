@@ -634,6 +634,10 @@ class InteractionCore():
                     - 'flat' : equal injection of all species included within the mass range mass_lims
                     - 'only mass' : equal injection of all species specified by a mass value in a list
                     - 'only species' : equal injection of all species specified as (Z, A)
+        absorption type : (type, params) (str, dict) info specifying the absorbing state. Possible values
+                    - 'only mass' : equal injection of all species specified by a mass value in a list
+                    - 'only species' : equal injection of all species specified as (Z, A)
+            
         """
         Amax, Amin = mass_lims
         
@@ -656,16 +660,16 @@ class InteractionCore():
             alpha[indices] = 0
             alpha /= sum(alpha)
 
-        if atype == 'flat':
-            arange = np.array([k for k, idx in enumerate(mass_range) if self.species[idx][1] in range(*mass_range)])
-        elif atype == 'only mass':
+        if atype == 'only mass':
             masses = aparams
             arange = np.array([k for k, idx in enumerate(mass_range) if self.species[idx][1] in masses])
         elif atype == 'only species':
             species = aparams
             arange = np.array([k for k, idx in enumerate(mass_range) if self.species[idx] != species])
+        
+        true_range = [k for k in mass_range if k not in arange]
 
-        return alpha, mass_range, arange
+        return alpha, mass_range, arange, true_range
 
 
 class InteractionCore_CRPropA(InteractionCore):
