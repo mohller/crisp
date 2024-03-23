@@ -4,8 +4,15 @@
 import os
 import numpy as np
 from scipy.linalg import expm
+import interaction_rates as ir
 from scipy.interpolate import interp1d
 from UHECR_statistics import prepare_species_list
+from astropy import units as u
+from astropy.constants import c, m_p, m_n
+c_in_Mpc_sec = c.to('Mpc/s').value
+mp_in_GeV = (m_p * c**2).to('GeV')
+mn_in_GeV = (m_n * c**2).to('GeV')
+mb_to_cm2 = u.mbarn.to('cm^2')
 
 def merge_marginal_rates(mrates1, mrates2):
     """Joining rates for different species
@@ -228,10 +235,6 @@ def generate_photodisinteg_tables_from_cross_sections(cs_egrid, cs_array, target
         The cross sections should be in milibarn
     """
     from pandas import DataFrame, MultiIndex
-    import interaction_rates as ir
-    from astropy.constants import c
-    c_in_Mpc_sec = c.to('Mpc/s').value
-    mb_to_cm2 = 1e-27
     
     # He4, He3, H3, H2, p, n
     daughter_names = ['a', 'he3', 't', 'd', 'p', 'n']
@@ -280,10 +283,6 @@ def generate_photomeson_tables_from_cross_sections(nuclei, xsp, xsn, target_phot
         The cross sections should be in milibarn
     """
     from pandas import DataFrame, MultiIndex
-    import interaction_rates as ir
-    from astropy.constants import c
-    c_in_Mpc_sec = c.to('Mpc/s').value
-    mb_to_cm2 = 1e-27
     
     # He4, He3, H3, H2, p, n
     daughter_names = ['a', 'he3', 't', 'd', 'p', 'n']
@@ -1034,10 +1033,6 @@ class InteractionCore_UHECR_Source_old(InteractionCore):
         the remaining columns contain the cross section in mb for the channel as a function 
         of energy.
         """
-        import interaction_rates as ir
-        from astropy.constants import c
-        c_in_Mpc_sec = c.to('Mpc/s').value
-        mb_to_cm2 = 1e-27
 
         boosts = np.logspace(-1, 12)
 
@@ -1130,9 +1125,6 @@ class InteractionCore_UHECR_Source_old(InteractionCore):
         CRPropA cross section file contains  is structured in different files depending on the 
         interaction and the photon field.
         """
-        import interaction_rates as ir
-        from astropy.constants import c
-        c_in_Mpc_sec = c.to('Mpc/s').value
 
         boosts = np.logspace(-1, 12)
         e_pmes = np.logspace(-1, 4, 100)  # in GeV
