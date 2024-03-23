@@ -932,6 +932,40 @@ class InteractionCore_CRPropA_CMB_pdis(InteractionCore_CRPropA):
         self.marginal_light_yields = all_merged
 
 
+class InteractionCore_CRPropA_IRB_pdis(InteractionCore_CRPropA):
+    def _construct_from_files(self):
+        """CRPropA data is structured in different files depending on the 
+        interaction and the photon field.
+        """
+        cols = [f'{i}' for i in range(201)]
+
+        df_rates_ebl = load_rates(os.path.join(self.data_files['path'], self.data_files['photodisintegration']['rates_ebl']))
+        df_brnch_ebl, merged_yields_ebl = load_branchings(os.path.join(self.data_files['path'], self.data_files['photodisintegration']['branchings_ebl']))
+
+        df_rates = df_rates_ebl.groupby(by=['A', 'Z']).sum()
+        nuclei = [(z, a) for a, z in df_rates.index.values]
+
+        df_brnch_ebl[cols] = df_brnch_ebl.multiply(df_rates_ebl.reindex(df_brnch_ebl.index, method='ffill'))[cols]
+        merged_ebl = df_brnch_ebl.groupby(by=['Z', 'A', 'Zr', 'Ar']).sum()
+        allmr_ebl = [np.hstack([np.vstack(merged_ebl.loc[nuc].index.values), merged_ebl.loc[nuc][cols].values]) for nuc in nuclei]
+
+        all_merged = []
+        for myebl in merged_yields_ebl:
+            merged = myebl.copy()
+                    
+            light_yield_ebl = myebl[cols].multiply(df_rates_ebl.reindex(myebl[cols].index, method='ffill'))
+            merged[cols] = light_yield_ebl[cols]
+            merged[cols] = merged.divide(df_rates.reindex(merged.index, method='ffill'))[cols]
+            merged = merged.groupby(by=['Z', 'A', 'Zr', 'Ar']).sum()
+            all_merged.append([np.hstack([np.vstack(merged.loc[nuc].index.values), merged.loc[nuc][cols].values]) for nuc in nuclei])
+    
+        self.boosts = np.logspace(6, 14, 201)
+        self.nuclei = nuclei
+        self.all_rates = df_rates.values
+        self.all_branchings = allmr_ebl
+        self.marginal_light_yields = all_merged
+
+
 class InteractionCore_CRPropA_pdis(InteractionCore_CRPropA):
     def _construct_from_files(self):
         """CRPropA data is structured in different files depending on the 
