@@ -703,15 +703,21 @@ class InteractionCore_CRPropA(InteractionCore):
         """
         from pandas import DataFrame, MultiIndex
         
-        pp_rates = np.genfromtxt(os.path.join(self.data_files['path'], self.data_files['photopionproduction']['rates_cmb']))
-        pprates = np.zeros((len(nuclei), 201))
         boosts = np.logspace(6, 14, 201)
         cols = [f'{i}' for i in range(201)]
         daughter_names = ['a', 'he3', 't', 'd', 'p', 'n']
+        pp_rates = np.genfromtxt(os.path.join(self.data_files['path'], self.data_files['photopionproduction']['rates_cmb']))
 
-        for k in range(pprates.shape[0]):
-            Z, A = nuclei[k]
-            pprates[k] = np.interp(boosts, 1./A * 10**pp_rates[:, 0], Z*pp_rates[:, 1] + (A-Z)*pp_rates[:, 2])
+        prates = np.interp(boosts, 10**pp_rates[:, 0], pp_rates[:, 1])
+        nrates = np.interp(boosts, 10**pp_rates[:, 0], pp_rates[:, 2])
+
+        zvals, avals = np.array([z for z, _ in nuclei]), np.array([a for _, a in nuclei])
+
+        Z = np.repeat(np.atleast_2d(zvals).T, len(boosts), axis=1)
+        A = np.repeat(np.atleast_2d(avals).T, len(boosts), axis=1)
+        N = A - Z
+
+        pprates = Z * prates + N * nrates
 
         df_rates_pmes = DataFrame(data=np.hstack([nuclei, pprates]), index=MultiIndex.from_arrays(np.array(nuclei).T), columns=['Z', 'A'] + cols)
 
@@ -721,12 +727,12 @@ class InteractionCore_CRPropA(InteractionCore):
             remnants = [(Z, A-1), (Z-1, A-1)]
             for br, (Zrem, Arem) in zip([(1-Z/A), Z/A], remnants):
                 if (Zrem, Arem) in nuclei:
-                    pmes_branchings.append(np.hstack([A, Z, Arem, Zrem, br * pprates[idx]]))
+                    pmes_branchings.append(np.hstack([A, Z, Arem, Zrem, br * np.ones(201)]))
                     pmes_marginal_yields.append(np.hstack([A, Z, Arem, Zrem, 0, 0, 0, 0, Z-Zrem, A-Arem-Z+Zrem, br * np.ones(201)]))
 
             if not np.all([rem in nuclei for rem in remnants]):
                 if np.any([rem in nuclei for rem in remnants]):
-                    pmes_branchings[-1][4:] = pprates[idx]
+                    pmes_branchings[-1][4:] = np.ones(201)
                     pmes_marginal_yields[-1][10:] = np.ones(201)
                 else:
                     # No remnant in nuclei, add dummy channel with zeros
