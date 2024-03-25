@@ -648,35 +648,33 @@ class InteractionCore():
         """
         Amax, Amin = mass_lims
         
-        mass_range = np.array([k for k, spec in enumerate(self.species) if Amax >= spec[1] > Amin])
+        mass_range = [k for k, spec in enumerate(self.species) if Amax >= spec[1] > Amin]
         alpha = np.ones(len(self.species))[mass_range]
 
         itype, iparams = injection_type
         atype, aparams = absorption_type
 
-        if itype == 'flat':
-            alpha /= sum(alpha)
-        elif itype == 'only mass':
+        if itype == 'only mass':
             masses = iparams
-            indices = np.array([k for k, idx in enumerate(mass_range) if self.species[idx][1] not in masses])
+            indices = [k for k, idx in enumerate(mass_range) if self.species[idx][1] not in masses]
             alpha[indices] = 0
-            alpha /= sum(alpha)
         elif itype == 'only species':
             species = iparams
-            indices = np.array([k for k, idx in enumerate(mass_range) if self.species[idx] != species])
+            indices = [k for k, idx in enumerate(mass_range) if self.species[idx] != species]
             alpha[indices] = 0
-            alpha /= sum(alpha)
+        # renormalize injection vector
+        alpha /= sum(alpha)
 
         if atype == 'only mass':
             masses = aparams
-            arange = np.array([k for k, idx in enumerate(mass_range) if self.species[idx][1] in masses])
+            arange = [k for k, idx in enumerate(mass_range) if self.species[idx][1] not in masses]
         elif atype == 'only species':
             species = aparams
-            arange = np.array([k for k, idx in enumerate(mass_range) if self.species[idx] != species])
+            arange = [k for k, idx in enumerate(mass_range) if self.species[idx] != species]
         
-        true_range = [k for k in mass_range if k not in arange]
+        true_range = [idx for k, idx in enumerate(mass_range) if k in arange]
 
-        return alpha, mass_range, arange, true_range
+        return alpha, mass_range, true_range
 
 
 class InteractionCore_CRPropA(InteractionCore):
