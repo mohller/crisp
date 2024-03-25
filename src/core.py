@@ -452,13 +452,20 @@ class InteractionCore():
         if boost_range is None:
             boost_range = self.boosts       
 
-        if mass_range is None:
-            reduced_tensor = self.interpolator(boost_range)
-        else:
-            reduced_tensor = self.interpolator(boost_range)
+        reduced_tensor = self.interpolator(boost_range)
+
+        if mass_range is not None:
             reduced_tensor = reduced_tensor[np.ix_(mass_range, mass_range, range(len(boost_range)))]
         
-        ones = np.ones_like(- np.moveaxis(reduced_tensor, -1, 0).dot(np.ones_like(alpha)))
+        # make diagonal zero
+        reduced_tensor -= np.dstack([np.diag(np.diag(reduced_tensor[:, :, k])) for k in range(reduced_tensor.shape[-1])]) 
+        # recompute diagonal including absorption states
+        reduced_tensor -= np.stack([np.diag(row) for row in reduced_tensor.sum(axis=1).T], axis=2)
+        # reduce excluding absorption states
+        indices = [mass_range.index(ival) for ival in true_range]
+        reduced_tensor = reduced_tensor[np.ix_(indices, indices, range(len(boost_range)))]
+
+        ones = np.ones_like(-np.moveaxis(reduced_tensor, -1, 0).dot(np.ones_like(alpha[indices])))
 
         if type(L) is np.ndarray:
             expmatL = expm(np.moveaxis(L[:, None, None, None] * reduced_tensor, -1, 0))
@@ -466,9 +473,9 @@ class InteractionCore():
             expmatL = expm(np.moveaxis(reduced_tensor * L, -1, 0))
 
         if alpha.shape == ones.shape:
-            total = 1 - np.matmul(np.matmul(alpha, expmatL), ones)
+            total = 1 - np.matmul(np.matmul(alpha[indices], expmatL), ones)
         else:
-            total = 1 - np.einsum('ijk,ik->ij', np.matmul(alpha, expmatL), ones)
+            total = 1 - np.einsum('ijk,ik->ij', np.matmul(alpha[indices], expmatL), ones)
 
         return self.boosts, total
 
@@ -499,10 +506,11 @@ class InteractionCore():
         # recompute diagonal including absorption states
         reduced_tensor -= np.stack([np.diag(row) for row in reduced_tensor.sum(axis=1).T], axis=2)
         # reduce excluding absorption states
-        reduced_tensor = reduced_tensor[np.ix_(true_range, true_range, range(len(boost_range)))]
+        indices = [mass_range.index(ival) for ival in true_range]
+        reduced_tensor = reduced_tensor[np.ix_(indices, indices, range(len(boost_range)))]
 
         if omega is None:
-            omega = - np.moveaxis(reduced_tensor, -1, 0).dot(np.ones_like(alpha[true_range]))
+            omega = - np.moveaxis(reduced_tensor, -1, 0).dot(np.ones_like(alpha[indices]))
 
         if type(L) is np.ndarray:
             expmatL = expm(np.moveaxis(L[:, None, None, None] * reduced_tensor, -1, 0))
@@ -510,9 +518,9 @@ class InteractionCore():
             expmatL = expm(np.moveaxis(reduced_tensor * L, -1, 0))
 
         if alpha.shape == omega.shape:
-            total = np.matmul(np.matmul(alpha, expmatL), omega)
+            total = np.matmul(np.matmul(alpha[indices], expmatL), omega)
         else:
-            total = np.einsum('ijk,ik->ij', np.matmul(alpha[true_range], expmatL), omega)
+            total = np.einsum('ijk,ik->ij', np.matmul(alpha[indices], expmatL), omega)
 
         return boost_range, total
 
