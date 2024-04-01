@@ -549,12 +549,13 @@ class InteractionCore():
         # recompute diagonal including absorption states
         reduced_tensor -= np.stack([np.diag(row) for row in reduced_tensor.sum(axis=1).T], axis=2)
         # reduce excluding absorption states
-        reduced_tensor = reduced_tensor[np.ix_(true_range, true_range, range(len(boost_range)))]
+        indices = [mass_range.index(ival) for ival in true_range]
+        reduced_tensor = reduced_tensor[np.ix_(indices, indices, range(len(boost_range)))]
 
         inverse = np.linalg.inv(np.moveaxis(reduced_tensor, -1, 0))
         inverse_power = inverse**degree
 
-        moment = np.math.factorial(degree) * (-1)**degree * np.matmul(np.matmul(alpha, inverse_power), np.ones_like(alpha))
+        moment = np.math.factorial(degree) * (-1)**degree * np.matmul(np.matmul(alpha[indices], inverse_power), np.ones_like(alpha[indices]))
 
         return moment
     
