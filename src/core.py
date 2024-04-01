@@ -524,7 +524,7 @@ class InteractionCore():
 
         return boost_range, total
 
-    def pdf_moments_boost_range(self, alpha=None, mass_range=None, boost_range=None, degree=1, true_range=None):
+    def pdf_moments_boost_range(self, alpha=None, mass_range=None, boost_range=None, true_range=None, degree=1):
         """Returns the moments for a range of boosts
 
         Arguments:
@@ -534,6 +534,7 @@ class InteractionCore():
         true_range : range of species not part of the absorption range (excluding indices for species that are part of the absorption state)
                      if none is given, the last species in mass_range is considered the absorption state.
         boost_range : A two element variable with the limits minimum and maximum. The whole range by default (None). 
+        degree : the order of the moment n as in  mu_n = E[X^n]
         """
 
         if boost_range is None:
@@ -559,7 +560,7 @@ class InteractionCore():
 
         return moment
     
-    def pdf_variance_boost_range(self, alpha=None, mass_range=None, boost_range=None):
+    def pdf_variance_boost_range(self, alpha=None, mass_range=None, boost_range=None, true_range=None):
         """Returns the variance for a range of boosts
 
         Arguments:
@@ -567,21 +568,30 @@ class InteractionCore():
         alpha : injection vector (sum of entries must equal one).
         mass_range : species to be included in the matrix. If None, all species are included.
         boost_range : A two element variable with the limits minimum and maximum. The whole range by default (None). 
+        true_range : range of species not part of the absorption range (excluding indices for species that are part of the absorption state)
+                     if none is given, the last species in mass_range is considered the absorption state.
         """
 
         if boost_range is None:
             boost_range = self.boosts       
 
-        if mass_range is None:
-            reduced_tensor = self.interpolator(boost_range)
-        else:
-            reduced_tensor = self.interpolator(boost_range)
+        reduced_tensor = self.interpolator(boost_range)
+        
+        if mass_range is not None:
             reduced_tensor = reduced_tensor[np.ix_(mass_range, mass_range, range(len(boost_range)))]
+
+        # make diagonal zero
+        reduced_tensor -= np.dstack([np.diag(np.diag(reduced_tensor[:, :, k])) for k in range(reduced_tensor.shape[-1])]) 
+        # recompute diagonal including absorption states
+        reduced_tensor -= np.stack([np.diag(row) for row in reduced_tensor.sum(axis=1).T], axis=2)
+        # reduce excluding absorption states
+        indices = [mass_range.index(ival) for ival in true_range]
+        reduced_tensor = reduced_tensor[np.ix_(indices, indices, range(len(boost_range)))]
 
         inverse = np.linalg.inv(np.moveaxis(reduced_tensor, -1, 0))
 
-        momentum1 = -np.matmul(np.matmul(alpha, inverse), np.ones_like(alpha))
-        momentum2 = np.matmul(np.matmul(alpha, inverse**2), np.ones_like(alpha))
+        momentum1 = -np.matmul(np.matmul(alpha[indices], inverse), np.ones_like(alpha[indices]))
+        momentum2 = np.matmul(np.matmul(alpha[indices], inverse**2), np.ones_like(alpha[indices]))
         
         return 2*momentum2 - momentum1**2 
 
