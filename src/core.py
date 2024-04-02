@@ -381,7 +381,8 @@ class InteractionCore():
         # recompute diagonal including absorption states
         reduced_tensor -= np.stack([np.diag(row) for row in reduced_tensor.sum(axis=1).T], axis=2)
         # reduce excluding absorption states
-        reduced_tensor = reduced_tensor[np.ix_(true_range, true_range, range(len(boost_range)))]
+        indices = [mass_range.index(ival) for ival in true_range]
+        reduced_tensor = reduced_tensor[np.ix_(indices, indices, range(len(boost_range)))]
 
         _, c, d = reduced_tensor.shape
         t_vs_boost = np.atleast_3d(reduced_tensor.sum(axis=1))
@@ -392,7 +393,7 @@ class InteractionCore():
         else:
             expmatL = expm(np.moveaxis(bigLambda * L, -1, 0))
 
-        total = np.matmul(np.append(alpha[true_range], 0), expmatL)
+        total = np.matmul(np.append(alpha[indices], 0), expmatL)
 
         return total
     
