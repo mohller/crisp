@@ -602,15 +602,14 @@ class InteractionCore():
         Zmax, Amax = self.nuclei[-1]  # largest species
 
         species = prepare_species_list(self.nuclei, Zmax, Amax, Amax-1)
-        self.species = species
+        self.species = species + [(0, 1), (1, 1)]
 
         # generate interaction tensor by slices
-        tensor = np.zeros((len(species)+2, len(species)+2, len(self.boosts)))
+        tensor = np.zeros((len(self.species), len(self.species), len(self.boosts)))
         for i, nuc_branches in enumerate(self.all_branchings[::-1]):
             for branch in nuc_branches:
                 try:
-                    j = (self.species + [(1, 1), (0, 1)]).index(tuple(branch[:2]))
-                    # j = (ic1.species).index(tuple(branch[:2]))
+                    j = self.species.index(tuple(branch[:2]))
                     tensor[i, j, :] = branch[2:]
                 except:
                     print('problem with product', branch[:2], 'of nucleus', self.species[i])
@@ -621,11 +620,11 @@ class InteractionCore():
         # generate light production tensors by slices
         ly_all_mats = []
         for light_yield in self.marginal_light_yields:
-            ly_matrices = np.zeros((len(species)+2, len(species)+2, len(self.boosts)))
+            ly_matrices = np.zeros((len(self.species), len(self.species), len(self.boosts)))
             for i, nuc_branches in enumerate(light_yield[::-1]):
                 for branch in nuc_branches:
                     try:
-                        j = (self.species + [(1, 1), (0, 1)]).index(tuple(branch[:2]))
+                        j = self.species.index(tuple(branch[:2]))                        
                         ly_matrices[i, j, :] = branch[2:]
                     except:
                         print('problem with product', branch[:2], 'of nucleus', self.species[i])
