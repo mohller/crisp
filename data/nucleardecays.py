@@ -1,3 +1,5 @@
+from numpy import nan, inf, logical_and
+import re
 import pandas as pnd
 import sys
 sys.path.append('./')
@@ -100,3 +102,100 @@ def nuclear_data_parser(filename=None):
     table['half_life_units'] = pnd.to_numeric(table['half_life_units'], errors='coerce')
 
     return table
+
+class NuclearDataTable():
+    def __init__(self, filename=None):
+        self.table = nuclear_data_parser(filename)
+
+    def get_no_isomers_table(self):
+        """Returns the table excluding the isomer states
+        """
+        noW_table = self.table[self.table['isomer_id'].apply(lambda v: 'W' not in v)]
+        table_no_isom = noW_table[noW_table['Z'] * 10 == noW_table['isomer_id'].apply(int)]
+
+        return table_no_isom
+
+    def prepare_decay_table(self):
+        """Based on the output of nuclear_data_parser returns
+        a table containing the children and branching ratio per
+        decay channel for a range of nuclei. 
+        IMP!!! Only up to A=56 due to remaining parsing errors!
+        """
+        table = self.get_no_isomers_table()
+        unstable = table[logical_and(table['half_life'] < inf, table['A'] <= 56)]
+
+        expression = r'\s*(?P<decays>[\+\-A-Za-z\d]+)[=<>~\sLE]+(?P<value>[\.\d\?#\s\+\-eE]+[\(\)\[\]\w,\d=egsm\.]*);*'
+        # TODO: the reggex above still fails for one or two cases with ',e+' in the string
+        reg = re.compile(expression)
+
+        decay_dict = {}
+        for Z, A, lab in unstable[['Z', 'A', 'decays']].values:
+            if (lab is not nan) and reg.findall(lab):
+                decay_list = [val for val in reg.split(lab) if val]
+                decay_dict[A*100 + Z] = dict([(dec, val) for dec, val in zip(decay_list[::2], decay_list[1::2])])
+
+        regvals = r'[\d.e\+\-]+|[\d.e\+\-]+\s[\d.]+|\?' # expression to capture possible branching values
+        regdecs = re.compile(r'(?P<num>\d*)(?P<decay>p|e\+|n|d|t|A|EC|B[\+\-])') # expression to capture decays
+
+        nucid = {
+            'p'  : 101,
+            'n'  : 100,
+            'd'  : 201,
+            't'  : 301,
+            'A'  : 402,
+            'e+' : 1,
+            'EC' : 1,
+            'B+' : 1,
+            'B-' : -1,
+        }
+        
+        new_decay_dict = {}
+        for key, decays in decay_dict.items():
+            channels = []
+            for dlab, val in decays.items():
+                daughters = []
+                for n, p in regdecs.findall(dlab):
+                    if n:
+                        daughters += int(n) * [nucid[p],]
+                    else:
+                        daughters.append(nucid[p])
+                
+                if daughters == []:
+                    continue
+                    print('Error empty daughters!! regex failed on string:', dlab)
+
+                first_val = re.compile(regvals).findall(val)[0]
+                if first_val != '?':
+                    first_val = float(first_val) / 100
+                else:
+                    first_val = 1.
+
+                channel = [first_val, ] + daughters
+                channels.append(channel)
+            
+            new_decay_dict[key] = channels
+
+        # Removing repeating beta decays 
+        corrected = {}
+        for nuc, chans in new_decay_dict.items():
+            if chans[0][1] in [1, -1]:
+                indices = [idx for idx, chan in enumerate(chans) if chans[0][1] in chan]
+
+                if len(indices) == 1:
+                    continue
+    
+                tot = sum([chans[idx][0] for idx in indices])
+
+                for idx in indices:
+                    chans[idx][0] /= tot 
+
+            corrected[nuc] = chans
+
+        # correcting decays with incorrect branching sum
+        for nuc in [601, 4526, 4828, 5430]:
+            tot = sum([chan[0] for chan in corrected[nuc]])
+            
+            for idx, _ in enumerate(corrected[nuc]):
+                corrected[nuc][idx][0] /= tot
+
+        return corrected
