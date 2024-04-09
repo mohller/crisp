@@ -1,4 +1,4 @@
-from numpy import nan, inf, logical_and
+from numpy import nan, inf, isclose, logical_and
 import re
 import pandas as pnd
 import sys
@@ -129,10 +129,12 @@ class NuclearDataTable():
         reg = re.compile(expression)
 
         decay_dict = {}
-        for Z, A, lab in unstable[['Z', 'A', 'decays']].values:
+        for Z, A, lab, tau, units in unstable[['Z', 'A', 'decays', 'half_life', 'half_life_units']].values:
             if (lab is not nan) and reg.findall(lab):
+                decay_dict[A*100 + Z] = {}
+                decay_dict[A*100 + Z]['decay_time'] = tau * units # seconds
                 decay_list = [val for val in reg.split(lab) if val]
-                decay_dict[A*100 + Z] = dict([(dec, val) for dec, val in zip(decay_list[::2], decay_list[1::2])])
+                decay_dict[A*100 + Z]['channels'] = dict([(dec, val) for dec, val in zip(decay_list[::2], decay_list[1::2])])
 
         regvals = r'[\d.e\+\-]+|[\d.e\+\-]+\s[\d.]+|\?' # expression to capture possible branching values
         regdecs = re.compile(r'(?P<num>\d*)(?P<decay>p|e\+|n|d|t|A|EC|B[\+\-])') # expression to capture decays
@@ -150,9 +152,10 @@ class NuclearDataTable():
         }
         
         new_decay_dict = {}
-        for key, decays in decay_dict.items():
+        for key, decaydata in decay_dict.items():
+            new_decay_dict[key] = decaydata
             channels = []
-            for dlab, val in decays.items():
+            for dlab, val in decaydata['channels'].items():
                 daughters = []
                 for n, p in regdecs.findall(dlab):
                     if n:
@@ -173,11 +176,14 @@ class NuclearDataTable():
                 channel = [first_val, ] + daughters
                 channels.append(channel)
             
-            new_decay_dict[key] = channels
+            new_decay_dict[key]['channels'] = channels
 
         # Removing repeating beta decays 
         corrected = {}
-        for nuc, chans in new_decay_dict.items():
+        for nuc, decaydata in new_decay_dict.items():
+            chans = decaydata['channels']
+            corrected[nuc] = decaydata
+
             if chans[0][1] in [1, -1]:
                 indices = [idx for idx, chan in enumerate(chans) if chans[0][1] in chan]
 
@@ -189,13 +195,19 @@ class NuclearDataTable():
                 for idx in indices:
                     chans[idx][0] /= tot 
 
-            corrected[nuc] = chans
+            corrected[nuc]['channels'] = chans
 
         # correcting decays with incorrect branching sum
         for nuc in [601, 4526, 4828, 5430]:
-            tot = sum([chan[0] for chan in corrected[nuc]])
+            tot = sum([chan[0] for chan in corrected[nuc]['channels']])
             
-            for idx, _ in enumerate(corrected[nuc]):
-                corrected[nuc][idx][0] /= tot
+            for idx, _ in enumerate(corrected[nuc]['channels']):
+                corrected[nuc]['channels'][idx][0] /= tot
+
+        # crosschecking that branchings add up to unity
+        for key, decaydata in corrected.items():
+            chans = decaydata['channels']
+            if not isclose(sum([ch[0] for ch in chans]), 1):
+                print('!!! Problem found in branching:', key, chans, sum([ch[0] for ch in chans]))
 
         return corrected
