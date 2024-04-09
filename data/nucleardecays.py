@@ -1,4 +1,4 @@
-from numpy import nan, inf, isclose, logical_and
+from numpy import nan, inf, log, isclose, logical_and
 import re
 import pandas as pnd
 import sys
@@ -132,7 +132,7 @@ class NuclearDataTable():
         for Z, A, lab, tau, units in unstable[['Z', 'A', 'decays', 'half_life', 'half_life_units']].values:
             if (lab is not nan) and reg.findall(lab):
                 decay_dict[A*100 + Z] = {}
-                decay_dict[A*100 + Z]['decay_time'] = tau * units / np.log(2) # decay time seconds
+                decay_dict[A*100 + Z]['decay_time'] = tau * units / log(2) # decay time seconds
                 decay_list = [val for val in reg.split(lab) if val]
                 decay_dict[A*100 + Z]['channels'] = dict([(dec, val) for dec, val in zip(decay_list[::2], decay_list[1::2])])
 
