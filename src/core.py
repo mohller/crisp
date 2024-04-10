@@ -340,6 +340,69 @@ def generate_photomeson_tables_from_cross_sections(nuclei, xsp, xsn, target_phot
         
     return df_rates_pmes, pmes_branchings, merged_yields
 
+def generate_decay_tables(nuclei, nboosts=41, boosts=None):
+    """ Generates the disintegration tables based on published data.
+        The data employed here is available at 
+        https://www.anl.gov/phy/atomic-mass-data-resources
+    """
+    from data.nucleardecays import NuclearDataTable
+    ndt = NuclearDataTable('../data/nubase2016.txt')
+    decaydata = ndt.prepare_decay_table()
+
+    # He4, He3, H3, H2, p, n
+    daughter_names = ['a', 'he3', 't', 'd', 'p', 'n']
+    daughters = [(2, 4), (2, 3), (1, 3), (1, 2), (1, 1), (0, 1)]
+    Zd = np.array([d[0] for d in daughters])
+    Ad = np.array([d[1] for d in daughters])
+
+    if boosts is None:
+        boosts = np.logspace(5, 14, nboosts)
+
+    cols = [f'{i}' for i in range(len(boosts))]
+    decay_rates = np.zeros((len(nuclei), len(boosts)))
+
+    for k, (Z, A) in enumerate(nuclei):
+        nucid = A*100 + Z
+
+        if nucid in decaydata:
+            tau = decaydata[nucid]['decay_time'] # in seconds
+            decay_rates[k] = 1/(boosts * tau * c_in_Mpc_sec)
+
+    df_rates_pmes = DataFrame(data=np.hstack([np.vstack(nuclei), decay_rates]), index=MultiIndex.from_arrays(np.vstack(nuclei).T), columns=['Z', 'A'] + cols)
+
+    # pmes_branchings = []
+    # pmes_marginal_yields = []
+    # for idx, (Z, A) in enumerate(nuclei):
+    #     remnants = [(Z, A-1), (Z-1, A-1)]
+    #     for br, (Zrem, Arem) in zip([(1-Z/A), Z/A], remnants):
+    #         if (Zrem, Arem) in nuclei:
+    #             pmes_branchings.append(np.hstack([A, Z, Arem, Zrem, br * pprates[idx]]))
+    #             pmes_marginal_yields.append(np.hstack([A, Z, Arem, Zrem, 0, 0, 0, 0, Z-Zrem, A-Arem-Z+Zrem, br * np.ones(nboosts)]))
+
+    #     if not np.all([rem in nuclei for rem in remnants]):
+    #         if np.any([rem in nuclei for rem in remnants]):
+    #             pmes_branchings[-1][4:] = pprates[idx]
+    #             pmes_marginal_yields[-1][10:] = np.ones(nboosts)
+    #         else:
+    #             # No remnant in nuclei, add dummy channel with zeros
+    #             pmes_branchings.append(np.hstack([A, Z, A-1, Z, np.zeros(nboosts)]))
+    #             pmes_marginal_yields.append(np.hstack([A, Z, A-1, Z, 0, 0, 0, 0, 0, 0, np.zeros(nboosts)]))
+    
+    # pmes_branchings = np.vstack(pmes_branchings)
+    # pmes_branchings = DataFrame(data=pmes_branchings, index=MultiIndex.from_arrays(pmes_branchings[:, :4].T), columns=['A', 'Z', 'Ar', 'Zr'] + cols)
+
+    # pmes_marginal_yields = np.vstack(pmes_marginal_yields)
+    # pmes_marginal_yields = DataFrame(data=pmes_marginal_yields, index=MultiIndex.from_arrays(pmes_marginal_yields[:, :4].T), columns=['A', 'Z', 'Ar', 'Zr'] + daughter_names + cols)
+
+    # # Merging channels with the same heavy product
+    # merged_yields = []
+    # for col in daughter_names:
+    #     df_brnch_no_channels = pmes_marginal_yields.drop(columns=daughter_names)
+    #     df_brnch_no_channels[cols] = df_brnch_no_channels.multiply(pmes_marginal_yields[col].values, axis='index')[cols]
+    #     merged_yields.append( df_brnch_no_channels )
+        
+    return df_rates_pmes#, pmes_branchings, merged_yields
+
 class InteractionCore():
     """Base class to produce interaction matrices
     """
