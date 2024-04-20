@@ -1,13 +1,7 @@
 import numpy as np
 from astropy.constants import c, hbar, alpha, m_p
-from astropy.units import erg, km, cm, GeV, g, s
-from numpy import log, log10, logspace
+from astropy.units import cm, GeV, g, s
 from photonuclear_cross_sections import *
-
-# physical constants
-c = c.to('cm/s').value # speed of light
-ergs2GeV = erg.to('GeV')  # energy conversion factor from ergs to GeV
-km2cm = km.to('cm')  # distance conversion factor from km to cm
 
 def gyroradius(Z, B, E):
     """Computes the gyroradius for a particles with charge Z in
@@ -35,7 +29,7 @@ def interaction_rate_adiabatic(energies, radius):
     Parameters:
     -----------
     energies  : particle energies in GeV
-    radius : shell radius in cm
+    radius : shell radius in m
     """
 
     return c / radius * np.ones_like(energies)
@@ -53,7 +47,7 @@ def interaction_rate_acceleration(energies, Z, eta, mgn_field):
     """
     Rg = gyroradius(Z, mgn_field, energies)
 
-    return 1e-17 * eta * c**2 * Z * mgn_field / energies
+    return eta * c / Rg
 
 
 def interaction_rate_synchrotron(energies, Z, A, mgn_field):
@@ -106,7 +100,7 @@ def interaction_rate_from_cross_section(energies, A, ng, eg, cs):
     """
     m = A * .939  # nuclear mass in GeV
     (ymin, ymax), f = get_interp_response_function(eg, cs)
-    y = logspace(-3., np.log10(ymax), 100)
+    y = np.logspace(-3., np.log10(ymax), 100)
 
     rates = []
     for Ej in energies:
@@ -115,7 +109,7 @@ def interaction_rate_from_cross_section(energies, A, ng, eg, cs):
         rates.append(np.trapz(ng(epsilon) * f(y) * y * np.log(10) / boost,
                              x=np.log10(y)))
 
-    rates = c * np.array(rates)
+    rates = c.to('cm/s') * np.array(rates)
 
     return rates
 
