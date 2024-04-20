@@ -1,6 +1,6 @@
 import numpy as np
-from astropy.constants import c
-from astropy.units import erg, km
+from astropy.constants import c, hbar, alpha, m_p
+from astropy.units import erg, km, cm, GeV, g, s
 from numpy import log, log10, logspace
 from photonuclear_cross_sections import *
 
@@ -9,17 +9,36 @@ c = c.to('cm/s').value # speed of light
 ergs2GeV = erg.to('GeV')  # energy conversion factor from ergs to GeV
 km2cm = km.to('cm')  # distance conversion factor from km to cm
 
-def interaction_rate_adiabatic(energies, radius, boost):
+def gyroradius(Z, B, E):
+    """Computes the gyroradius for a particles with charge Z in
+    units of the elementary charge e, under a magnetic field intensity
+    B in Gauss and the energy E in GeV. The radius returned is in units
+    of meters.
+    The gyroradius rg is computed as 
+        rg = E/Ze/B
+    where using the relation in cgs: e*G = 4.8E10 g*cm/s and the
+    conversion factor GeV = 1.602E-10 kg*m2/s2 in the prefactor.
+
+    Parameters:
+    -----------
+    Z : particle's atomic number
+    B : mean magnetic flux density in Gauss
+    E : particle energies in GeV
+    """
+    factor = (GeV / (4.8e-10 * g * cm / s**2)).to('m')
+    
+    return factor * E / Z / B 
+
+def interaction_rate_adiabatic(energies, radius):
     """Returns the adiabatic interaction rate
 
     Parameters:
     -----------
     energies  : particle energies in GeV
     radius : shell radius in cm
-    boost : Lorentz boost of shell
     """
 
-    return 2 * boost * c / radius * np.ones_like(energies)
+    return c / radius * np.ones_like(energies)
 
 
 def interaction_rate_acceleration(energies, Z, eta, mgn_field):
@@ -32,6 +51,7 @@ def interaction_rate_acceleration(energies, Z, eta, mgn_field):
     eta       : acceleration efficiency (0..1 dimensionless)
     mgn_field : mean magnetic flux density in Gauss
     """
+    Rg = gyroradius(Z, mgn_field, energies)
 
     return 1e-17 * eta * c**2 * Z * mgn_field / energies
 
@@ -43,21 +63,17 @@ def interaction_rate_synchrotron(energies, Z, A, mgn_field):
     mass m, and kinetic energy E (relative velocity beta), under the
     influence of a magnetic field B is:
 
-    P = (q^2 * B*E*beta)^2 / (6 * pi * eps0 * m^4 * c^5)
+    P = e^2/(6 pi eps0) c Z^2 gamma^4 / Rg^2
 
     In a very relativistic scenario, beta ~ 1 and the kinetic energy
-    is most of the total energy (E = gamma * m * c^2). The energy loss
-    rate per unit time is results:
+    is most of the total energy (E = gamma * m * c^2). 
+    Using the expression:
 
-    t^-1 = P / E = q^4 * B^2 * E / (6 * pi * eps0 * m^4 * c^5)
+    alpha = 1/137 = e^2 / (4 pi eps0 hbar c)
 
-    where M = m*c^2 in GeV, and eps0 is the vacuum permittivity with value
-    ~8.854E-12 F / m = 8.854E-12 C^2 (m^3/s^2)^-1 kg^-1.
+    The energy loss rate per unit time is results:
 
-    The formula can be simplified by making the following substitutions:
-    q = Z * qe  with Z atomic number, and qe the electron charge in Coulomb
-
-    (...to be completed ...)
+    t^-1 = P / E = 2/3 hbar alpha c^2 Z^2 gamma^4 / Rg^2 / E
 
     Parameters:
     -----------
@@ -67,12 +83,11 @@ def interaction_rate_synchrotron(energies, Z, A, mgn_field):
     mgn_field : mean magnetic flux density in Gauss
     """
 
-    m = A * .939  # nuclear mass in GeV
+    m = A * (m_p*c**2).to('GeV').value  # nuclear mass in GeV
+    Rg = gyroradius(Z, mgn_field, energies)
+    h_alpha_c2 = (hbar * alpha * c**2).to('GeV * m2 / s')
 
-    return Z**4 * mgn_field**2 / m**4 * (3e8)**3 * 1.602e-19 * 1e-37 \
-        / (9 * np.pi * 8.854e-12) * energies
-    # return Z**4 * (4. / 3 * 6.6524e-25 / c**3 / A**2 / 1e-24**2 *
-    #                mgn_field**2 / 8 / np.pi * energies / 624.15e9)
+    return  2/3 * h_alpha_c2 * Z**2 * (energies / m)**4 / Rg**2 / energies
 
 
 def interaction_rate_from_cross_section(energies, A, ng, eg, cs):
