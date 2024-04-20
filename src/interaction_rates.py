@@ -25,7 +25,7 @@ def gyroradius(Z, B, E):
     B : mean magnetic flux density in Gauss
     E : particle energies in GeV
     """
-    factor = (GeV / (4.8e-10 * g * cm / s**2)).to('m')
+    factor = (GeV / (4.8e-10 * g * cm / s**2)).to('m').value
     
     return factor * E / Z / B 
 
@@ -85,7 +85,7 @@ def interaction_rate_synchrotron(energies, Z, A, mgn_field):
 
     m = A * (m_p*c**2).to('GeV').value  # nuclear mass in GeV
     Rg = gyroradius(Z, mgn_field, energies)
-    h_alpha_c2 = (hbar * alpha * c**2).to('GeV * m2 / s')
+    h_alpha_c2 = (hbar * alpha * c**2).to('GeV * m2 / s').value
 
     return  2/3 * h_alpha_c2 * Z**2 * (energies / m)**4 / Rg**2 / energies
 
