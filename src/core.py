@@ -1282,7 +1282,7 @@ class InteractionCore_UHECR_Source(InteractionCore):
         cols = [f'{i}' for i in range(len(boosts))]
 
         eps_crpropa = np.genfromtxt(data_directory + 'PD_Talys1.8_Khan/eps.txt') / 1e3 # in GeV
-        branchings = np.genfromtxt(data_directory + 'PD_Talys1.8_Khan/xs_pd.txt')
+        branchings = np.genfromtxt(data_directory + 'PD_Talys1.8_Khan/xs_pd_thin.txt')
         df_rates_pdis, df_brnch_pdis, merged_yields_pdis = \
             generate_photodisinteg_tables_from_cross_sections(eps_crpropa, branchings, target_photons, boosts=boosts)
         
