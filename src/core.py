@@ -287,8 +287,6 @@ def generate_photomeson_tables_from_cross_sections(nuclei, xsp, xsn, target_phot
     # He4, He3, H3, H2, p, n
     daughter_names = ['a', 'he3', 't', 'd', 'p', 'n']
     daughters = [(2, 4), (2, 3), (1, 3), (1, 2), (1, 1), (0, 1)]
-    Zd = np.array([d[0] for d in daughters])
-    Ad = np.array([d[1] for d in daughters])
 
     if boosts is None:
         boosts = np.logspace(5, 14, nboosts)
@@ -297,9 +295,9 @@ def generate_photomeson_tables_from_cross_sections(nuclei, xsp, xsn, target_phot
     
     # Computing individual rates for proton and neutron
     pr_pmes = ir.interaction_rate_from_cross_section(boosts, 1, target_photons, 
-                xsp[:, 0], xsp[:, 0]*mb_to_cm2*1e-3)  / c_in_Mpc_sec # 1 / Mpc
+                xsp[:, 0], xsp[:, 1]*mb_to_cm2)  / c_in_Mpc_sec # 1 / Mpc
     nr_pmes = ir.interaction_rate_from_cross_section(boosts, 1, target_photons, 
-                xsn[:, 0], xsn[:, 0]*mb_to_cm2*1e-3)  / c_in_Mpc_sec # 1 / Mpc
+                xsn[:, 0], xsn[:, 1]*mb_to_cm2)  / c_in_Mpc_sec # 1 / Mpc
 
     pprates = np.zeros((len(nuclei), len(boosts)))
     for k, (Z, A) in enumerate(nuclei):
@@ -1292,6 +1290,8 @@ class InteractionCore_UHECR_Source(InteractionCore):
 
         xsp = np.genfromtxt(data_directory + 'PPP/xs_proton.txt')
         xsn = np.genfromtxt(data_directory + 'PPP/xs_neutron.txt')
+        xsp[:, 1] *= 1e-3 # mubarn to mbarn
+        xsn[:, 1] *= 1e-3 # mubarn to mbarn
         df_rates_pmes, df_brnch_pmes, merged_yields_pmes = \
             generate_photomeson_tables_from_cross_sections(nuclei, xsp, xsn, target_photons, boosts=boosts)
 
