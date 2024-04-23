@@ -1278,7 +1278,7 @@ class InteractionCore_UHECR_Source(InteractionCore):
         interaction and the photon field.
         """
         from pandas import DataFrame
-        boosts = np.logspace(3, 12, 41)
+        boosts = np.logspace(1, 14, 41)
         cols = [f'{i}' for i in range(len(boosts))]
 
         eps_crpropa = np.genfromtxt(data_directory + 'PD_Talys1.8_Khan/eps.txt') / 1e3 # in GeV
@@ -1301,7 +1301,8 @@ class InteractionCore_UHECR_Source(InteractionCore):
         merged_pdis = df_brnch_pdis.groupby(by=['Z', 'A', 'Zr', 'Ar']).sum()
         allmr_pdis = [np.hstack([np.vstack(merged_pdis.loc[nuc].index.values), merged_pdis.loc[nuc][cols].values]) for nuc in nuclei]
 
-        df_brnch_pmes[cols] = df_brnch_pmes.multiply(df_rates_pmes.reindex(df_brnch_pmes.index, method='ffill'))[cols]
+        # IMPORTANT: pmes_branches already are rescaled, following line is not needed
+        # df_brnch_pmes[cols] = df_brnch_pmes.multiply(df_rates_pmes.reindex(df_brnch_pmes.index, method='ffill'))[cols]
         merged_pmes = df_brnch_pmes.groupby(by=['Z', 'A', 'Zr', 'Ar']).sum()
         allmr_pmes = [np.hstack([np.vstack(merged_pmes.loc[nuc].index.values), merged_pmes.loc[nuc][cols].values]) for nuc in nuclei]
 
