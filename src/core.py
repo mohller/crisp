@@ -301,9 +301,11 @@ def generate_photomeson_tables_from_cross_sections(nuclei, xsp, xsn, target_phot
 
     pprates = np.zeros((len(nuclei), len(boosts)))
     for k, (Z, A) in enumerate(nuclei):
-        pprates[k] = np.interp(boosts, boosts/A, Z * pr_pmes + (A-Z) * nr_pmes)
-    print(np.hstack([np.vstack(nuclei), pprates]).shape)
-    df_rates_pmes = DataFrame(data=np.hstack([np.vstack(nuclei), pprates]), index=MultiIndex.from_arrays(np.vstack(nuclei).T), columns=['Z', 'A'] + cols)
+        pprates[k] = np.interp(boosts, boosts, Z * pr_pmes + (A-Z) * nr_pmes)
+    
+    nuc_cols = np.vstack([(A, Z) for Z, A in nuclei]) 
+    df_rates_pmes = DataFrame(data=np.hstack([nuc_cols, pprates]), index=MultiIndex.from_arrays(nuc_cols.T), columns=['A', 'Z'] + cols)
+    df_rates_pmes = df_rates_pmes.groupby(by=['A', 'Z']).sum()[cols]
 
     pmes_branchings = []
     pmes_marginal_yields = []
