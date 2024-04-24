@@ -744,7 +744,10 @@ class InteractionCore():
             arange = [k for k, idx in enumerate(mass_range) if self.species[idx][1] not in masses]
         elif atype == 'only species':
             species = aparams
-            arange = [k for k, idx in enumerate(mass_range) if self.species[idx] != species]
+            arange = [k for k, idx in enumerate(mass_range) if self.species[idx] not in species]
+        elif atype == 'only charge':
+            charges = aparams
+            arange = [k for k, idx in enumerate(mass_range) if self.species[idx][0] not in charges]
         
         true_range = [idx for k, idx in enumerate(mass_range) if k in arange]
 
