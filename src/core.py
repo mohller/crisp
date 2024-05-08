@@ -42,7 +42,7 @@ def get_marginal_rates(nuclei, rates, boosts, branchings=None):
     If no branchings are provided, the returned matrix contains
     only rates for n or p emission with probabilities N/A and Z/A,
     and the corresponding remnants.
-    """    
+    """
     # He4, He3, H3, H2, p, n
     daughters = [(2, 4), (2, 3), (1, 3), (1, 2), (1, 1), (0, 1)]
     Zd = np.array([d[0] for d in daughters])
@@ -63,7 +63,7 @@ def get_marginal_rates(nuclei, rates, boosts, branchings=None):
             rates_large[1, :2] = Z, A - 1
             rates_large[1, 2:] = total_rate * float(N)/A
             mrates_large.append(rates_large)
-        elif branchings is 'minimal': # case for only one nucleon loss
+        elif branchings == 'minimal': # case for only one nucleon loss
             total_rate = rates[k]
 
             rates_large = np.zeros((2, 2 + len(boosts)))
@@ -172,24 +172,27 @@ def load_rates(filename):
     return df_rates
 
 def load_branchings(filename):
-    from pandas import read_csv, MultiIndex
+    from pandas import concat, read_csv, MultiIndex
     cols = [f'{i}' for i in range(201)]
     df_brnch = read_csv(filename, header=1, sep='\t', names=['Z', 'N', 'channel'] + cols)
     
     # Nuclei in file which have no decay implemented
     correction_channels = [
-        [(2, 5), (2, 4), [0, 0, 0, 0, 0, 1]],
+        # [(2, 5), (2, 4), [0, 0, 0, 0, 0, 1]],
         [(2, 6), (2, 4), [0, 0, 0, 0, 0, 2]],
-        [(3, 5), (2, 4), [0, 0, 0, 0, 1, 0]],
+        # [(3, 5), (2, 4), [0, 0, 0, 0, 1, 0]],
         [(4, 8), (2, 4), [1, 0, 0, 0, 0, 0]],
-        [(5, 9), (4, 9), [0, 0, 0, 0, 1, -1]],
+        # [(5, 9), (4, 9), [0, 0, 0, 0, 1, -1]],
+        [(6, 9), (2, 4), [1, 0, 0, 0, 2, -1]],
         [(5, 12), (6, 12), [0, 0, 0, 0, -1, 1]],
         [(9, 16), (8, 16), [0, 0, 0, 0, 1, -1]],
         [(11, 20), (10, 20), [0, 0, 0, 0, 1, -1]],
         [(13, 31), (13, 30), [0, 0, 0, 0, 0, 1]],
         [(20, 39), (19, 39), [0, 0, 0, 0, 1, -1]],
         [(21, 42), (20, 42), [0, 0, 0, 0, 1, -1]],
+        [(23, 46), (22, 46), [0, 0, 0, 0, 1, -1]],
         [(24, 47), (23, 47), [0, 0, 0, 0, 1, -1]],
+        [(25, 50), (24, 50), [0, 0, 0, 0, 1, -1]],
     ]
     daughter_names = ['a', 'he3', 't', 'd', 'p', 'n']
     daughters = [(2, 4), (2, 3), (1, 3), (1, 2), (1, 1), (0, 1)]
@@ -198,8 +201,11 @@ def load_branchings(filename):
 
     df_brnch.insert(1, 'A', df_brnch['Z'] + df_brnch['N'])
     df_brnch.drop('N', axis=1, inplace=True)
+    
+    channel_series = df_brnch.channel.apply(get_particle_numbers)
+    df_brnch.drop('channel', axis=1, inplace=True)
+    df_brnch.insert(2, 'channel', channel_series)
 
-    df_brnch.loc[:, 'channel'] = df_brnch.channel.apply(get_particle_numbers)
     Zr = df_brnch['channel'].apply(Zd.dot)
     Ar = df_brnch['channel'].apply(Ad.dot)
 
@@ -207,12 +213,27 @@ def load_branchings(filename):
     df_brnch.insert(2, 'Zr', df_brnch['Z'] - Zr)
 
     df_brnch.index = MultiIndex.from_arrays(df_brnch[['A', 'Z', 'Ar', 'Zr']].values.T)
+    df_brnch.sort_index(inplace=True)
 
     # Replacing channels with dead ends
     for nuc0, nucr, prods in correction_channels:
-        new_prods = np.vstack(df_brnch[np.all(df_brnch[['Zr', 'Ar']] == nuc0, axis=1)]['channel']) + np.array(prods)
-        df_brnch.loc[np.all(df_brnch[['Zr', 'Ar']] == nuc0, axis=1), ['channel']] = [[list(row)] for row in new_prods]
-        df_brnch.loc[np.all(df_brnch[['Zr', 'Ar']] == nuc0, axis=1), ['Zr', 'Ar']] = nucr
+        indices = df_brnch.loc[np.all(df_brnch[['Zr', 'Ar']] == nuc0, axis=1)].index
+
+        for index in indices:
+            subdataframe = df_brnch.loc[index]
+            
+            newindex = MultiIndex.from_arrays(np.atleast_2d([[*index[:2], *nucr[::-1]] for index in subdataframe.index]).T)
+
+            subdataframe.index = newindex
+            update_prods = lambda channel: list(np.array(channel) + np.array(prods))
+
+            subdataframe.loc[newindex, ('Zr', 'Ar')] = nucr
+            subdataframe.loc[newindex, 'channel'].apply(update_prods)
+
+            concat([df_brnch, subdataframe])
+        
+        # Remove channels with dead ends
+        df_brnch.drop(index=indices, inplace=True)
 
     # Splitting light products into individual columns
     channel_array = np.vstack(df_brnch['channel'].values)
@@ -256,7 +277,7 @@ def generate_photodisinteg_tables_from_cross_sections(cs_egrid, cs_array, target
         Am = int(br_row[1]) + int(br_row[0])
         UHECR_SRFenergy = Am * boosts # in GeV
 
-        cs_crpropa = br_row[3:]
+        cs_crpropa = br_row[3:] # in mb
         r_pdis = ir.interaction_rate_from_cross_section(UHECR_SRFenergy, Am,
                 target_photons, cs_egrid, cs_crpropa*mb_to_cm2)  / c_in_Mpc_sec # 1 / Mpc
         
@@ -345,7 +366,9 @@ def generate_decay_tables(nuclei, nboosts=41, boosts=None):
         The data employed here is available at 
         https://www.anl.gov/phy/atomic-mass-data-resources
     """
+    from pandas import DataFrame, MultiIndex
     from data.nucleardecays import NuclearDataTable
+    
     ndt = NuclearDataTable('../data/nubase2016.txt')
     decaydata = ndt.prepare_decay_table()
 
@@ -484,12 +507,13 @@ class InteractionCore():
         reduced_tensor -= np.dstack([np.diag(np.diag(reduced_tensor[:, :, k])) for k in range(reduced_tensor.shape[-1])]) 
         # recompute diagonal including absorption states
         reduced_tensor -= np.stack([np.diag(row) for row in reduced_tensor.sum(axis=1).T], axis=2)
+        # reduce excluding absorption states
+        indices = [mass_range.index(ival) for ival in true_range]
+        reduced_tensor = reduced_tensor[np.ix_(indices, indices, range(len(boost_range)))]
+        prod_mat = prod_mat[np.ix_(range(6), indices, indices, range(len(boost_range)))]
 
         # Compute production
         LamYp = prod_mat * reduced_tensor[None, :, :, :] # production rate matrix, independent of distance
-
-        # reduce excluding absorption states
-        LamYp = LamYp[np.ix_(range(6), true_range, true_range, range(len(boost_range)))]
 
         d1, _, d3, d4 = LamYp.shape
         t_vs_boost = np.atleast_3d(LamYp.sum(axis=2))
