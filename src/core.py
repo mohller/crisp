@@ -63,7 +63,7 @@ def get_marginal_rates(nuclei, rates, boosts, branchings=None):
             rates_large[1, :2] = Z, A - 1
             rates_large[1, 2:] = total_rate * float(N)/A
             mrates_large.append(rates_large)
-        elif branchings == 'minimal': # case for only one nucleon loss
+        elif branchings is 'minimal': # case for only one nucleon loss
             total_rate = rates[k]
 
             rates_large = np.zeros((2, 2 + len(boosts)))
