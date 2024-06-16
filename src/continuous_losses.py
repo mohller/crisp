@@ -2,8 +2,7 @@ import numpy as np
 from scipy.interpolate import interp1d
 from astropy import units as u
 from astropy.cosmology import WMAP9 as cosmo
-# from astropy.cosmology import z_at_value
-from astropy.constants import c, m_e, alpha, e, eps0
+from astropy.constants import c, m_e, alpha, e, eps0, k_B, hbar, m_p
 
 def dlngdl_tot_proton(z, lng):
     """Computes all CEL (adiabatic + pair production) 
@@ -15,7 +14,7 @@ def dlngdl_tot_proton(z, lng):
 def dlngdz_tot_proton(z, lng):
     """Computes all CEL (adiabatic + pair production) 
        the derivate of the ln of the boost for protons 
-       as a function of reddshift
+       as a function of redshift
     """
     return -(1 + Bpp(1, 1, np.exp(lng), z) * c.to(u.km/u.s).value / cosmo.H(z).value) / (1+z)
 
@@ -106,38 +105,27 @@ def Bpp_Blumenthal(Z, A, g, z=0):
         Blumenthal, G. R. (1970) PRD 1(6), 1596
         "Energy Loss of High-Energy Cosmic Rays in Pair-Producing Collisions with Ambient Photons."
         https://doi.org/10.1103/PhysRevD.1.1596
-        B = -1/g dg/dt = 
+        B = -1/E dE/dt = -1/g dg/dt = 
     """
-    hbc = 0.1973269804e-6 # eV*m
-    kTo = 8.617333262e-5 * 2.71 #eV
-    alph_re2me2 = alpha*r_e**2*(m_e.to(u.eV * u.s**2 / u.m**2) * c**2)**2
+    hbc = (hbar * c).to('eV m')
+    kTo = (k_B * 2.7 * u.K).to('eV')
+    mec2 = (m_e * c**2).to('eV')
+    mpc2 = (m_p * c**2).to('eV')
     r_e = e.si**2 / (4*np.pi*eps0.to(u.C**2/u.eV/u.m) * m_e.to(u.eV * u.s**2/u.m**2) * c**2)
+    alph_re2me2 = alpha*r_e**2 * mec2**2
     
-    from scipy.integrate import quad
-
-    phi_in_xi = lambda xi: xi*np.polyval([2.667, -14.45, 50.95, -86.07], np.log(xi))
-
     def f_nu(nu):
         """Calculating the function f(nu) from Blumenthal
         """
+        from scipy.integrate import quad
+        
+        phi_in_xi = lambda xi: xi*np.polyval([2.667, -14.45, 50.95, -86.07], np.log(xi))
         integrand_nu = lambda xi: phi_in_xi(xi)/(np.exp(nu*xi) - 1)
+
         return nu**2*quad(integrand_nu, 20, np.inf)[0]
 
     f_nu = np.vectorize(f_nu)
+    nu = (mec2/(2*kTo*g*(1+z))).value
+    rate = (alph_re2me2 * kTo**2 / (hbc**3) / np.pi**2 * f_nu( nu ) / g / (1+z) / mpc2).to('1/Mpc').value
 
-    rate = alph_re2me2.value * kTo**2 / (hbc**3) / np.pi**2 * 1e-2 * f_nu(5.11e5/(2*kTo*g)) / g / 1e9 / 3.24e-25 # 1/Mpc
-
-    return rate * Z**2/A
-
-def Bpp(Z, A, g, z=0):
-    """Compute pair production losses
-       Based on tabulated data from CRPRopa
-        B = -1/g dg/dt = 
-       Values given in Mpc^-1
-    """
-    with open('/home/leonel/Downloads/Bpp_data', 'rb') as fileobj:
-        data = np.load(fileobj)
-
-    interpolator = interp1d(data[0, :], data[1, :], kind='linear', fill_value=(data[1, 0], data[1, -1]), bounds_error=False)
-
-    return Z**2/A * interpolator((1+z)*g) * (1+z)**3
+    return rate * Z**2/A * (1 + z)**3
