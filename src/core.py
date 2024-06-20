@@ -161,7 +161,7 @@ def get_particle_numbers(channel):
 def load_rates(filename):
     from pandas import read_csv, MultiIndex
     cols = [f'{i}' for i in range(201)]
-    df_rates = read_csv(filename, header=1, sep='\t', names=['Z', 'N'] + cols)
+    df_rates = read_csv(filename, comment='#', sep='\t', names=['Z', 'N'] + cols)
 
     df_rates.insert(1, 'A', df_rates['Z'] + df_rates['N'])
     df_rates.drop('N', axis=1, inplace=True)
@@ -174,7 +174,7 @@ def load_rates(filename):
 def load_branchings(filename):
     from pandas import concat, read_csv, MultiIndex
     cols = [f'{i}' for i in range(201)]
-    df_brnch = read_csv(filename, header=1, sep='\t', names=['Z', 'N', 'channel'] + cols)
+    df_brnch = read_csv(filename, comment='#', sep='\t', names=['Z', 'N', 'channel'] + cols)
     
     # Nuclei in file which have no decay implemented
     correction_channels = [
