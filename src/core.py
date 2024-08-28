@@ -386,8 +386,9 @@ def fix_dead_end(product, rate):
         additional = get_ZA(decdict[prodid]['channels'][0][1])
         new_product = (product[0] - additional[0], product[1] - additional[1])
         
-        decay_length = c_in_Mpc_sec * decdict[prodid]['decay_time']       
-        final_rate = 1 / (1/rate + decay_length)
+        decay_length = c_in_Mpc_sec * decdict[prodid]['decay_time']
+        inter_length = np.divide(1, rate, where=rate != 0)
+        final_rate = np.divide(1, (inter_length + decay_length), where=(inter_length + decay_length) != 0)
 
         if get_nucid(new_product) in decdict:
             final_products, final_rate = fix_dead_end(new_product, final_rate)
