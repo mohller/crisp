@@ -361,6 +361,42 @@ def generate_photomeson_tables_from_cross_sections(nuclei, xsp, xsn, target_phot
         
     return df_rates_pmes, pmes_branchings, merged_yields
 
+def fix_dead_end(product, rate):
+    """Takes dead end nucleus (product) and computes the products of its
+    disintegration and the corresponding rate.
+    """
+    import sys
+    sys.path.append('../')
+    from data.nucleardecays import NuclearDataTable
+    ndt = NuclearDataTable('../data/nubase2016.txt')
+    decdict = ndt.prepare_decay_table()
+
+    get_nucid = lambda nuc: nuc[1] * 100 + nuc[0]
+    get_ZA = lambda nucid: (nucid % 100, nucid // 100)
+
+    final_products = [product, ]
+    final_rate = rate
+
+    prodid = get_nucid(product)
+    if prodid in decdict:
+        if len(decdict[prodid]['channels']) > 1:
+            print('Number of possible channels larger than one. Please choose a suitable selection method.')
+            return None
+
+        additional = get_ZA(decdict[prodid]['channels'][0][1])
+        new_product = (product[0] - additional[0], product[1] - additional[1])
+        
+        decay_length = c_in_Mpc_sec * decdict[prodid]['decay_time']       
+        final_rate = 1 / (1/rate + decay_length)
+
+        if get_nucid(new_product) in decdict:
+            final_products, final_rate = fix_dead_end(new_product, final_rate)
+            final_products.append(additional)
+        else:
+            final_products = [additional, new_product]
+
+    return final_products, final_rate
+
 def generate_decay_tables(nuclei, nboosts=41, boosts=None):
     """ Generates the disintegration tables based on published data.
         The data employed here is available at 
@@ -694,6 +730,20 @@ class InteractionCore():
         # generate interaction tensor by slices
         tensor = np.zeros((len(self.species), len(self.species), len(self.boosts)))
         for i, nuc_branches in enumerate(self.all_branchings[::-1]):
+            main_products = list(zip(nuc_branches[:, 0], nuc_branches[:, 1]))
+
+            if np.any([prod not in self.species for prod in main_products]):
+                print(f'For nucleus {self.species[i]} some products were not found.')
+                # Fix the channels with dead ends
+                for rowid, prod in enumerate(main_products):
+                    if prod not in self.species:
+                        new_prods, new_rates = fix_dead_end(prod, nuc_branches[rowid, 2:])
+
+                        # print(prod, new_prods, max(new_prods), np.any([nprod in main_products for nprod in new_prods]))
+                        if not np.any([nprod in main_products for nprod in new_prods]):
+                            nuc_branches[rowid, :2] = max(new_prods)
+                            nuc_branches[rowid, 2:] = new_rates
+
             for branch in nuc_branches:
                 try:
                     j = self.species.index(tuple(branch[:2]))
@@ -709,6 +759,20 @@ class InteractionCore():
         for light_yield in self.marginal_light_yields:
             ly_matrices = np.zeros((len(self.species), len(self.species), len(self.boosts)))
             for i, nuc_branches in enumerate(light_yield[::-1]):
+                main_products = list(zip(nuc_branches[:, 0], nuc_branches[:, 1]))
+
+                if np.any([prod not in self.species for prod in main_products]):
+                    print(f'For nucleus {self.species[i]} some products were not found.')
+                    # Fix the channels with dead ends
+                    for rowid, prod in enumerate(main_products):
+                        if prod not in self.species:
+                            new_prods, new_rates = fix_dead_end(prod, nuc_branches[rowid, 2:])
+
+                            # print(prod, new_prods, max(new_prods), np.any([nprod in main_products for nprod in new_prods]))
+                            if not np.any([nprod in main_products for nprod in new_prods]):
+                                nuc_branches[rowid, :2] = max(new_prods)
+                                nuc_branches[rowid, 2:] = new_rates
+
                 for branch in nuc_branches:
                     try:
                         j = self.species.index(tuple(branch[:2]))                        

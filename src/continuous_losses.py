@@ -105,7 +105,8 @@ def Bpp_Blumenthal(Z, A, g, z=0):
         Blumenthal, G. R. (1970) PRD 1(6), 1596
         "Energy Loss of High-Energy Cosmic Rays in Pair-Producing Collisions with Ambient Photons."
         https://doi.org/10.1103/PhysRevD.1.1596
-        B = -1/E dE/dt = -1/g dg/dt = 
+        B = -1/E dE/dt = -1/g dg/dt
+        Values given in Mpc^-1
     """
     hbc = (hbar * c).to('eV m')
     kTo = (k_B * 2.7 * u.K).to('eV')
