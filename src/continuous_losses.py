@@ -4,14 +4,28 @@ from astropy import units as u
 from astropy.cosmology import WMAP9 as cosmo
 from astropy.constants import c, m_e, alpha, e, eps0, k_B, hbar, m_p
 
-def dlngdl_tot_proton(z, lng):
+def Bpp_crpropa(Z, A, g, z):
+    """Compute pair production losses
+    Based on CRPropa's implementation of the original formula:
+        Blumenthal, G. R. (1970) PRD 1(6), 1596
+        "Energy Loss of High-Energy Cosmic Rays in Pair-Producing Collisions with Ambient Photons."
+        https://doi.org/10.1103/PhysRevD.1.1596
+        B = -1/E dE/dt = -1/g dg/dt
+        Values given in Mpc^-1
+    """    
+    with open('/home/leonel/Downloads/Bpp_data', 'rb') as fileobj:
+        data = np.load(fileobj)
+
+    return np.interp(g, data[0, :], Z**2/A * data[1, :] * (1 + z)**3)
+
+def dlngdl_tot_proton(z, lng, Bpp=Bpp_crpropa):
     """Computes all CEL (adiabatic + pair production) 
        the derivate of the ln of the boost for protons
        as a function of comoving distance in Mpc^-1
     """
     return (Bpp(1, 1, np.exp(lng), z) + cosmo.H(z).value ) / c.to(u.km/u.s).value
 
-def dlngdz_tot_proton(z, lng):
+def dlngdz_tot_proton(z, lng, Bpp=Bpp_crpropa):
     """Computes all CEL (adiabatic + pair production) 
        the derivate of the ln of the boost for protons 
        as a function of redshift
@@ -91,20 +105,23 @@ def my_g_in_z(g0, Z=1, A=1, z0=2, dlngdz=dlngdz_tot, lngcutoff=7, zcutoff=1e-7):
 
     return zvals, gvals
 
-def Badiab(z):
+def Badiab(g, z=0):
     """Compute adiabatic losses
        B = -1/g dg/dt
     """
     B = cosmo.H(z) / c.to(u.km/u.s) # 1/Mpc
      
-    return B.value
+    return B.value * np.ones_like(g)
 
 def Bpp_Blumenthal(Z, A, g, z=0):
     """Compute pair production losses
-    Based on the paper:
+    Based on the papers:
         Blumenthal, G. R. (1970) PRD 1(6), 1596
         "Energy Loss of High-Energy Cosmic Rays in Pair-Producing Collisions with Ambient Photons."
         https://doi.org/10.1103/PhysRevD.1.1596
+        "Reaction rate and energy loss rate for photopair production by relativistic nuclei"
+        M. CHodorowski, A. Zdziarski, M. Sikora, ApJ 400, 181-185, 1992
+
         B = -1/E dE/dt = -1/g dg/dt
         Values given in Mpc^-1
     """
@@ -115,18 +132,20 @@ def Bpp_Blumenthal(Z, A, g, z=0):
     r_e = e.si**2 / (4*np.pi*eps0.to(u.C**2/u.eV/u.m) * m_e.to(u.eV * u.s**2/u.m**2) * c**2)
     alph_re2me2 = alpha*r_e**2 * mec2**2
     
-    def f_nu(nu):
-        """Calculating the function f(nu) from Blumenthal
-        """
-        from scipy.integrate import quad
-        
-        phi_in_xi = lambda xi: xi*np.polyval([2.667, -14.45, 50.95, -86.07], np.log(xi))
-        integrand_nu = lambda xi: phi_in_xi(xi)/(np.exp(nu*xi) - 1)
 
-        return nu**2*quad(integrand_nu, 20, np.inf)[0]
+    phi_lo = lambda k: np.pi / 12 * (k - 2)**4 / (1 + np.polyval([-3.879e-6, 1.137e-3, 0.1459, 0.8048, 0], k-2))
+    phi_B70 = lambda x: x * np.polyval([8/3., -14.45, 50.96, -86.07], np.log(x))
+    phi_hi = lambda x: phi_B70(x) / (1 - np.polyval([1837, 78.35, 2.91, 0], 1/x))
+    phi = lambda x: np.where(x < 25, phi_lo(x), phi_hi(x))
 
-    f_nu = np.vectorize(f_nu)
+    
+    chi = np.logspace(.4, 6, 500)
+    nu_eval = 10**np.linspace(-4, 1.15, 100)
+    fnu_eval = np.array([nuval**2 * np.trapz(phi(chi) / (np.exp(nuval * chi) - 1), chi) for nuval in nu_eval] )
+    fnu = lambda nu: np.interp(nu, nu_eval, fnu_eval)
+    
+    # f_nu = np.vectorize(f_nu)
     nu = (mec2/(2*kTo*g*(1+z))).value
-    rate = (alph_re2me2 * kTo**2 / (hbc**3) / np.pi**2 * f_nu( nu ) / g / (1+z) / mpc2).to('1/Mpc').value
+    bpp = (alph_re2me2 * kTo**2 / (hbc**3) / np.pi**2 * fnu( nu ) / g / (1+z) / mpc2).to('1/Mpc')
 
-    return rate * Z**2/A * (1 + z)**3
+    return bpp * Z**2/A * (1 + z)**3
