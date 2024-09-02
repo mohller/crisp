@@ -18,14 +18,14 @@ def Bpp_crpropa(Z, A, g, z):
 
     return np.interp(g, data[0, :], Z**2/A * data[1, :] * (1 + z)**3)
 
-def dlngdl_tot_proton(z, lng, Bpp=Bpp_crpropa):
+def dlngdl_tot_proton(z, lng, Bpp=Bpp_Blumenthal):
     """Computes all CEL (adiabatic + pair production) 
        the derivate of the ln of the boost for protons
        as a function of comoving distance in Mpc^-1
     """
     return (Bpp(1, 1, np.exp(lng), z) + cosmo.H(z).value ) / c.to(u.km/u.s).value
 
-def dlngdz_tot_proton(z, lng, Bpp=Bpp_crpropa):
+def dlngdz_tot_proton(z, lng, Bpp=Bpp_Blumenthal):
     """Computes all CEL (adiabatic + pair production) 
        the derivate of the ln of the boost for protons 
        as a function of redshift
