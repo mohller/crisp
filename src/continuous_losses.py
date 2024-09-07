@@ -4,6 +4,43 @@ from astropy import units as u
 from astropy.cosmology import WMAP9 as cosmo
 from astropy.constants import c, m_e, alpha, e, eps0, k_B, hbar, m_p
 
+def Bpp_Blumenthal(Z, A, g, z=0):
+    """Compute pair production losses
+    Based on the papers:
+        Blumenthal, G. R. (1970) PRD 1(6), 1596
+        "Energy Loss of High-Energy Cosmic Rays in Pair-Producing Collisions with Ambient Photons."
+        https://doi.org/10.1103/PhysRevD.1.1596
+        "Reaction rate and energy loss rate for photopair production by relativistic nuclei"
+        M. CHodorowski, A. Zdziarski, M. Sikora, ApJ 400, 181-185, 1992
+
+        B = -1/E dE/dt = -1/g dg/dt
+        Values given in Mpc^-1
+    """
+    hbc = (hbar * c).to('eV m')
+    kTo = (k_B * 2.7 * u.K).to('eV')
+    mec2 = (m_e * c**2).to('eV')
+    mpc2 = (m_p * c**2).to('eV')
+    r_e = e.si**2 / (4*np.pi*eps0.to(u.C**2/u.eV/u.m) * m_e.to(u.eV * u.s**2/u.m**2) * c**2)
+    alph_re2me2 = alpha*r_e**2 * mec2**2
+    
+
+    phi_lo = lambda k: np.pi / 12 * (k - 2)**4 / (1 + np.polyval([-3.879e-6, 1.137e-3, 0.1459, 0.8048, 0], k-2))
+    phi_B70 = lambda x: x * np.polyval([8/3., -14.45, 50.96, -86.07], np.log(x))
+    phi_hi = lambda x: phi_B70(x) / (1 - np.polyval([1837, 78.35, 2.91, 0], 1/x))
+    phi = lambda x: np.where(x < 25, phi_lo(x), phi_hi(x))
+
+    
+    chi = np.logspace(.4, 6, 500)
+    nu_eval = 10**np.linspace(-4, 1.15, 100)
+    fnu_eval = np.array([nuval**2 * np.trapz(phi(chi) / (np.exp(nuval * chi) - 1), chi) for nuval in nu_eval] )
+    fnu = lambda nu: np.interp(nu, nu_eval, fnu_eval)
+    
+    # f_nu = np.vectorize(f_nu)
+    nu = (mec2/(2*kTo*g*(1+z))).value
+    bpp = (alph_re2me2 * kTo**2 / (hbc**3) / np.pi**2 * fnu( nu ) / g / (1+z) / mpc2).to('1/Mpc').value
+
+    return bpp * Z**2/A * (1 + z)**3
+
 def Bpp_crpropa(Z, A, g, z):
     """Compute pair production losses
     Based on CRPropa's implementation of the original formula:
