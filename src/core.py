@@ -63,7 +63,7 @@ def get_marginal_rates(nuclei, rates, boosts, branchings=None):
             rates_large[1, :2] = Z, A - 1
             rates_large[1, 2:] = total_rate * float(N)/A
             mrates_large.append(rates_large)
-        elif branchings is 'minimal': # case for only one nucleon loss
+        elif branchings == 'minimal': # case for only one nucleon loss
             total_rate = rates[k]
 
             rates_large = np.zeros((2, 2 + len(boosts)))
@@ -763,7 +763,7 @@ class InteractionCore():
                 main_products = list(zip(nuc_branches[:, 0], nuc_branches[:, 1]))
 
                 if np.any([prod not in self.species for prod in main_products]):
-                    print(f'For nucleus {self.species[i]} some products were not found.')
+                    print(f'For nucleus {self.species[i]} some products were not found when creating light yields tensor.')
                     # Fix the channels with dead ends
                     for rowid, prod in enumerate(main_products):
                         if prod not in self.species:
