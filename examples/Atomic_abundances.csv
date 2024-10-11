@@ -1,0 +1,30 @@
+# Data taken from Table 4, column "Reccommended 1D" in publication
+# Lodders, Katharina. "Solar Elemental Abundances." Oxford Research Encyclopedia of Planetary Science. 17 Dec. 2020; Accessed 11 Oct. 2024.
+# https://doi.org/10.1093/acrefore/9780190647926.013.145
+# Z, Abundance [A(E) = 12 + log10(n(E)/n(H))], Uncertainty
+1, 12, 0
+2, 10.923, .02
+3, 1.04, .1
+4, 1.38, .09
+5, 2.7, .2
+6, 8.58, .11
+7, 8.0, .11
+8, 8.76, .06
+9, 4.4, .25
+10, 8.1, .1
+11, 6.28, .04
+12, 7.5, .05
+13, 6.41, .03
+14, 7.52, .06
+15, 5.42, .03
+16, 7.12, .05
+17, 5.25, .12
+18, 6.5, .10
+19, 5.1, .07
+20, 6.34, .06
+21, 3.15, .06
+22, 4.97, .04
+23, 3.96, .04
+24, 5.62, .07
+25, 5.45, .05
+26, 7.52, .05
