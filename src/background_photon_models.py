@@ -1,6 +1,6 @@
+from pickle import load
 from numpy import pi, exp, array, vectorize, logspace, log, log10, trapz
 from scipy.constants import h, c, electron_volt, Boltzmann
-
 
 def target_photons_spectrum(Emin=1e-6, Emax=1e4, Ebr=1e3, si1=1, si2=2, normal=None):
     """Returns a photon spectrum modeled as a broken power law
@@ -95,10 +95,25 @@ def black_body_spectral_radiance_wavelength(T, lamrange):
 
 To = 2.725 # Kelvin, CMB temperature
 
-# photon density in m^-3 eV^-1
-cmb_photon_density = lambda T, erange: 4 * pi / c * black_body_spectral_radiance(T, erange) / erange / h
+# CMB photon density in m^-3 eV^-1
+cmb_photon_density = lambda T, erange: 4 * pi / h / c * black_body_spectral_radiance(T, erange) / erange
 
-# photon energy density in GeV / cm^3
+# CMB photon energy density in GeV / cm^3
 cmb_photon_density_GeVcm3 = lambda erange: cmb_photon_density(To, erange * 1e9) / erange / 1e9
 
 cmb = black_body_spectral_radiance
+
+
+### Target photon fields for EBL models..
+
+# Model by Gilmore 2012, takes energy in eV and returns density in m^-3 eV^-1
+with open('../data/Gilmore12_splinterp.pkl', 'rb') as file:
+    eblg_interp = load(file)
+
+# Model by Saldana-Lopez 2012, takes energy in eV and returns density in m^-3 eV^-1
+with open('../data/SaldanaLopez21_splinterp.pkl', 'rb') as file:
+    ebls_interp = load(file)
+
+# Model by Andrews 2018, takes energy in eV and returns density in m^-3 eV^-1
+with open('../data/Andrews18_splinterp.pkl', 'rb') as file:
+    ebla_interp = load(file)
