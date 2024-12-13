@@ -860,7 +860,44 @@ class InteractionCore():
         
         true_range = [idx for k, idx in enumerate(mass_range) if k in arange]
 
-        return alpha, mass_range, true_range
+        # Computing matrices for the range of boosts provided
+        if boost_range is None:
+            boost_range = self.boosts
+
+        reduced_tensor = self.interpolator(boost_range)
+        
+        # if it is a matrix
+        if len(reduced_tensor[:, :, 0]) > 1:
+            # make diagonal zero 
+            reduced_tensor -= np.dstack([np.diag(np.diag(reduced_tensor[:, :, k])) for k in range(reduced_tensor.shape[-1])]) 
+            # recompute diagonal including absorption states
+            reduced_tensor -= np.stack([np.diag(row) for row in reduced_tensor.sum(axis=1).T], axis=2)
+
+        # reduce excluding absorption states
+        indices = [mass_range.index(ival) for ival in true_range]
+        reduced_tensor = reduced_tensor[np.ix_(indices, indices, range(len(boost_range)))]
+
+        return alpha, mass_range, true_range, reduced_tensor
+
+    def _check_tensor_balance(self):
+        """Check if the tensor rows are null for all boosts.
+        """
+
+        if np.all(np.isclose(np.einsum('ijk, j -> ik', self.tensor, np.ones(len(self.species))), 0, rtol=1e-10)):
+            print('The tensor is balanced with relative tolerance 1e-10')
+        else:
+            print('The tensor is not balanced with relative tolerance 1e-10')
+
+    def _include_nuclear_decay(self):
+        """Load and implement nuclear decays into the disintegration tensor
+
+            TODO: merge with generate_decay_tables above!!!
+        """
+        from data.nucleardecays import NuclearDataTable
+        ndt = NuclearDataTable('../data/nubase2016.txt')
+        decay_dict = ndt.prepare_decay_table()
+
+        self.decays = decay_dict
 
 
 class InteractionCore_CRPropA(InteractionCore):
