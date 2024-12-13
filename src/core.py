@@ -367,7 +367,7 @@ def fix_dead_end(product, rate):
     """
     import sys
     import os.path as path
-    from pandas import DataFrame, MultiIndex
+
     datapath = path.dirname(path.dirname(path.abspath(__file__)))
     sys.path.append(datapath)
     from data.nucleardecays import NuclearDataTable
@@ -382,19 +382,19 @@ def fix_dead_end(product, rate):
     final_rate = rate
 
     prodid = get_nucid(product)
-    if prodid in decdict:
-        if len(decdict[prodid]['channels']) > 1:
+    if prodid in decaydata:
+        if len(decaydata[prodid]['channels']) > 1:
             print('Number of possible channels larger than one. Please choose a suitable selection method.')
             return None
 
-        additional = get_ZA(decdict[prodid]['channels'][0][1])
+        additional = get_ZA(decaydata[prodid]['channels'][0][1])
         new_product = (product[0] - additional[0], product[1] - additional[1])
         
-        decay_length = c_in_Mpc_sec * decdict[prodid]['decay_time']
+        decay_length = c_in_Mpc_sec * decaydata[prodid]['decay_time']
         inter_length = np.divide(1, rate, where=rate != 0)
         final_rate = np.divide(1, (inter_length + decay_length), where=(inter_length + decay_length) != 0)
 
-        if get_nucid(new_product) in decdict:
+        if get_nucid(new_product) in decaydata:
             final_products, final_rate = fix_dead_end(new_product, final_rate)
             final_products.append(additional)
         else:
