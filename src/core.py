@@ -365,9 +365,15 @@ def fix_dead_end(product, rate):
     """Takes dead end nucleus (product) and computes the products of its
     disintegration and the corresponding rate.
     """
+    import sys
+    import os.path as path
+    from pandas import DataFrame, MultiIndex
+    datapath = path.dirname(path.abspath(__file__))
+    sys.path.append(datapath)
     from data.nucleardecays import NuclearDataTable
-    ndt = NuclearDataTable('../data/nubase2016.txt')
-    decdict = ndt.prepare_decay_table()
+    
+    ndt = NuclearDataTable(path.join(datapath, 'data/nubase2016.txt'))
+    decaydata = ndt.prepare_decay_table()
 
     get_nucid = lambda nuc: nuc[1] * 100 + nuc[0]
     get_ZA = lambda nucid: (nucid % 100, nucid // 100)
