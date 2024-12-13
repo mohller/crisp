@@ -811,7 +811,7 @@ class InteractionCore():
         self.interpolator = interp1d(self.boosts, self.tensor, 'cubic')
         self.interpyields = interp1d(self.boosts, self.light_prod_tensor, 'previous')
 
-    def get_distribution_parameters(self, mass_lims=(56, 11), injection_type=('only species', (26, 56)), absorption_type=('only mass', [54])):
+    def get_distribution_parameters(self, mass_lims=(56, 11), injection_type=('only species', (26, 56)), absorption_type=('only mass', [54]), boost_range=None):
         """Produces the injection vector and mass_range required to
         produce the distribution of nuclei starting from a certain mass
         and producing mass lower than a minimum given value.
