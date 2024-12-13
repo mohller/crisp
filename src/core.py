@@ -365,8 +365,6 @@ def fix_dead_end(product, rate):
     """Takes dead end nucleus (product) and computes the products of its
     disintegration and the corresponding rate.
     """
-    import sys
-    sys.path.append('../')
     from data.nucleardecays import NuclearDataTable
     ndt = NuclearDataTable('../data/nubase2016.txt')
     decdict = ndt.prepare_decay_table()
