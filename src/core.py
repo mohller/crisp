@@ -751,15 +751,18 @@ class InteractionCore():
 
             if np.any([prod not in self.species for prod in main_products]):
                 print(f'For nucleus {self.species[i]} some products were not found.')
-                # Fix the channels with dead ends
-                for rowid, prod in enumerate(main_products):
-                    if prod not in self.species:
-                        new_prods, new_rates = fix_dead_end(prod, nuc_branches[rowid, 2:])
+            # Fix the channels with dead ends
+            # if np.any([prod not in self.species for prod in main_products]):
+            #     print(f'For nucleus {self.species[i]} some products were not found when creating light yields tensor.')
 
-                        # print(prod, new_prods, max(new_prods), np.any([nprod in main_products for nprod in new_prods]))
-                        if not np.any([nprod in main_products for nprod in new_prods]):
-                            nuc_branches[rowid, :2] = max(new_prods)
-                            nuc_branches[rowid, 2:] = new_rates
+            #     for rowid, prod in enumerate(main_products):
+            #         if prod not in self.species:
+            #             new_prods, new_rates = fix_dead_end(prod, nuc_branches[rowid, 2:])
+
+            #             # print(prod, new_prods, max(new_prods), np.any([nprod in main_products for nprod in new_prods]))
+            #             if not np.any([nprod in main_products for nprod in new_prods]):
+            #                 nuc_branches[rowid, :2] = max(new_prods)
+            #                 nuc_branches[rowid, 2:] = new_rates
 
             for branch in nuc_branches:
                 try:
@@ -777,18 +780,19 @@ class InteractionCore():
             ly_matrices = np.zeros((len(self.species), len(self.species), len(self.boosts)))
             for i, nuc_branches in enumerate(light_yield[::-1]):
                 main_products = list(zip(nuc_branches[:, 0], nuc_branches[:, 1]))
+                
+                # # Fix the channels with dead ends
+                # if np.any([prod not in self.species for prod in main_products]):
+                #     print(f'For nucleus {self.species[i]} some products were not found when creating light yields tensor.')
+                    
+                #     for rowid, prod in enumerate(main_products):
+                #         if prod not in self.species:
+                #             new_prods, new_rates = fix_dead_end(prod, nuc_branches[rowid, 2:])
 
-                if np.any([prod not in self.species for prod in main_products]):
-                    print(f'For nucleus {self.species[i]} some products were not found when creating light yields tensor.')
-                    # Fix the channels with dead ends
-                    for rowid, prod in enumerate(main_products):
-                        if prod not in self.species:
-                            new_prods, new_rates = fix_dead_end(prod, nuc_branches[rowid, 2:])
-
-                            # print(prod, new_prods, max(new_prods), np.any([nprod in main_products for nprod in new_prods]))
-                            if not np.any([nprod in main_products for nprod in new_prods]):
-                                nuc_branches[rowid, :2] = max(new_prods)
-                                nuc_branches[rowid, 2:] = new_rates
+                #             # print(prod, new_prods, max(new_prods), np.any([nprod in main_products for nprod in new_prods]))
+                #             if not np.any([nprod in main_products for nprod in new_prods]):
+                #                 nuc_branches[rowid, :2] = max(new_prods)
+                #                 # nuc_branches[rowid, 2:] = new_rates # not rates, so new_rates is incorrect 
 
                 for branch in nuc_branches:
                     try:
