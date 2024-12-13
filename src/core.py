@@ -639,10 +639,13 @@ class InteractionCore():
         if mass_range is not None:
             reduced_tensor = reduced_tensor[np.ix_(mass_range, mass_range, range(len(boost_range)))]
 
-        # make diagonal zero
-        reduced_tensor -= np.dstack([np.diag(np.diag(reduced_tensor[:, :, k])) for k in range(reduced_tensor.shape[-1])]) 
-        # recompute diagonal including absorption states
-        reduced_tensor -= np.stack([np.diag(row) for row in reduced_tensor.sum(axis=1).T], axis=2)
+        # if is a matrix
+        if len(reduced_tensor[:, :, 0]) > 1:
+            # make diagonal zero 
+            reduced_tensor -= np.dstack([np.diag(np.diag(reduced_tensor[:, :, k])) for k in range(reduced_tensor.shape[-1])]) 
+            # recompute diagonal including absorption states
+            reduced_tensor -= np.stack([np.diag(row) for row in reduced_tensor.sum(axis=1).T], axis=2)
+
         # reduce excluding absorption states
         indices = [mass_range.index(ival) for ival in true_range]
         reduced_tensor = reduced_tensor[np.ix_(indices, indices, range(len(boost_range)))]
