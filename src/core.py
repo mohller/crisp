@@ -401,10 +401,11 @@ def generate_decay_tables(nuclei, nboosts=41, boosts=None):
         The data employed here is available at 
         https://www.anl.gov/phy/atomic-mass-data-resources
     """
+    import os.path as path
     from pandas import DataFrame, MultiIndex
     from data.nucleardecays import NuclearDataTable
-    
-    ndt = NuclearDataTable('../data/nubase2016.txt')
+    datapath = path.dirname(path.abspath(__file__))
+    ndt = NuclearDataTable(path.join(datapath, 'data/nubase2016.txt'))
     decaydata = ndt.prepare_decay_table()
 
     # He4, He3, H3, H2, p, n
