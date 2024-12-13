@@ -472,13 +472,21 @@ class InteractionCore():
     """Base class to produce interaction matrices
     """
 
-    def __init__(self):
+    def __init__(self, nuclear_decay_On=False):
         self._construct_from_files()
         self._genenerate_complete_matrices()
 
+        if nuclear_decay_On:
+            self._include_nuclear_decay()
+
     def _construct_from_files():
         """Function to load the interaction data from given files
-        and produce the core matrices.
+        and produce the core matrices. It should populate the 
+        following class properties:
+        - boosts
+        - nuclei : the nuclear species (Z, A) ordered by mass and charge
+        - all_branchings
+        - marginal_light_yields
         """
         pass
 
