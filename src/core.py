@@ -368,7 +368,7 @@ def fix_dead_end(product, rate):
     import sys
     import os.path as path
     from pandas import DataFrame, MultiIndex
-    datapath = path.dirname(path.abspath(__file__))
+    datapath = path.dirname(path.dirname(path.abspath(__file__)))
     sys.path.append(datapath)
     from data.nucleardecays import NuclearDataTable
     
@@ -410,7 +410,7 @@ def generate_decay_tables(nuclei, nboosts=41, boosts=None):
     import os.path as path
     from pandas import DataFrame, MultiIndex
     from data.nucleardecays import NuclearDataTable
-    datapath = path.dirname(path.abspath(__file__))
+    datapath = path.dirname(path.dirname(path.abspath(__file__)))
     ndt = NuclearDataTable(path.join(datapath, 'data/nubase2016.txt'))
     decaydata = ndt.prepare_decay_table()
 
