@@ -12,6 +12,11 @@ main_path = os.path.abspath(os.path.join(os.path.dirname( __file__ ), '..'))
 theta_plus = lambda z, eps : np.heaviside(eps - z, 1)
 theta_minus = lambda z, eps : theta_plus(-z, -eps)
 
+class cross_section_model(object):
+    def nuclei(self):
+        pass
+
+
 class GDR_atlas(object):
     """Models the Giant Dipole Resonance of a large number of nuclei.
        Data and models obtained from https://www-nds.iaea.org/PSFdatabase/atlas-gdr.html
@@ -26,6 +31,8 @@ class GDR_atlas(object):
         self.smlo_filename = os.path.join(main_path, 'data/gdr_parameters_exp&systematics/gdr-parameters_exp&systematics_smlo.dat')
         self.smlo_params = pd.read_fwf(self.smlo_filename, widths=2*[4,] + 9*[9,] + [5,], header=3)
         self.smlo_params.rename(columns={'#  Z':'Z'}, inplace=True)
+
+        self.nuclei = list(zip(self.slo_params.Z, self.slo_params.A))
 
     def sigma_gdr(self, eps, Z, A, gdr_type='slo'):
         """Returns the cross section in mb, takes energy eps in MeV
@@ -86,6 +93,8 @@ class PSB_model(object):
         self.params = pd.read_csv(self.PSB_filename, header=1)
         self.params.fillna(0, inplace=True)
 
+        self.nuclei = list(zip(self.params.Z, self.params.A))
+
     def cross_section(self, eps, Z, A, nloss=1):
         """The cross section as modeled in the reference to compute the
         interaction rates.
@@ -116,7 +125,6 @@ class SimProp_model(object):
        Source: https://iopscience.iop.org/article/10.1088/1475-7516/2017/11/009
     """
     def __init__(self, filename=None, M=0):
-        object.__init__(self)
         """Loads one of the models defined in the code
 
         Arguments:
@@ -125,6 +133,8 @@ class SimProp_model(object):
                   by default, assumes the PSB model is used.
         M: the input parameter used in SimProp for the given file (see publication).
         """
+        object.__init__(self)
+
         self.M = M
 
         if filename is None:
@@ -146,6 +156,8 @@ class SimProp_model(object):
 
         if self.params.shape[0] != num_species:
             print('Warning: Number of species in file does not match number of parameter lines.')
+
+        self.nuclei = [(int(Z), int(A)) for A, Z in self.params[:, :2]]
 
     def cross_section(self, eps, Z, A, nloss=1):
         """The cross section as modeled in the reference to compute the
