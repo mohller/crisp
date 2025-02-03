@@ -9,6 +9,9 @@ from scipy.interpolate import InterpolatedUnivariateSpline
 import os
 main_path = os.path.abspath(os.path.join(os.path.dirname( __file__ ), '..'))
 
+theta_plus = lambda z, eps : np.heaviside(eps - z, 1)
+theta_minus = lambda z, eps : theta_plus(-z, -eps)
+
 class GDR_atlas(object):
     """Models the Giant Dipole Resonance of a large number of nuclei.
        Data and models obtained from https://www-nds.iaea.org/PSFdatabase/atlas-gdr.html
@@ -93,10 +96,8 @@ class PSB_model(object):
         f_i = float(params[f'{nloss}'])
         zeta = float(params['zeta'])
         Sigma_d = 59.8 * (A - Z) * Z / A # in MeV * mb
-        theta_plus = lambda z : np.heaviside(eps - z, 1)
-        theta_minus = lambda z : np.heaviside(z - eps, 1)
 
-        csec = zeta * f_i * Sigma_d * theta_plus(30) / 120 # applies for all nloss values
+        csec = zeta * f_i * Sigma_d * theta_plus(30, eps) / 120 # applies for all nloss values
 
         if nloss in [1, 2]:
             eps0 = float(params[f'eps0{nloss}'])
@@ -105,10 +106,119 @@ class PSB_model(object):
             
             if D != 0:
                 W = np.sqrt(np.pi/8) * (erf( (30 - eps0) / D * np.sqrt(2)) + erf( (eps0 - 2) / D * np.sqrt(2)))
-                csec += 1/W * xi * Sigma_d / D * theta_plus(2) * theta_minus(30) * np.exp(-2 * ((eps - eps0) / D)**2)
+                csec += 1/W * xi * Sigma_d / D * theta_plus(2, eps) * theta_minus(30, eps) * np.exp(-2 * ((eps - eps0) / D)**2)
         
         return csec
         
+
+class SimProp_model(object):
+    """Models the cross sections in accordance with SimPropv2r4
+       Source: https://iopscience.iop.org/article/10.1088/1475-7516/2017/11/009
+    """
+    def __init__(self, filename=None, M=0):
+        object.__init__(self)
+        """Loads one of the models defined in the code
+
+        Arguments:
+        ----------
+        filename: the file containing the data (e.g. xsect_BreitWigner_TALYS-1.0.txt) 
+                  by default, assumes the PSB model is used.
+        M: the input parameter used in SimProp for the given file (see publication).
+        """
+        self.M = M
+
+        if filename is None:
+            if M in [0, 1, 2]:
+                filename = 'SimProp_models_M0_M1_M2.txt' # based on table from paper on SimPropv2.4
+            elif M == 3:
+                filename = 'xsect_BreitWigner2_TALYS-1.6.txt'
+            elif M == 4:
+                filename = 'xsect_Gauss2_TALYS-restored.txt'
+
+        self.filename = os.path.join(main_path, 'data', filename)
+
+        with open(self.filename) as file:
+            num_species, eps_mid, eps_max = [float(val) for val in file.readline().split()]
+        
+        self.params = np.genfromtxt(self.filename, skip_header=1)
+        self.eps_mid = eps_mid
+        self.eps_max = eps_max
+
+        if self.params.shape[0] != num_species:
+            print('Warning: Number of species in file does not match number of parameter lines.')
+
+    def cross_section(self, eps, Z, A, nloss=1):
+        """The cross section as modeled in the reference to compute the
+        interaction rates.
+        """
+        from scipy.special import erf
+
+        branchings = np.array([
+            [.8,  .2,  0,   0,   0,    0,   0,    0,   0,    0,   0,    0,    0,    0,   0],
+            [1.,   0,  0,   0,   0,    0,   0,    0,   0,    0,   0,    0,    0,    0,   0],
+            [.1,  .3, .1,  .1,  .2,   .2,   0,    0,   0,    0,   0,    0,    0,    0,   0],
+            [.1, .35, .1, .05, .15, .045, .04, .035, .03, .025, .02, .018, .015, .012, .01]
+        ])
+
+        if A in [3, 4]:
+            f_i = branchings[0, nloss - 1]
+        elif A == 9:
+            f_i = branchings[1, nloss - 1]
+        elif A in range(10, 23):
+            f_i = branchings[2, nloss - 1]
+        elif A in range(23, 57):
+            f_i = branchings[3, nloss - 1]
+        
+        params = self.params[np.logical_and(self.params[:, 1] == Z, self.params[:, 0] == A)].flatten()[2:]
+
+        if self.M in [0, 1, 2]:
+            zeta = params[-1]
+            Sigma_d = 60 * (A - Z) * Z / A # in MeV * mb
+            csec = zeta * f_i * Sigma_d * theta_plus(self.eps_mid, np.zeros_like(eps)) / (self.eps_max - self.eps_mid) # applies for all nloss values
+            
+            if nloss in [1, 2]:
+                eps0 = params[2 + 3*(nloss-1)]
+                epsmin = params[(nloss-1)]
+                xi = params[3 + 3*(nloss-1)]
+                D = params[4 + 3*(nloss-1)]
+                
+                if D != 0:
+                    if self.M == 2:
+                        csec += xi / (1 + ((eps - eps0) / D)**2)
+                    else:
+                        W = np.sqrt(np.pi) / 2 * D * (erf( (self.eps_mid - eps0) / D) + erf( (self.eps_mid - eps0) / D))
+                        csec += xi * Sigma_d / W * theta_plus(epsmin, eps) * theta_minus(self.eps_mid, eps) * np.exp(-((eps - eps0) / D)**2)
+        elif self.M == 3:
+            t_N, h1_N, x1_N, w1_N, h2_N, x2_N, w2_N, c_N, t_a, h1_a, x1_a, w1_a, h2_a, x2_a, w2_a, c_a = params
+            
+            m3comp = lambda h, x, w: h / (1 + ((eps - x) / w)**2)
+
+            if nloss == 1:
+                csec = np.where(np.logical_and(t_N <= eps, eps < self.eps_mid), m3comp(h1_N, x1_N, w1_N) + m3comp(h2_N, x2_N, w2_N), 0) + \
+                       np.where(np.logical_and(self.eps_mid <= eps, eps <= self.eps_max), c_N, 0)
+            elif nloss == 4:
+                csec = np.where(np.logical_and(t_a <= eps, eps < self.eps_mid), m3comp(h1_a, x1_a, w1_a) + m3comp(h2_a, x2_a, w2_a), 0) + \
+                       np.where(np.logical_and(self.eps_mid <= eps, eps <= self.eps_max), c_a, 0)
+            else:
+                csec = np.zeros_like(eps)
+        elif self.M == 4:
+            t_N, h1_N, x1_N, w1_N, c_N, t_a, h1_a, x1_a, w1_a, c_a = params
+
+            m4comp = lambda h, x, w: h * np.exp(-((eps - x) / w)**2)
+
+            if nloss == 1:
+                csec = np.where(np.logical_and(t_N <= eps, eps < self.eps_mid), m4comp(h1_N, x1_N, w1_N), 0) + \
+                       np.where(np.logical_and(self.eps_mid <= eps, eps <= self.eps_max), c_N, 0)
+            elif nloss == 4:
+                csec = np.where(np.logical_and(t_a <= eps, eps < self.eps_mid), m4comp(h1_a, x1_a, w1_a), 0) + \
+                       np.where(np.logical_and(self.eps_mid <= eps, eps <= self.eps_max), c_a, 0)
+            else:
+                csec = np.zeros_like(eps)
+
+        csec[eps > self.eps_max] = 0
+
+        return csec
+
 
 def pgamma(eps_r):
     """Photonuclear cross section in the energy range .1-1e4 GeV
