@@ -483,10 +483,16 @@ class InteractionCore():
         """Function to load the interaction data from given files
         and produce the core matrices. It should populate the 
         following class properties:
-        - boosts
+        - boosts : a grid of boosts corresponding to the grid of rates
         - nuclei : the nuclear species (Z, A) ordered by mass and charge
-        - all_branchings
-        - marginal_light_yields
+        - all_branchings : a 2D array where in each row corresponds to 
+        the grid of rates for the nucleus with the same row index in nuclei
+        - marginal_light_yields : a list where each element contains an 
+        array with the number of rows matching the number of decays of the
+        corresponding nucleus, the first two values of the row are the (Zd, Ad)
+        charge and mass numbers of the product with the largest mass, and the 
+        remaining values are the grid of rates for the corresponding cross
+        section of that channel
         """
         pass
 
