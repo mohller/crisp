@@ -99,9 +99,9 @@ class PSB_model(object):
         for Z, A in self.nuclei:
             if A == 2:
                 channels = [(1, 1)]
-            if A == 3:
+            elif A == 3:
                 channels = [(1, 1), (1, 2)]
-            if A == 4:
+            elif A == 4:
                 channels = [(1, 2), (2, 3)]
             elif A == 9:
                 channels = [(2, 4)]
@@ -167,8 +167,42 @@ class SimProp_model(object):
         if filename is None:
             if M in [0, 1, 2]:
                 filename = 'SimProp_models_M0_M1_M2.txt' # based on table from paper on SimPropv2.4
+
+                self.channels = []        
+                for Z, A in self.nuclei:
+                    if A == 2:
+                        channels = [(1, 1)]
+                    elif A == 3:
+                        channels = [(1, 1), (1, 2)]
+                    elif A == 4:
+                        channels = [(1, 2), (2, 3)]
+                    elif A == 9:
+                        channels = [(2, 4)]
+                    elif A in range(10, 23):
+                        channels = [(Z, A-nloss) for nloss in range(1, 7)]
+                    elif A in range(23, 57):
+                        channels = [(Z, A-nloss) for nloss in range(1, 16)]
+                        
+                    self.channels.append(channels)
             elif M == 3:
                 filename = 'xsect_BreitWigner2_TALYS-1.6.txt'
+
+                self.channels = []        
+                for Z, A in self.nuclei:
+                    if A == 2:
+                        channels = [(1, 1)]
+                    elif A == 3:
+                        channels = [(1, 1), (1, 2)]
+                    elif A == 4:
+                        channels = [(1, 2), (2, 3)]
+                    elif A == 9:
+                        channels = [(2, 4)]
+                    elif A in range(10, 12):
+                        channels = [(Z-1, A-1), (2, 4)]
+                    elif A in range(13, 57):
+                        channels = [(Z-1, A-1), (Z-2, A-4)]
+                        
+                    self.channels.append(channels)                
             elif M == 4:
                 filename = 'xsect_Gauss2_TALYS-restored.txt'
 
