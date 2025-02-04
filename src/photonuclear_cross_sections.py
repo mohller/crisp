@@ -291,7 +291,16 @@ class SimProp_model(object):
         csec[eps > self.eps_max] = 0
 
         return csec
+    
+    def total_cross_section(self, eps, Z, A):
+        """Cross section computed as the sum of all the exclusive cross sections
+        of the channels of the given nucleus (Z, A)
+        """
+        channels = []
+        for _, Arem in self.channels[self.nuclei.index((Z, A))]:
+            channels.append(self.cross_section(eps, Z, A, A-Arem))
 
+        return np.sum(channels, axis=0)
 
 def pgamma(eps_r):
     """Photonuclear cross section in the energy range .1-1e4 GeV
