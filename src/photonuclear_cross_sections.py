@@ -94,6 +94,23 @@ class PSB_model(object):
         self.params.fillna(0, inplace=True)
 
         self.nuclei = list(zip(self.params.Z, self.params.A))
+        self.channels = []
+        
+        for Z, A in self.nuclei:
+            if A == 2:
+                channels = [(1, 1)]
+            if A == 3:
+                channels = [(1, 1), (1, 2)]
+            if A == 4:
+                channels = [(1, 2), (2, 3)]
+            elif A == 9:
+                channels = [(2, 4)]
+            elif A in range(10, 23):
+                channels = [(Z, A-nloss) for nloss in range(1, 7)]
+            elif A in range(23, 57):
+                channels = [(Z, A-nloss) for nloss in range(1, 16)]
+                
+            self.channels.append(channels)
 
     def cross_section(self, eps, Z, A, nloss=1):
         """The cross section as modeled in the reference to compute the
@@ -118,7 +135,17 @@ class PSB_model(object):
                 csec += 1/W * xi * Sigma_d / D * theta_plus(2, eps) * theta_minus(30, eps) * np.exp(-2 * ((eps - eps0) / D)**2)
         
         return csec
-        
+    
+    def total_cross_section(self, eps, Z, A):
+        """Cross section computed as the sum of all the exclusive cross sections
+        of the channels of the given nucleus (Z, A)
+        """
+        channels = []
+        for _, Arem in self.channels[self.nuclei.index((Z, A))]:
+            channels.append(self.cross_section(eps, Z, A, A-Arem))
+
+        return np.sum(channels, axis=0)
+
 
 class SimProp_model(object):
     """Models the cross sections in accordance with SimPropv2r4
