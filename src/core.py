@@ -485,14 +485,24 @@ class InteractionCore():
         following class properties:
         - boosts : a grid of boosts corresponding to the grid of rates
         - nuclei : the nuclear species (Z, A) ordered by mass and charge
-        - all_branchings : a 2D array where in each row corresponds to 
+        - all_rates : a 2D array where in each row corresponds to 
         the grid of rates for the nucleus with the same row index in nuclei
-        - marginal_light_yields : a list where each element contains an 
+        - all_branchings : a list where each element contains an 
         array with the number of rows matching the number of decays of the
         corresponding nucleus, the first two values of the row are the (Zd, Ad)
         charge and mass numbers of the product with the largest mass, and the 
         remaining values are the grid of rates for the corresponding cross
         section of that channel
+        - marginal_light_yields : a list of six elements corresponding to the
+        production of each of the light products [He4, He3, T, D, p, n] (in that 
+        order) in each of the channels contained in all_branchings. Therefore, 
+        in each of the six elements, there's a list with the same structure as 
+        all_branchings (each element has an array with the production of the 
+        species in the corresponding index in nuclei) but for each channel, 
+        while the first two values of the row are the (Zd, Ad) charge and mass 
+        numbers of the product with the largest mass, the grid contains the 
+        product of the number of particles of the light product yielded in the 
+        channel and the branching ratio of the channel.
         """
         pass
 
