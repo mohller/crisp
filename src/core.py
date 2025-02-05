@@ -1511,11 +1511,11 @@ class InteractionCore_PSB_CMB(InteractionCore):
         psb_model = PSB_model()
         reversed_by_mass = psb_model.params.sort_values(by=['A', 'Z'], ascending=True)
 
-        nuclei, pdis_rates_cmb, branchings_cmb = [], [], []
+        nuclei, pdis_rates_cmb, branchings_cmb, mlyp, mlyn = [], [], [], [], []
         for Z, A in zip(reversed_by_mass['Z'], reversed_by_mass['A']):
             nuclei.append((int(Z), int(A)))
 
-            branchings = []
+            branchings, lyp, lyn = [], [], []
             for nloss in range(1, 16): # only up to 15 possible
                 Arem = int(A - nloss)
 
@@ -1533,11 +1533,22 @@ class InteractionCore_PSB_CMB(InteractionCore):
                 pdis_rates /= c / parsec / 1e6 # ito Mpc
 
                 branchings.append(np.append([Zrem, Arem], pdis_rates))
+                lyp.append(np.append([Zrem, Arem], (Z - Zrem) * pdis_rates))
+                lyn.append(np.append([Zrem, Arem], (A - Z - Arem + Zrem) * pdis_rates))
+
+            mlyp.append(np.vstack(lyp))
+            mlyn.append(np.vstack(lyp))
             
             pdis_rates_cmb.append(np.sum(np.atleast_2d((branchings)), axis=0)[2:])
             branchings_cmb.append(branchings)
+
+        branchings_cmb = [np.vstack(br) for br in branchings_cmb]
+        marginal_light_yields = [[np.atleast_2d(np.hstack([br[:, :2], np.zeros_like(br[:, 2:])])) for br in branchings_cmb] for _ in range(4)]
+        marginal_light_yields.append(mlyp)
+        marginal_light_yields.append(mlyn)
             
         self.boosts = boosts 
         self.nuclei = nuclei
-        self.all_rates = pdis_rates_cmb
+        self.all_rates = np.vstack(pdis_rates_cmb)
         self.all_branchings = branchings_cmb
+        self.marginal_light_yields = marginal_light_yields
