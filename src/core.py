@@ -755,7 +755,7 @@ class InteractionCore():
     def _genenerate_complete_matrices(self):
         """Generates, for each boost, a complete interaction matrix from the interaction tables
         """
-        Zmax, Amax = self.nuclei[-1]  # largest species
+        Zmax, Amax = max(self.nuclei) # species with the largest mass
 
         species = prepare_species_list(self.nuclei, Zmax, Amax, Amax-1)
         self.species = species + [(0, 1), (1, 1)]
@@ -1549,6 +1549,102 @@ class InteractionCore_PSB_CMB(InteractionCore):
             
         self.boosts = boosts 
         self.nuclei = nuclei
+        self.all_rates = np.vstack(pdis_rates_cmb)
+        self.all_branchings = branchings_cmb
+        self.marginal_light_yields = marginal_light_yields
+
+
+class InteractionCore_SimProp_CMB(InteractionCore):
+    def __init__(self, M=1, nuclear_decay_On=False):
+        self.M = M
+        InteractionCore.__init__(self, nuclear_decay_On)
+
+    def _construct_from_files(self):
+        """Based on the cross section models implemented in SimProp v2.4
+        """
+        from scipy.constants import c, parsec
+        from interaction_rates import interaction_rate_from_cross_section
+        from background_photon_models import cmb_photon_density_GeVcm3
+        from photonuclear_cross_sections import SimProp_model
+
+        boosts = np.logspace(6, 14, 201)
+        eps = 1e-3 * np.linspace(5, 50, 200) # in GeV
+
+        sim_model = SimProp_model(M=self.M)
+
+        pdis_rates_cmb, branchings_cmb, mlyp, mlyn = [], [], [], []
+        for (Z, A), products in zip(sim_model.nuclei, sim_model.channels):
+            branchings, lyp, lyn = [], [], []
+            for Zrem, Arem in products:
+                nloss = int(A - Arem)
+
+                cross_section = 1e-27 * sim_model.cross_section(eps * 1e3, Z, A, nloss) # to cm2
+                pdis_rates = interaction_rate_from_cross_section(A*boosts, A, cmb_photon_density_GeVcm3, eps, cross_section)
+                pdis_rates /= c / parsec / 1e6 # ito Mpc
+
+                branchings.append(np.append([Zrem, Arem], pdis_rates))
+                lyp.append(np.append([Zrem, Arem], (Z - Zrem) * pdis_rates))
+                lyn.append(np.append([Zrem, Arem], (A - Z - Arem + Zrem) * pdis_rates))
+
+            mlyp.append(np.vstack(lyp))
+            mlyn.append(np.vstack(lyp))
+            
+            pdis_rates_cmb.append(np.sum(np.atleast_2d((branchings)), axis=0)[2:])
+            branchings_cmb.append(branchings)
+
+        branchings_cmb = [np.vstack(br) for br in branchings_cmb]
+        marginal_light_yields = [[np.atleast_2d(np.hstack([br[:, :2], np.zeros_like(br[:, 2:])])) for br in branchings_cmb] for _ in range(4)]
+        marginal_light_yields.append(mlyp)
+        marginal_light_yields.append(mlyn)
+            
+        self.boosts = boosts 
+        self.nuclei = sim_model.nuclei.copy()
+        self.all_rates = np.vstack(pdis_rates_cmb)
+        self.all_branchings = branchings_cmb
+        self.marginal_light_yields = marginal_light_yields
+
+
+class InteractionCore_GDRA_CMB(InteractionCore):
+    def _construct_from_files(self):
+        """Based on the cross sections from the GDR atlas
+        """
+        from scipy.constants import c, parsec
+        from interaction_rates import interaction_rate_from_cross_section
+        from background_photon_models import cmb_photon_density_GeVcm3
+        from photonuclear_cross_sections import GDR_atlas
+
+        boosts = np.logspace(6, 14, 201)
+        eps = 1e-3 * np.linspace(5, 50, 200) # in GeV
+
+        sim_model = GDR_atlas()
+
+        pdis_rates_cmb, branchings_cmb, mlyp, mlyn = [], [], [], []
+        for (Z, A), products in zip(sim_model.nuclei, sim_model.channels):
+            branchings, lyp, lyn = [], [], []
+            for Zrem, Arem in products:
+                nloss = int(A - Arem)
+
+                cross_section = 1e-27 * sim_model.cross_section(eps * 1e3, Z, A, nloss) # to cm2
+                pdis_rates = interaction_rate_from_cross_section(A*boosts, A, cmb_photon_density_GeVcm3, eps, cross_section)
+                pdis_rates /= c / parsec / 1e6 # ito Mpc
+
+                branchings.append(np.append([Zrem, Arem], pdis_rates))
+                lyp.append(np.append([Zrem, Arem], (Z - Zrem) * pdis_rates))
+                lyn.append(np.append([Zrem, Arem], (A - Z - Arem + Zrem) * pdis_rates))
+
+            mlyp.append(np.vstack(lyp))
+            mlyn.append(np.vstack(lyp))
+            
+            pdis_rates_cmb.append(np.sum(np.atleast_2d((branchings)), axis=0)[2:])
+            branchings_cmb.append(branchings)
+
+        branchings_cmb = [np.vstack(br) for br in branchings_cmb]
+        marginal_light_yields = [[np.atleast_2d(np.hstack([br[:, :2], np.zeros_like(br[:, 2:])])) for br in branchings_cmb] for _ in range(4)]
+        marginal_light_yields.append(mlyp)
+        marginal_light_yields.append(mlyn)
+            
+        self.boosts = boosts 
+        self.nuclei = sim_model.nuclei.copy()
         self.all_rates = np.vstack(pdis_rates_cmb)
         self.all_branchings = branchings_cmb
         self.marginal_light_yields = marginal_light_yields
