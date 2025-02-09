@@ -301,6 +301,93 @@ class SimProp_model(object):
 
         return np.sum(channels, axis=0)
 
+
+class CRPropa_model(object):
+    """Loads the cross sections provided with CRPropa-data
+       Source: https://iopscience.iop.org/article/10.1088/1475-7516/2017/11/009
+    """
+    def __init__(self, path=None):
+        """Loads the tabulated cross sections
+
+        Arguments:
+        ----------
+        path: path to the cross section tables
+        """
+        object.__init__(self)
+
+        if np.any([name in path for name in ['PD_Talys1.8', 'PD_Talys1.9']]):
+            self.tot_xsec_data = np.genfromtxt(os.path.join(path, 'xs_pd_sum.txt'))
+            self.xsec_data = np.genfromtxt(os.path.join(path, 'xs_pd_thin.txt'))
+        else:
+            self.tot_xsec_data = np.genfromtxt(os.path.join(path, 'xs_sum.txt'))
+            self.xsec_data = np.genfromtxt(os.path.join(path, 'xs_thin.txt'))
+        
+        self.tot_xsec_data[:, 1] += self.tot_xsec_data[:, 0]
+        self.xsec_data[:, 1] += self.xsec_data[:, 0]
+
+        self.eps = np.genfromtxt(os.path.join(path, 'eps.txt'))
+        self.isotopes = np.genfromtxt(os.path.join(path, 'isotopes.txt'))
+
+        self.nuclei = [(int(Z), int(A)) for Z, N, A in self.isotopes]
+        
+        self.channels = []
+        for Z, A in self.nuclei:
+            channels = self.xsec_data[np.argwhere(np.logical_and(self.xsec_data[:, 0] == Z, self.xsec_data[:, 1] == A)), 2]
+            
+            if np.any(channels):
+                rem_list = []
+                small_list = np.zeros(6)
+                for channel in channels.flatten():
+                    small_prods = np.array(get_particle_numbers(channel))
+                    small_list += small_prods
+
+                    Zprod = small_prods.dot([Zd for Zd, _ in daughters])
+                    Aprod = small_prods.dot([Ad for _, Ad in daughters])
+                    rem_list.append((Z-Zprod, A-Aprod))
+
+                for present, daughter in zip(small_list > 0, daughters):
+                    if present:
+                        rem_list.append(daughter)
+                
+                rem_list.sort()
+                self.channels.append(rem_list)
+            else:
+                self.channels.append([])
+
+    def cross_section(self, eps, Z, A, nloss=None, rem=None):
+        """The cross section as modeled in the reference to compute the
+        interaction rates.
+        """
+        csec = np.zeros_like(eps)
+        
+        if (nloss is None) and (rem is None):
+            print('Warning: Total cross sections for M4 are not well defined')
+        elif nloss is not None:
+            csec = np.zeros_like(eps)
+        else:            
+            if rem in daughters:
+                csec = np.zeros_like(eps)
+            else:
+                channels = self.xsec_data[np.argwhere(np.logical_and(self.xsec_data[:, 0] == Z, self.xsec_data[:, 1] == A)), 2:]
+
+                for channel in channels:
+                    small_prods = np.array(get_particle_numbers(channel[0]))
+                    Zprod = small_prods.dot([Zd for Zd, _ in daughters])
+                    Aprod = small_prods.dot([Ad for _, Ad in daughters])
+
+                    if rem == (Z-Zprod, A-Aprod):
+                        csec += np.interp(eps, self.eps, channel[1:])
+
+        return csec
+    
+    def total_cross_section(self, eps, Z, A):
+        """Cross section computed as the sum of all the exclusive cross sections
+        of the channels of the given nucleus (Z, A)
+        """
+        xs = self.tot_xsec_data[np.argwhere(np.logical_and(self.tot_xsec_data[:, 0] == Z, self.tot_xsec_data[:, 1] == A))].flatten()[2:]
+        
+        return np.interp(eps, self.eps, xs)
+
 def pgamma(eps_r):
     """Photonuclear cross section in the energy range .1-1e4 GeV
     taken from Rachen PhD Thesis. 
