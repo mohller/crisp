@@ -12,16 +12,44 @@ main_path = os.path.abspath(os.path.join(os.path.dirname( __file__ ), '..'))
 theta_plus = lambda z, eps : np.heaviside(eps - z, 1)
 theta_minus = lambda z, eps : theta_plus(-z, -eps)
 
-class cross_section_model(object):
-    def nuclei(self):
-        pass
+def get_particle_numbers(channel):
+    """Extracts the info from the channel number in CRPropa's branching files
+    The channel number is a number between 1 and 1000000 where the digits
+    represents the amounts of different particles produced in an interaction.
+    The channel number (CN) is as follows:
+    CN = nN * 100000 +
+        nP * 10000 +
+        nH2 * 1000 +
+        nH3 * 100 +
+        nHe3 * 10 +
+        nHe4 * 1
+    nN   : Number of neutrons
+    nP   : Number of protons
+    nH2  : Number of deuterium
+    nH3  : Number of tritium
+    nHe3 : Number of helium three
+    nHe4 : Number of helium four
+
+    The function returns the values in the following order
+    [nHe4, nHe3, nH3, nH2, nP, nN]
+    """
+
+    val = channel
+    digits = []
+    for _ in range(6):
+        val, d = divmod(val, 10)
+        digits.append(d)
+
+    return digits
+
+daughters = [(2, 4), (2, 3), (1, 3), (1, 2), (1, 1), (0, 1)]
 
 
 class GDR_atlas(object):
     """Models the Giant Dipole Resonance of a large number of nuclei.
        Data and models obtained from https://www-nds.iaea.org/PSFdatabase/atlas-gdr.html
     """
-    def __init__(self):
+    def __init__(self, channel_set=None):
         object.__init__(self)
 
         self.slo_filename = os.path.join(main_path, 'data/gdr_parameters_exp&systematics/gdr-parameters_exp&systematics_slo.dat')
@@ -33,6 +61,19 @@ class GDR_atlas(object):
         self.smlo_params.rename(columns={'#  Z':'Z'}, inplace=True)
 
         self.nuclei = list(zip(self.slo_params.Z, self.slo_params.A))
+        self.channels = []
+
+        if channel_set is None: # 
+            for Z, A in self.nuclei:
+                if A in range(10, 23):
+                    channels = [(Z, A-nloss) for nloss in range(1, 7)]
+                elif A in range(23, 57):
+                    channels = [(Z, A-nloss) for nloss in range(1, 16) if ()]
+                else:
+                    channels = [(Z, A-nloss) for nloss in range(1, 16)]
+                    
+                self.channels.append(channels)
+
 
     def sigma_gdr(self, eps, Z, A, gdr_type='slo'):
         """Returns the cross section in mb, takes energy eps in MeV
@@ -106,9 +147,11 @@ class PSB_model(object):
             elif A == 9:
                 channels = [(2, 4)]
             elif A in range(10, 23):
-                channels = [(Z, A-nloss) for nloss in range(1, 7)]
+                channels = [([Zr for Zr, Ar in self.nuclei if Ar == A-nloss][0], A-nloss) for nloss in range(1, 7)
+                            if [Zr for Zr, Ar in self.nuclei if Ar == A-nloss] != []]
             elif A in range(23, 57):
-                channels = [(Z, A-nloss) for nloss in range(1, 16)]
+                channels = [([Zr for Zr, Ar in self.nuclei if Ar == A-nloss][0], A-nloss) for nloss in range(1, 16)
+                            if [Zr for Zr, Ar in self.nuclei if Ar == A-nloss] != []]
                 
             self.channels.append(channels)
 
@@ -165,10 +208,12 @@ class SimProp_model(object):
         self.M = M
 
         if filename is None:
-            if M in [0, 1, 2]:
+            if M in [0, 1]:
                 filename = 'SimProp_models_M0_M1_M2.txt' # based on table from paper on SimPropv2.4
+            elif M == 2:
+                filename = 'xsect_BreitWigner_TALYS-1.6.txt' # based on table from paper on SimPropv2.4
             elif M == 3:
-                filename = 'xsect_BreitWigner2_TALYS-1.6.txt'       
+                filename = 'xsect_BreitWigner2_TALYS-1.6.txt'
             elif M == 4:
                 filename = 'xsect_Gauss2_TALYS-restored.txt'
 
@@ -185,6 +230,8 @@ class SimProp_model(object):
             print('Warning: Number of species in file does not match number of parameter lines.')
 
         self.nuclei = [(int(Z), int(A)) for A, Z in self.params[:, :2]]
+        self.nuclei.sort()
+
         self.channels = []
         if M in [0, 1, 2]:
             for Z, A in self.nuclei:
@@ -197,9 +244,11 @@ class SimProp_model(object):
                 elif A == 9:
                     channels = [(2, 4)]
                 elif A in range(10, 23):
-                    channels = [(Z, A-nloss) for nloss in range(1, 7)]
+                    channels = [([Zr for Zr, Ar in self.nuclei if Ar == A-nloss][0], A-nloss) for nloss in range(1, 7)
+                                if [Zr for Zr, Ar in self.nuclei if Ar == A-nloss] != []]
                 elif A in range(23, 57):
-                    channels = [(Z, A-nloss) for nloss in range(1, 16)]
+                    channels = [([Zr for Zr, Ar in self.nuclei if Ar == A-nloss][0], A-nloss) for nloss in range(1, 16)
+                                if [Zr for Zr, Ar in self.nuclei if Ar == A-nloss] != []]
                     
                 self.channels.append(channels)
         elif M in [3, 4]:
@@ -234,7 +283,7 @@ class SimProp_model(object):
 
         if A in [3, 4]:
             f_i = branchings[0, nloss - 1]
-        elif A == 9:
+        elif A in [2, 9]:
             f_i = branchings[1, nloss - 1]
         elif A in range(10, 23):
             f_i = branchings[2, nloss - 1]
@@ -250,7 +299,7 @@ class SimProp_model(object):
             
             if nloss in [1, 2]:
                 eps0 = params[2 + 3*(nloss-1)]
-                epsmin = params[(nloss-1)]
+                epsmin = params[nloss-1]
                 xi = params[3 + 3*(nloss-1)]
                 D = params[4 + 3*(nloss-1)]
                 
@@ -273,10 +322,12 @@ class SimProp_model(object):
                        np.where(np.logical_and(self.eps_mid <= eps, eps <= self.eps_max), c_a, 0)
             else:
                 csec = np.zeros_like(eps)
+
+            print('Warning: Total cross sections for M3 are not well defined')
         elif self.M == 4:
             t_N, h1_N, x1_N, w1_N, c_N, t_a, h1_a, x1_a, w1_a, c_a = params
 
-            m4comp = lambda h, x, w: h * np.exp(-((eps - x) / w)**2)
+            m4comp = lambda h, x, w: h * np.exp(-(eps - x)**2 / w)
 
             if nloss == 1:
                 csec = np.where(np.logical_and(t_N <= eps, eps < self.eps_mid), m4comp(h1_N, x1_N, w1_N), 0) + \
@@ -286,6 +337,8 @@ class SimProp_model(object):
                        np.where(np.logical_and(self.eps_mid <= eps, eps <= self.eps_max), c_a, 0)
             else:
                 csec = np.zeros_like(eps)
+
+            print('Warning: Total cross sections for M4 are not well defined')
 
         csec[eps > self.eps_max] = 0
 
@@ -328,7 +381,7 @@ class CRPropa_model(object):
         self.eps = np.genfromtxt(os.path.join(path, 'eps.txt'))
         self.isotopes = np.genfromtxt(os.path.join(path, 'isotopes.txt'))
 
-        self.nuclei = [(int(Z), int(A)) for Z, N, A in self.isotopes]
+        self.nuclei = [(int(Z), int(A)) for Z, N, A in self.isotopes if A > 4]
         
         self.channels = []
         for Z, A in self.nuclei:
@@ -352,6 +405,7 @@ class CRPropa_model(object):
                 rem_list.sort()
                 self.channels.append(rem_list)
             else:
+                print(channels)
                 self.channels.append([])
 
     def cross_section(self, eps, Z, A, nloss=None, rem=None):
@@ -368,15 +422,15 @@ class CRPropa_model(object):
             if rem in daughters:
                 csec = np.zeros_like(eps)
             else:
-                channels = self.xsec_data[np.argwhere(np.logical_and(self.xsec_data[:, 0] == Z, self.xsec_data[:, 1] == A)), 2:]
+                channels = self.xsec_data[np.where(np.logical_and(self.xsec_data[:, 0] == Z, self.xsec_data[:, 1] == A))]
 
                 for channel in channels:
-                    small_prods = np.array(get_particle_numbers(channel[0]))
+                    small_prods = np.array(get_particle_numbers(channel[2]))
                     Zprod = small_prods.dot([Zd for Zd, _ in daughters])
                     Aprod = small_prods.dot([Ad for _, Ad in daughters])
 
                     if rem == (Z-Zprod, A-Aprod):
-                        csec += np.interp(eps, self.eps, channel[1:])
+                        csec += np.interp(eps, self.eps, channel[3:])
 
         return csec
     
@@ -532,13 +586,13 @@ def get_interp_response_function(epsilon, cs):
     cs      : array, cross section values corresponding to the given energies
               in desired units
     """
-    y = epsilon / 2.
-    f = cumtrapz(epsilon * cs, x=epsilon, initial=0) / (2 * y**2)
 
-    interp_f = InterpolatedUnivariateSpline(y, f, ext=1)  # ext=1 to return
+    f = cumtrapz(epsilon * cs, x=epsilon, initial=0) / epsilon**2
+
+    interp_f = InterpolatedUnivariateSpline(epsilon, f, ext=1)  # ext=1 to return
     # zeros outside of range
 
-    return (y[0], y[-1]), interp_f
+    return (epsilon[0], epsilon[-1]), interp_f
 
 
 def universal_function(energy_grid):

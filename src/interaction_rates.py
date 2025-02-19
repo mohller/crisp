@@ -32,7 +32,7 @@ def interaction_rate_adiabatic(energies, radius):
     radius : shell radius in m
     """
 
-    return c / radius * np.ones_like(energies)
+    return c.value / radius * np.ones_like(energies)
 
 
 def interaction_rate_acceleration(energies, Z, eta, mgn_field):
@@ -47,7 +47,7 @@ def interaction_rate_acceleration(energies, Z, eta, mgn_field):
     """
     Rg = gyroradius(Z, mgn_field, energies)
 
-    return eta * c / Rg
+    return eta * c.value / Rg
 
 
 def interaction_rate_synchrotron(energies, Z, A, mgn_field):
@@ -88,12 +88,12 @@ def interaction_rate_from_cross_section(energies, A, ng, eg, cs):
     """Returns the interaction rate from the cross section and the photon spectrum
     Parameters:
     -----------
-    energies  : particle energies in GeV
-    A         : particle's nucleon number
+    energies  : uhecr's energies in GeV
+    A         : uhecr's mass in GeV/c2 (nucleon number typically)
     ng        : a function describing the photon spectral density. Should take 
                 energy in GeV and return photon density in GeV^-1 cm^-3
-    eg        : photon energy in nucleus rest frame in GeV 
-    cs        : cross section in cm^2
+    eg        : photon grid for the cross section (energy in nucleus rest frame in GeV)
+    cs        : cross section for photonuclear interaction evaluated in eg, given in cm^2
     Returns:
     --------
     rates     : interaction rates corresponding to cross section provided in s^-1
@@ -105,9 +105,8 @@ def interaction_rate_from_cross_section(energies, A, ng, eg, cs):
     rates = []
     for Ej in energies:
         boost = Ej / m
-        epsilon = y / boost
-        rates.append(np.trapz(ng(epsilon) * f(y) * y * np.log(10) / boost,
-                             x=np.log10(y)))
+        epsilon = y / boost / 2
+        rates.append(np.trapz(ng(epsilon) * f(y) / boost, y))
 
     rates = c.to('cm/s').value * np.array(rates)
 

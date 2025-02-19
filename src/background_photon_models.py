@@ -95,11 +95,11 @@ def black_body_spectral_radiance_wavelength(T, lamrange):
 
 To = 2.725 # Kelvin, CMB temperature
 
-# CMB photon density in m^-3 eV^-1
+# CMB photon density in m^-3, takes energy in eV
 cmb_photon_density = lambda T, erange: 4 * pi / h / c * black_body_spectral_radiance(T, erange) / erange
 
-# CMB photon energy density in GeV / cm^3
-cmb_photon_density_GeVcm3 = lambda erange: cmb_photon_density(To, erange * 1e9) / erange / 1e9
+# CMB photon energy density in cm^-3 takes energy in GeV
+cmb_photon_density_GeVcm3 = lambda erange: cmb_photon_density(To, erange * 1e9) / 1e6 * 1e9 # 1e6 for m3 to cm3 and 1e9 for eV to GeV
 
 cmb = black_body_spectral_radiance
 
