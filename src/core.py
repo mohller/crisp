@@ -311,6 +311,8 @@ def generate_photomeson_tables_from_cross_sections(nuclei, xsp, xsn, target_phot
 
     if boosts is None:
         boosts = np.logspace(5, 14, nboosts)
+    else:
+        nboosts = len(boosts)
     
     cols = [f'{i}' for i in range(len(boosts))]
     
@@ -1429,15 +1431,15 @@ class InteractionCore_UHECR_Source(InteractionCore):
         It requires files for photodisintegration and for photomeson.  
     """
     
-    def __init__(self, data_directory, target_photon_spectrum):
+    def __init__(self, data_directory, target_photon_spectrum, boostfactor=None):
         """ Requires a string specifying the directory where CRPropa 
             cross section files are stored (argument data_directory) 
         """
         
-        self._construct_from_files(data_directory, target_photon_spectrum)
+        self._construct_from_files(data_directory, target_photon_spectrum, boostfactor)
         self._genenerate_complete_matrices()
 
-    def _construct_from_files(self, data_directory, target_photons):
+    def _construct_from_files(self, data_directory, target_photons, boostfactor=None):
         """Using CRPROPA cross sections to produce the rates for a source
         of UHECR with a background photon field as a broken power law.
 
@@ -1445,7 +1447,11 @@ class InteractionCore_UHECR_Source(InteractionCore):
         interaction and the photon field.
         """
         from pandas import DataFrame
-        boosts = np.logspace(1, 14, 41)
+        boosts = np.logspace(1, 14, 181)
+
+        if boostfactor is not None:
+            boosts *= boostfactor
+
         cols = [f'{i}' for i in range(len(boosts))]
 
         eps_crpropa = np.genfromtxt(data_directory + 'PD_Talys1.8_Khan/eps.txt') / 1e3 # in GeV
