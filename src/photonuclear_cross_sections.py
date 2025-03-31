@@ -4,7 +4,7 @@ nuclear species.
 
 import numpy as np
 import pandas as pd
-from scipy.integrate import cumtrapz
+from scipy.integrate import cumulative_trapezoid
 from scipy.interpolate import InterpolatedUnivariateSpline
 import os
 main_path = os.path.abspath(os.path.join(os.path.dirname( __file__ ), '..'))
@@ -587,7 +587,7 @@ def get_interp_response_function(epsilon, cs):
               in desired units
     """
 
-    f = cumtrapz(epsilon * cs, x=epsilon, initial=0) / epsilon**2
+    f = cumulative_trapezoid(epsilon * cs, x=epsilon, initial=0) / epsilon**2
 
     interp_f = InterpolatedUnivariateSpline(epsilon, f, ext=1)  # ext=1 to return
     # zeros outside of range
