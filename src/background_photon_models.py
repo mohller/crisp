@@ -1,6 +1,8 @@
 from pickle import load
 from numpy import pi, exp, array, vectorize, logspace, log, log10, trapz, loadtxt, newaxis
 from scipy.constants import h, c, electron_volt, Boltzmann
+import os
+main_path = os.path.abspath(os.path.join(os.path.dirname( __file__ ), '..'))
 
 def target_photons_spectrum(Emin=1e-6, Emax=1e4, Ebr=1e3, si1=1, si2=2, normal=None):
     """Returns a photon spectrum modeled as a broken power law
@@ -107,15 +109,15 @@ cmb = black_body_spectral_radiance
 ### Target photon fields for EBL models..
 
 # Model by Gilmore 2012, takes energy in eV and returns density in m^-3 eV^-1
-with open('../data/Gilmore12_splinterp.pkl', 'rb') as file:
+with open(os.join(main_path, 'data/Gilmore12_splinterp.pkl'), 'rb') as file:
     eblg_interp = load(file)
 
 # Model by Saldana-Lopez 2012, takes energy in eV and returns density in m^-3 eV^-1
-with open('../data/SaldanaLopez21_splinterp.pkl', 'rb') as file:
+with open(os.join(main_path, 'data/SaldanaLopez21_splinterp.pkl'), 'rb') as file:
     ebls_interp = load(file)
 
 # Model by Andrews 2018, takes energy in eV and returns density in m^-3 eV^-1
-with open('../data/Andrews18_splinterp.pkl', 'rb') as file:
+with open(os.join(main_path, 'data/Andrews18_splinterp.pkl'), 'rb') as file:
     ebla_interp = load(file)
 
 
@@ -137,7 +139,7 @@ def create_interpolated_EBLmodel_Asndrews18(ebl_filename):
 
     ebla_interp = RectBivariateSpline(elist, zlist, density_grid, s=0)
 
-    with open('../data/Andrews18_splinterp.pkl', 'wb') as file:
+    with open(os.join(main_path, 'data/Andrews18_splinterp.pkl'), 'wb') as file:
         pickle.dump(ebla_interp, file)
 
 
@@ -159,7 +161,7 @@ def create_interpolated_EBLmodel_Gilmore12(ebl_filename):
 
     eblg_interp = RectBivariateSpline(elist, zlist, density_grid / (1 + zlist[newaxis, :])**3, s=0)
 
-    with open('../data/Gilmore12_splinterp.pkl', 'wb') as file:
+    with open(os.join(main_path, 'data/Gilmore12_splinterp.pkl'), 'wb') as file:
         pickle.dump(eblg_interp, file)
 
 
@@ -181,5 +183,5 @@ def create_interpolated_EBLmodel_SaldanaLopez21(ebl_filename):
 
     ebls_interp = RectBivariateSpline(elist, zlist, density_grid, s=0)
 
-    with open('SaldanaLopez21_splinterp.pkl', 'wb') as file:
+    with open(os.join(main_path, 'data/SaldanaLopez21_splinterp.pkl'), 'wb') as file:
         pickle.dump(ebls_interp, file)
