@@ -757,18 +757,18 @@ class InteractionCore():
     def _genenerate_complete_matrices(self):
         """Generates, for each boost, a complete interaction matrix from the interaction tables
         """
-        Zmax, Amax = max(self.nuclei) # species with the largest mass
-
-        species = prepare_species_list(self.nuclei, Zmax, Amax, Amax-1)
-        self.species = species + [(0, 1), (1, 1)]
+        self.species = self.nuclei.copy()
+        self.species.sort(key=lambda nuc: nuc[1]*1000 + nuc[0], reverse=True)
+        self.species += [(0, 1), (1, 1)]
 
         # generate interaction tensor by slices
         tensor = np.zeros((len(self.species), len(self.species), len(self.boosts)))
-        for i, nuc_branches in enumerate(self.all_branchings[::-1]):
+        for mom, nuc_branches in zip(self.nuclei, self.all_branchings):
             main_products = list(zip(nuc_branches[:, 0], nuc_branches[:, 1]))
 
             if np.any([prod not in self.species for prod in main_products]):
-                print(f'For nucleus {self.species[i]} some products were not found.')
+                print(f'For nucleus {mom} some products were not found.')
+
             # Fix the channels with dead ends
             # if np.any([prod not in self.species for prod in main_products]):
             #     print(f'For nucleus {self.species[i]} some products were not found when creating light yields tensor.')
@@ -781,13 +781,19 @@ class InteractionCore():
             #             if not np.any([nprod in main_products for nprod in new_prods]):
             #                 nuc_branches[rowid, :2] = max(new_prods)
             #                 nuc_branches[rowid, 2:] = new_rates
+            
+            try:
+                i = self.species.index(mom)
+            except:
+                print('problem with nucleus', self.species[i], ': present in branchings but not in nuclei.')
+                continue
 
             for branch in nuc_branches:
                 try:
                     j = self.species.index(tuple(branch[:2]))
-                    tensor[i, j, :] = branch[2:]
+                    tensor[i, j, :] += branch[2:]
                 except:
-                    print('problem with product', branch[:2], 'of nucleus', self.species[i])
+                    print('problem in tensor with product', branch[:2], 'of nucleus', self.species[i])
                     continue
 
         tensor -= np.stack([np.diag(row) for row in tensor.sum(axis=1).T], axis=2)
@@ -898,13 +904,19 @@ class InteractionCore():
         return alpha, mass_range, true_range, reduced_tensor
 
     def _check_tensor_balance(self):
-        """Check if the tensor rows are null for all boosts.
+        """Crosschecking integrity of tensor with different tests.
         """
 
+        # Checking rows sum is zero
         if np.all(np.isclose(np.einsum('ijk, j -> ik', self.tensor, np.ones(len(self.species))), 0, rtol=1e-10)):
-            print('The tensor is balanced with relative tolerance 1e-10')
+            print('The tensor row sum is null with relative tolerance 1e-10')
         else:
-            print('The tensor is not balanced with relative tolerance 1e-10')
+            print('The tensor row sum is not null with relative tolerance 1e-10')
+
+        # Check for dead end species
+        for i in range(len(self.tensor)):
+            if np.all(np.isclose(self.tensor[i, i, :], 0, rtol=1e-10)):
+                print('Dead end species found:', self.species[i])
 
     def _include_nuclear_decay(self):
         """Load and implement nuclear decays into the disintegration tensor
@@ -1067,6 +1079,15 @@ class InteractionCore_CRPropA(InteractionCore):
         self.all_rates = df_rates.values
         self.all_branchings = all_branchings
         self.marginal_light_yields = all_merged
+
+        # Fix to avoid dead ends
+        print('!!! Replacing some nuclei to avoid dead ends !!!')
+        for i, branches in enumerate(self.all_branchings):
+            for j, branch in enumerate(branches):
+                if tuple(branch[:2]) in [(2, 5), (3, 5)]:
+                    self.all_branchings[i][j, :2] = [2, 4]
+                elif tuple(branch[:2]) in [(5, 9), (6, 9)]:
+                    self.all_branchings[i][j, :2] = [4, 9]
 
     def check_data_consistency(self):
         """Verify that data is complete and numbers add up as expected
@@ -1670,7 +1691,7 @@ class InteractionCore_CRPdata_CMB(InteractionCore):
         from photonuclear_cross_sections import CRPropa_model
 
         boosts = np.logspace(6, 14, 201)
-        eps = 1e-3 * np.linspace(5, 50, 200) # in GeV
+        eps = 1e-3 * np.linspace(.1, 50, 200) # in GeV
 
         sim_model = CRPropa_model(self.path)
 
@@ -1713,8 +1734,9 @@ class InteractionCore_CRPdata_CMB(InteractionCore):
 
 
 class InteractionCore_CRPdata_EBL(InteractionCore):
-    def __init__(self, path=None, nuclear_decay_On=False):
+    def __init__(self, path=None, nuclear_decay_On=False, z=0):
         self.path = path
+        self.z = z
         InteractionCore.__init__(self, nuclear_decay_On)
 
     def _construct_from_files(self):
@@ -1724,6 +1746,8 @@ class InteractionCore_CRPdata_EBL(InteractionCore):
         from interaction_rates import interaction_rate_from_cross_section
         from background_photon_models import eblg_interp
         from photonuclear_cross_sections import CRPropa_model
+
+        eblmodel = lambda energ: eblg_interp(energ * 1e9, self.z).flatten() * 1e3
 
         boosts = np.logspace(6, 14, 201)
         eps = 1e-3 * np.linspace(5, 50, 200) # in GeV
@@ -1736,7 +1760,7 @@ class InteractionCore_CRPdata_EBL(InteractionCore):
             
             for Zrem, Arem in products:
                 cross_section = 1e-27 * sim_model.cross_section(eps * 1e3, Z, A, rem=(Zrem, Arem)) # to cm2
-                pdis_rates = interaction_rate_from_cross_section(A*boosts, A, cmb_photon_density_GeVcm3, eps, cross_section)
+                pdis_rates = interaction_rate_from_cross_section(A*boosts, A, eblmodel, eps, cross_section)
                 pdis_rates /= c / parsec / 1e6 # ito Mpc
 
                 branchings.append(np.append([Zrem, Arem], pdis_rates))
