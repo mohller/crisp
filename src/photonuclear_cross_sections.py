@@ -371,6 +371,9 @@ class CRPropa_model(object):
         if np.any([name in path for name in ['PD_Talys1.8', 'PD_Talys1.9']]):
             self.tot_xsec_data = np.genfromtxt(os.path.join(path, 'xs_pd_sum.txt'))
             self.xsec_data = np.genfromtxt(os.path.join(path, 'xs_pd_thin.txt'))
+        elif 'PD_external' in path:
+            self.tot_xsec_data = np.genfromtxt(os.path.join(path, 'xs_sum.txt'))
+            self.xsec_data = np.genfromtxt(os.path.join(path, 'xs_excl.txt'))
         else:
             self.tot_xsec_data = np.genfromtxt(os.path.join(path, 'xs_sum.txt'))
             self.xsec_data = np.genfromtxt(os.path.join(path, 'xs_thin.txt'))
@@ -381,7 +384,7 @@ class CRPropa_model(object):
         self.eps = np.genfromtxt(os.path.join(path, 'eps.txt'))
         self.isotopes = np.genfromtxt(os.path.join(path, 'isotopes.txt'))
 
-        self.nuclei = [(int(Z), int(A)) for Z, N, A in self.isotopes if A > 4]
+        self.nuclei = [(int(Z), int(A)) for Z, N, A in self.isotopes if A > 0]
         
         self.channels = []
         for Z, A in self.nuclei:
@@ -405,7 +408,6 @@ class CRPropa_model(object):
                 rem_list.sort()
                 self.channels.append(rem_list)
             else:
-                print(channels)
                 self.channels.append([])
 
     def cross_section(self, eps, Z, A, nloss=None, rem=None):
@@ -441,6 +443,7 @@ class CRPropa_model(object):
         xs = self.tot_xsec_data[np.argwhere(np.logical_and(self.tot_xsec_data[:, 0] == Z, self.tot_xsec_data[:, 1] == A))].flatten()[2:]
         
         return np.interp(eps, self.eps, xs)
+
 
 def pgamma(eps_r):
     """Photonuclear cross section in the energy range .1-1e4 GeV
