@@ -418,18 +418,15 @@ class CRPropa_model(object):
         elif nloss is not None:
             csec = np.zeros_like(eps)
         else:            
-            if rem in daughters:
-                csec = np.zeros_like(eps)
-            else:
-                channels = self.xsec_data[np.where(np.logical_and(self.xsec_data[:, 0] == Z, self.xsec_data[:, 1] == A))]
+            channels = self.xsec_data[np.where(np.logical_and(self.xsec_data[:, 0] == Z, self.xsec_data[:, 1] == A))]
 
-                for channel in channels:
-                    small_prods = np.array(get_particle_numbers(channel[2]))
-                    Zprod = small_prods.dot([Zd for Zd, _ in daughters])
-                    Aprod = small_prods.dot([Ad for _, Ad in daughters])
+            for channel in channels:
+                small_prods = np.array(get_particle_numbers(channel[2]))
+                Zprod = small_prods.dot([Zd for Zd, _ in daughters])
+                Aprod = small_prods.dot([Ad for _, Ad in daughters])
 
-                    if rem == (Z-Zprod, A-Aprod):
-                        csec += np.interp(eps, self.eps, channel[3:])
+                if rem == (Z-Zprod, A-Aprod):
+                    csec += np.interp(eps, self.eps, channel[3:])
 
         return csec
     
