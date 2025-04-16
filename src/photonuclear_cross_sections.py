@@ -383,11 +383,9 @@ class CRPropa_model(object):
 
         self.eps = np.genfromtxt(os.path.join(path, 'eps.txt'))
         self.isotopes = np.genfromtxt(os.path.join(path, 'isotopes.txt'))
-
-        self.nuclei = [(int(Z), int(A)) for Z, N, A in self.isotopes if A > 0]
         
-        self.channels = []
-        for Z, A in self.nuclei:
+        self.nuclei, self.channels = [], []
+        for Z, A in [(Z, A) for Z, N, A in self.isotopes]:
             channels = self.xsec_data[np.argwhere(np.logical_and(self.xsec_data[:, 0] == Z, self.xsec_data[:, 1] == A)), 2]
             
             if np.any(channels):
@@ -399,7 +397,7 @@ class CRPropa_model(object):
 
                     Zprod = small_prods.dot([Zd for Zd, _ in daughters])
                     Aprod = small_prods.dot([Ad for _, Ad in daughters])
-                    rem_list.append((Z-Zprod, A-Aprod))
+                    rem_list.append((int(Z-Zprod), int(A-Aprod)))
 
                 for present, daughter in zip(small_list > 0, daughters):
                     if present:
@@ -407,8 +405,7 @@ class CRPropa_model(object):
                 
                 rem_list.sort()
                 self.channels.append(rem_list)
-            else:
-                self.channels.append([])
+                self.nuclei.append((int(Z), int(A)))
 
     def cross_section(self, eps, Z, A, nloss=None, rem=None):
         """The cross section as modeled in the reference to compute the
