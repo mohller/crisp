@@ -1678,8 +1678,16 @@ class InteractionCore_GDRA_CMB(InteractionCore):
 
 
 class InteractionCore_CRPdata_CMB(InteractionCore):
-    def __init__(self, path=None, nuclear_decay_On=False):
-        self.path = path
+    def __init__(self, path=None, nuclear_decay_On=False, xsec_model=None):
+        if not (path is None):
+          self.path = path
+          from photonuclear_cross_sections import CRPropa_model
+          self.sim_model = CRPropa_model(self.path)
+        elif not (xsec_model is None):
+          self.sim_model = xsec_model
+        else:
+          raise ValueError('Error: no cross sections provided.')
+
         InteractionCore.__init__(self, nuclear_decay_On)
 
     def _construct_from_files(self):
@@ -1688,19 +1696,16 @@ class InteractionCore_CRPdata_CMB(InteractionCore):
         from scipy.constants import c, parsec
         from interaction_rates import interaction_rate_from_cross_section
         from background_photon_models import cmb_photon_density_GeVcm3
-        from photonuclear_cross_sections import CRPropa_model
 
         boosts = np.logspace(6, 14, 201)
         eps = 1e-3 * np.linspace(.1, 50, 200) # in GeV
 
-        sim_model = CRPropa_model(self.path)
-
         pdis_rates_cmb, branchings_cmb, mlyp, mlyn = [], [], [], []
-        for (Z, A), products in zip(sim_model.nuclei, sim_model.channels):
+        for (Z, A), products in zip(self.sim_model.nuclei, self.sim_model.channels):
             branchings, lyp, lyn = [], [], []
             
             for Zrem, Arem in products:
-                cross_section = 1e-27 * sim_model.cross_section(eps * 1e3, Z, A, rem=(Zrem, Arem)) # to cm2
+                cross_section = 1e-27 * self.sim_model.cross_section(eps * 1e3, Z, A, rem=(Zrem, Arem)) # to cm2
                 pdis_rates = interaction_rate_from_cross_section(A*boosts, A, cmb_photon_density_GeVcm3, eps, cross_section)
                 pdis_rates /= c / parsec / 1e6 # ito Mpc
 
@@ -1727,16 +1732,24 @@ class InteractionCore_CRPdata_CMB(InteractionCore):
         marginal_light_yields.append(mlyn)
             
         self.boosts = boosts 
-        self.nuclei = sim_model.nuclei.copy()
+        self.nuclei = self.sim_model.nuclei.copy()
         self.all_rates = np.vstack(pdis_rates_cmb)
         self.all_branchings = branchings_cmb
         self.marginal_light_yields = marginal_light_yields
 
 
 class InteractionCore_CRPdata_EBL(InteractionCore):
-    def __init__(self, path=None, nuclear_decay_On=False, z=0):
-        self.path = path
+    def __init__(self, path=None, nuclear_decay_On=False, xsec_model=None, z=0):
         self.z = z
+        if not (path is None):
+          self.path = path
+          from photonuclear_cross_sections import CRPropa_model
+          self.sim_model = CRPropa_model(self.path)
+        elif not (xsec_model is None):
+          self.sim_model = xsec_model
+        else:
+          raise ValueError('Error: no cross sections provided.')
+
         InteractionCore.__init__(self, nuclear_decay_On)
 
     def _construct_from_files(self):
@@ -1745,21 +1758,18 @@ class InteractionCore_CRPdata_EBL(InteractionCore):
         from scipy.constants import c, parsec
         from interaction_rates import interaction_rate_from_cross_section
         from background_photon_models import eblg_interp
-        from photonuclear_cross_sections import CRPropa_model
 
         eblmodel = lambda energ: eblg_interp(energ * 1e9, self.z).flatten() * 1e3
 
         boosts = np.logspace(6, 14, 201)
         eps = 1e-3 * np.linspace(5, 50, 200) # in GeV
 
-        sim_model = CRPropa_model(self.path)
-
         pdis_rates_cmb, branchings_cmb, mlyp, mlyn = [], [], [], []
-        for (Z, A), products in zip(sim_model.nuclei, sim_model.channels):
+        for (Z, A), products in zip(self.sim_model.nuclei, self.sim_model.channels):
             branchings, lyp, lyn = [], [], []
             
             for Zrem, Arem in products:
-                cross_section = 1e-27 * sim_model.cross_section(eps * 1e3, Z, A, rem=(Zrem, Arem)) # to cm2
+                cross_section = 1e-27 * self.sim_model.cross_section(eps * 1e3, Z, A, rem=(Zrem, Arem)) # to cm2
                 pdis_rates = interaction_rate_from_cross_section(A*boosts, A, eblmodel, eps, cross_section)
                 pdis_rates /= c / parsec / 1e6 # ito Mpc
 
@@ -1786,7 +1796,7 @@ class InteractionCore_CRPdata_EBL(InteractionCore):
         marginal_light_yields.append(mlyn)
             
         self.boosts = boosts 
-        self.nuclei = sim_model.nuclei.copy()
+        self.nuclei = self.sim_model.nuclei.copy()
         self.all_rates = np.vstack(pdis_rates_cmb)
         self.all_branchings = branchings_cmb
         self.marginal_light_yields = marginal_light_yields

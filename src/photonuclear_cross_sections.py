@@ -371,8 +371,10 @@ class CRPropa_model(object):
 
         if np.any([name in path for name in ['PD_Talys1.8', 'PD_Talys1.9']]):
             self.tot_xsec_data = np.genfromtxt(os.path.join(path, 'xs_pd_sum.txt'))
-            # self.xsec_data = np.genfromtxt(os.path.join(path, 'xs_pd_thin.txt'))
-            self.xsec_data = np.genfromtxt(os.path.join(path, 'xs_pd.txt'))
+            self.xsec_data = np.genfromtxt(os.path.join(path, 'xs_pd_thin.txt'))
+        elif 'PD_external' in path:
+            self.tot_xsec_data = np.genfromtxt(os.path.join(path, 'xs_sum.txt'))
+            self.xsec_data = np.genfromtxt(os.path.join(path, 'xs_excl.txt'))
         else:
             self.tot_xsec_data = np.genfromtxt(os.path.join(path, 'xs_sum.txt'))
             # self.xsec_data = np.genfromtxt(os.path.join(path, 'xs_thin.txt'))
@@ -383,11 +385,9 @@ class CRPropa_model(object):
 
         self.eps = np.genfromtxt(os.path.join(path, 'eps.txt'))
         self.isotopes = np.genfromtxt(os.path.join(path, 'isotopes.txt'))
-
-        self.nuclei = [(int(Z), int(A)) for Z, N, A in self.isotopes if A > 4]
         
-        self.channels = []
-        for Z, A in self.nuclei:
+        self.nuclei, self.channels = [], []
+        for Z, A in [(Z, A) for Z, N, A in self.isotopes]:
             channels = self.xsec_data[np.argwhere(np.logical_and(self.xsec_data[:, 0] == Z, self.xsec_data[:, 1] == A)), 2]
             
             if np.any(channels):
@@ -399,7 +399,7 @@ class CRPropa_model(object):
 
                     Zprod = small_prods.dot([Zd for Zd, _ in daughters])
                     Aprod = small_prods.dot([Ad for _, Ad in daughters])
-                    rem_list.append((Z-Zprod, A-Aprod))
+                    rem_list.append((int(Z-Zprod), int(A-Aprod)))
 
                 for present, daughter in zip(small_list > 0, daughters):
                     if present:
@@ -407,9 +407,7 @@ class CRPropa_model(object):
                 
                 rem_list = sorted(list(set(rem_list)))
                 self.channels.append(rem_list)
-            else:
-                print(channels)
-                self.channels.append([])
+                self.nuclei.append((int(Z), int(A)))
 
     def cross_section(self, eps, Z, A, nloss=None, rem=None):
         """The cross section as modeled in the reference to compute the
@@ -427,13 +425,13 @@ class CRPropa_model(object):
             else:
                 channels = self.xsec_data[np.where(np.logical_and(self.xsec_data[:, 0] == Z, self.xsec_data[:, 1] == A))]
 
-                for channel in channels:
-                    small_prods = np.array(get_particle_numbers(channel[2]))
-                    Zprod = small_prods.dot([Zd for Zd, _ in daughters])
-                    Aprod = small_prods.dot([Ad for _, Ad in daughters])
+            for channel in channels:
+                small_prods = np.array(get_particle_numbers(channel[2]))
+                Zprod = small_prods.dot([Zd for Zd, _ in daughters])
+                Aprod = small_prods.dot([Ad for _, Ad in daughters])
 
-                    if rem == (Z-Zprod, A-Aprod):
-                        csec += np.interp(eps, self.eps, channel[3:])
+                if rem == (Z-Zprod, A-Aprod):
+                    csec += np.interp(eps, self.eps, channel[3:])
 
         return csec
     
@@ -444,6 +442,7 @@ class CRPropa_model(object):
         xs = self.tot_xsec_data[np.argwhere(np.logical_and(self.tot_xsec_data[:, 0] == Z, self.tot_xsec_data[:, 1] == A))].flatten()[2:]
         
         return np.interp(eps, self.eps, xs)
+
 
 def pgamma(eps_r):
     """Photonuclear cross section in the energy range .1-1e4 GeV
