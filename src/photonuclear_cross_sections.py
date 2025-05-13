@@ -209,6 +209,7 @@ class SimProp_model(object):
 
         if filename is None:
             if M in [0, 1]:
+                self.M = 0
                 filename = 'SimProp_models_M0_M1_M2.txt' # based on table from paper on SimPropv2.4
             elif M == 2:
                 filename = 'xsect_BreitWigner_TALYS-1.6.txt' # based on table from paper on SimPropv2.4
@@ -370,13 +371,15 @@ class CRPropa_model(object):
 
         if np.any([name in path for name in ['PD_Talys1.8', 'PD_Talys1.9']]):
             self.tot_xsec_data = np.genfromtxt(os.path.join(path, 'xs_pd_sum.txt'))
-            self.xsec_data = np.genfromtxt(os.path.join(path, 'xs_pd_thin.txt'))
+            # self.xsec_data = np.genfromtxt(os.path.join(path, 'xs_pd_thin.txt'))
+            self.xsec_data = np.genfromtxt(os.path.join(path, 'xs_pd.txt'))
         else:
             self.tot_xsec_data = np.genfromtxt(os.path.join(path, 'xs_sum.txt'))
+            # self.xsec_data = np.genfromtxt(os.path.join(path, 'xs_thin.txt'))
             self.xsec_data = np.genfromtxt(os.path.join(path, 'xs_thin.txt'))
         
-        self.tot_xsec_data[:, 1] += self.tot_xsec_data[:, 0]
-        self.xsec_data[:, 1] += self.xsec_data[:, 0]
+        self.tot_xsec_data[:, 1] += self.tot_xsec_data[:, 0] # changing from (Z, N) to (Z, A)
+        self.xsec_data[:, 1] += self.xsec_data[:, 0] # changing from (Z, N) to (Z, A)
 
         self.eps = np.genfromtxt(os.path.join(path, 'eps.txt'))
         self.isotopes = np.genfromtxt(os.path.join(path, 'isotopes.txt'))
@@ -402,7 +405,7 @@ class CRPropa_model(object):
                     if present:
                         rem_list.append(daughter)
                 
-                rem_list.sort()
+                rem_list = sorted(list(set(rem_list)))
                 self.channels.append(rem_list)
             else:
                 print(channels)
@@ -415,10 +418,10 @@ class CRPropa_model(object):
         csec = np.zeros_like(eps)
         
         if (nloss is None) and (rem is None):
-            print('Warning: Total cross sections for M4 are not well defined')
+            csec = self.tot_xsec_data(eps, Z, A)
         elif nloss is not None:
             csec = np.zeros_like(eps)
-        else:            
+        else:
             if rem in daughters:
                 csec = np.zeros_like(eps)
             else:
