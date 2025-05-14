@@ -1698,7 +1698,7 @@ class InteractionCore_CRPdata_CMB(InteractionCore):
         from background_photon_models import cmb_photon_density_GeVcm3
 
         boosts = np.logspace(6, 14, 201)
-        eps = 1e-3 * np.linspace(.1, 50, 200) # in GeV
+        eps = 1e-3 * np.logspace(-1, 2.1, 300) # in GeV
 
         pdis_rates_cmb, branchings_cmb, mlyp, mlyn = [], [], [], []
         for (Z, A), products in zip(self.sim_model.nuclei, self.sim_model.channels):
@@ -1706,7 +1706,7 @@ class InteractionCore_CRPdata_CMB(InteractionCore):
             
             for Zrem, Arem in products:
                 cross_section = 1e-27 * self.sim_model.cross_section(eps * 1e3, Z, A, rem=(Zrem, Arem)) # to cm2
-                pdis_rates = interaction_rate_from_cross_section(A*boosts, A, cmb_photon_density_GeVcm3, eps, cross_section)
+                pdis_rates = interaction_rate_from_cross_section(boosts * A * .939, A, cmb_photon_density_GeVcm3, eps, cross_section)
                 pdis_rates /= c / parsec / 1e6 # ito Mpc
 
                 branchings.append(np.append([Zrem, Arem], pdis_rates))
@@ -1762,7 +1762,7 @@ class InteractionCore_CRPdata_EBL(InteractionCore):
         eblmodel = lambda energ: eblg_interp(energ * 1e9, self.z).flatten() * 1e3
 
         boosts = np.logspace(6, 14, 201)
-        eps = 1e-3 * np.linspace(5, 50, 200) # in GeV
+        eps = 1e-3 * np.logspace(-1, 2.1, 300) # in GeV
 
         pdis_rates_cmb, branchings_cmb, mlyp, mlyn = [], [], [], []
         for (Z, A), products in zip(self.sim_model.nuclei, self.sim_model.channels):
@@ -1770,7 +1770,7 @@ class InteractionCore_CRPdata_EBL(InteractionCore):
             
             for Zrem, Arem in products:
                 cross_section = 1e-27 * self.sim_model.cross_section(eps * 1e3, Z, A, rem=(Zrem, Arem)) # to cm2
-                pdis_rates = interaction_rate_from_cross_section(A*boosts, A, eblmodel, eps, cross_section)
+                pdis_rates = interaction_rate_from_cross_section(boosts * A * .939, A, eblmodel, eps, cross_section)
                 pdis_rates /= c / parsec / 1e6 # ito Mpc
 
                 branchings.append(np.append([Zrem, Arem], pdis_rates))
