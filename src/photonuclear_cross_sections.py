@@ -377,7 +377,6 @@ class CRPropa_model(object):
             self.xsec_data = np.genfromtxt(os.path.join(path, 'xs_excl.txt'))
         else:
             self.tot_xsec_data = np.genfromtxt(os.path.join(path, 'xs_sum.txt'))
-            # self.xsec_data = np.genfromtxt(os.path.join(path, 'xs_thin.txt'))
             self.xsec_data = np.genfromtxt(os.path.join(path, 'xs_thin.txt'))
         
         self.tot_xsec_data[:, 1] += self.tot_xsec_data[:, 0] # changing from (Z, N) to (Z, A)
@@ -425,13 +424,13 @@ class CRPropa_model(object):
             else:
                 channels = self.xsec_data[np.where(np.logical_and(self.xsec_data[:, 0] == Z, self.xsec_data[:, 1] == A))]
 
-            for channel in channels:
-                small_prods = np.array(get_particle_numbers(channel[2]))
-                Zprod = small_prods.dot([Zd for Zd, _ in daughters])
-                Aprod = small_prods.dot([Ad for _, Ad in daughters])
+                for channel in channels:
+                    small_prods = np.array(get_particle_numbers(channel[2]))
+                    Zprod = small_prods.dot([Zd for Zd, _ in daughters])
+                    Aprod = small_prods.dot([Ad for _, Ad in daughters])
 
-                if rem == (Z-Zprod, A-Aprod):
-                    csec += np.interp(eps, self.eps, channel[3:])
+                    if rem == (Z-Zprod, A-Aprod):
+                        csec += np.interp(eps, self.eps, channel[3:])
 
         return csec
     
@@ -441,6 +440,9 @@ class CRPropa_model(object):
         """
         xs = self.tot_xsec_data[np.argwhere(np.logical_and(self.tot_xsec_data[:, 0] == Z, self.tot_xsec_data[:, 1] == A))].flatten()[2:]
         
+        if len(xs) == 0:
+            xs = np.zeros_like(self.eps)
+
         return np.interp(eps, self.eps, xs)
 
 
