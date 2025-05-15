@@ -162,16 +162,16 @@ class PSB_model(object):
         from scipy.special import erf
         params = self.params[np.logical_and(self.params['Z'] == Z, self.params['A'] == A)]
 
-        f_i = float(params[f'{nloss}'])
-        zeta = float(params['zeta'])
+        f_i = float(params.iloc[0][f'{nloss}'])
+        zeta = float(params.iloc[0]['zeta'])
         Sigma_d = 59.8 * (A - Z) * Z / A # in MeV * mb
 
         csec = zeta * f_i * Sigma_d * theta_plus(30, eps) / 120 # applies for all nloss values
 
         if nloss in [1, 2]:
-            eps0 = float(params[f'eps0{nloss}'])
-            xi = float(params[f'xi{nloss}'])
-            D = float(params[f'Delta{nloss}'])
+            eps0 = float(params.iloc[0][f'eps0{nloss}'])
+            xi = float(params.iloc[0][f'xi{nloss}'])
+            D = float(params.iloc[0][f'Delta{nloss}'])
             
             if D != 0:
                 W = np.sqrt(np.pi/8) * (erf( (30 - eps0) / D * np.sqrt(2)) + erf( (eps0 - 2) / D * np.sqrt(2)))
