@@ -415,7 +415,7 @@ class CRPropa_model(object):
         csec = np.zeros_like(eps)
         
         if (nloss is None) and (rem is None):
-            csec = self.tot_xsec_data(eps, Z, A)
+            csec = self.total_cross_section(eps, Z, A)
         elif nloss is not None:
             csec = np.zeros_like(eps)
         else:
