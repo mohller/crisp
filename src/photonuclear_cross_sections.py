@@ -75,9 +75,29 @@ class GDR_atlas(object):
                 self.channels.append(channels)
 
 
-    def sigma_gdr(self, eps, Z, A, gdr_type='slo'):
+    def cross_section(self, eps, Z, A, nloss=None, rem=None, gdr_type='slo'):
         """Returns the cross section in mb, takes energy eps in MeV
         """
+        if (nloss is None) and (rem is not None):
+            nloss = A - rem[1]
+
+        # branchings as in PSB
+        branchings = np.array([
+            [.8,  .2,  0,   0,   0,    0,   0,    0,   0,    0,   0,    0,    0,    0,   0],
+            [1.,   0,  0,   0,   0,    0,   0,    0,   0,    0,   0,    0,    0,    0,   0],
+            [.1,  .3, .1,  .1,  .2,   .2,   0,    0,   0,    0,   0,    0,    0,    0,   0],
+            [.1, .35, .1, .05, .15, .045, .04, .035, .03, .025, .02, .018, .015, .012, .01]
+        ])
+
+        if A in [3, 4]:
+            f_i = branchings[0, nloss - 1]
+        elif A in [2, 9]:
+            f_i = branchings[1, nloss - 1]
+        elif A in range(10, 23):
+            f_i = branchings[2, nloss - 1]
+        elif A in range(23, 208):
+            f_i = branchings[3, nloss - 1]
+        
         Strk = 15 * A * (1 - (A - 2*Z)/A) # in MeV * mb
 
         if gdr_type == 'slo':
@@ -120,7 +140,17 @@ class GDR_atlas(object):
             else:
                 S2, F2 = 0, 0
 
-        return Strk * (S1 * F1 + S2 * F2) 
+        return Strk * (S1 * F1 + S2 * F2) * f_i
+    
+    def total_cross_section(self, eps, Z, A):
+        """Cross section computed as the sum of all the exclusive cross sections
+        of the channels of the given nucleus (Z, A)
+        """
+        channels = []
+        for _, Arem in self.channels[self.nuclei.index((Z, A))]:
+            channels.append(self.cross_section(eps, Z, A, A-Arem))
+
+        return np.sum(channels, axis=0)
 
 
 class PSB_model(object):
@@ -155,12 +185,15 @@ class PSB_model(object):
                 
             self.channels.append(channels)
 
-    def cross_section(self, eps, Z, A, nloss=1):
+    def cross_section(self, eps, Z, A, nloss=None, rem=None):
         """The cross section as modeled in the reference to compute the
         interaction rates.
         """
         from scipy.special import erf
         params = self.params[np.logical_and(self.params['Z'] == Z, self.params['A'] == A)]
+
+        if (nloss is None) and (rem is not None):
+            nloss = A - rem[1]
 
         f_i = float(params.iloc[0][f'{nloss}'])
         zeta = float(params.iloc[0]['zeta'])
@@ -269,11 +302,14 @@ class SimProp_model(object):
                     
                 self.channels.append(channels)
 
-    def cross_section(self, eps, Z, A, nloss=1):
+    def cross_section(self, eps, Z, A, nloss=None, rem=None):
         """The cross section as modeled in the reference to compute the
         interaction rates.
         """
         from scipy.special import erf
+
+        if (nloss is None) and (rem is not None):
+            nloss = A - rem[1]
 
         branchings = np.array([
             [.8,  .2,  0,   0,   0,    0,   0,    0,   0,    0,   0,    0,    0,    0,   0],
