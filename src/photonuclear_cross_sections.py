@@ -192,8 +192,8 @@ class PSB_model(object):
         from scipy.special import erf
         params = self.params[np.logical_and(self.params['Z'] == Z, self.params['A'] == A)]
 
-        if (nloss is None):
-            if (rem is not None):
+        if nloss is None:
+            if rem is not None:
                 nloss = A - rem[1]
             else:
                 return self.total_cross_section(eps, Z, A)
@@ -313,8 +313,11 @@ class SimProp_model(object):
         """
         from scipy.special import erf
 
-        if (nloss is None) and (rem is not None):
-            nloss = A - rem[1]
+        if (nloss is None):
+            if rem is not None:
+                nloss = A - rem[1]
+            else:
+                return self.total_cross_section(eps, Z, A)
 
         branchings = np.array([
             [.8,  .2,  0,   0,   0,    0,   0,    0,   0,    0,   0,    0,    0,    0,   0],
