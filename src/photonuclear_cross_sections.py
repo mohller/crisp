@@ -78,8 +78,11 @@ class GDR_atlas(object):
     def cross_section(self, eps, Z, A, nloss=None, rem=None, gdr_type='slo'):
         """Returns the cross section in mb, takes energy eps in MeV
         """
-        if (nloss is None) and (rem is not None):
-            nloss = A - rem[1]
+        if nloss is None:
+            if rem is not None:
+                nloss = A - rem[1]
+            else:
+                return self.total_cross_section(eps, Z, A)
 
         # branchings as in PSB
         branchings = np.array([
