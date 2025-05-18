@@ -63,15 +63,23 @@ class GDR_atlas(object):
         self.nuclei = list(zip(self.slo_params.Z, self.slo_params.A))
         self.channels = []
 
-        if channel_set is None: # 
+        if channel_set is None:
             for Z, A in self.nuclei:
-                if A in range(10, 23):
+                if A == 2:
+                    channels = [(1, 1)]
+                elif A == 3:
+                    channels = [(1, 1), (1, 2)]
+                elif A == 4:
+                    channels = [(1, 2), (2, 3)]
+                elif A == 9:
+                    channels = [(2, 4)]
+                elif A in range(10, 23):
                     channels = [(Z, A-nloss) for nloss in range(1, 7)]
-                elif A in range(23, 57):
-                    channels = [(Z, A-nloss) for nloss in range(1, 16) if ()]
+                elif A in range(23, 200):
+                    channels = [(Z, A-nloss) for nloss in range(1, 16)]
                 else:
                     channels = [(Z, A-nloss) for nloss in range(1, 16)]
-                    
+
                 self.channels.append(channels)
 
 
