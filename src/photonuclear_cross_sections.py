@@ -49,7 +49,7 @@ class GDR_atlas(object):
     """Models the Giant Dipole Resonance of a large number of nuclei.
        Data and models obtained from https://www-nds.iaea.org/PSFdatabase/atlas-gdr.html
     """
-    def __init__(self, channel_set=None):
+    def __init__(self, channel_set=None, Allowed=range(1, 1000)):
         object.__init__(self)
 
         self.slo_filename = os.path.join(main_path, 'data/gdr_parameters_exp&systematics/gdr-parameters_exp&systematics_slo.dat')
@@ -65,6 +65,9 @@ class GDR_atlas(object):
 
         if channel_set is None:
             for Z, A in self.nuclei:
+                if A not in Allowed:
+                    continue
+
                 if A == 2:
                     channels = [(1, 1)]
                 elif A == 3:
@@ -75,8 +78,6 @@ class GDR_atlas(object):
                     channels = [(2, 4)]
                 elif A in range(10, 23):
                     channels = [(Z, A-nloss) for nloss in range(1, 7)]
-                elif A in range(23, 200):
-                    channels = [(Z, A-nloss) for nloss in range(1, 16)]
                 else:
                     channels = [(Z, A-nloss) for nloss in range(1, 16)]
 
@@ -91,8 +92,6 @@ class GDR_atlas(object):
                 nloss = A - rem[1]
             else:
                 return self.total_cross_section(eps, Z, A)
-        elif nloss not in range(16):
-            return np.zeros_like(eps)
 
         # branchings as in PSB
         branchings = np.array([
