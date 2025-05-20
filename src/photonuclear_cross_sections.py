@@ -2,11 +2,11 @@
 nuclear species.
 """
 
+import os
 import numpy as np
 import pandas as pd
 from scipy.integrate import cumulative_trapezoid
 from scipy.interpolate import InterpolatedUnivariateSpline
-import os
 main_path = os.path.abspath(os.path.join(os.path.dirname( __file__ ), '..'))
 
 theta_plus = lambda z, eps : np.heaviside(eps - z, 1)
@@ -122,7 +122,7 @@ class GDR_atlas(Cross_Section_Model):
             f_i = branchings[1, nloss - 1]
         elif A in range(10, 23):
             f_i = branchings[2, nloss - 1]
-        elif A in range(23, 208):
+        elif A > 22:
             f_i = branchings[3, nloss - 1]
         
         Strk = 15 * A * (1 - (A - 2*Z)/A) # in MeV * mb
