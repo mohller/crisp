@@ -91,6 +91,8 @@ class GDR_atlas(object):
                 nloss = A - rem[1]
             else:
                 return self.total_cross_section(eps, Z, A)
+        elif nloss not in range(16):
+            return np.zeros_like(eps)
 
         # branchings as in PSB
         branchings = np.array([
