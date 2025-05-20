@@ -78,7 +78,7 @@ class GDR_atlas(Cross_Section_Model):
         self.smlo_params = pd.read_fwf(self.smlo_filename, widths=2*[4,] + 9*[9,] + [5,], header=3)
         self.smlo_params.rename(columns={'#  Z':'Z'}, inplace=True)
 
-        self.nuclei = [nuc for nuc in list(zip(self.slo_params.Z, self.slo_params.A)) if self.filtering_nuclei(nuc)]
+        self.nuclei = [nuc for nuc in list(zip(self.slo_params.Z, self.slo_params.A)) if self.filter_nuclei(nuc)]
         self.channels = []
 
         if channel_set is None:
@@ -193,7 +193,7 @@ class PSB_model(Cross_Section_Model):
         self.params = pd.read_csv(self.PSB_filename, header=1)
         self.params.fillna(0, inplace=True)
 
-        self.nuclei = [nuc for nuc in list(zip(self.params.Z, self.params.A)) if self.filtering_nuclei(nuc)]
+        self.nuclei = [nuc for nuc in list(zip(self.params.Z, self.params.A)) if self.filter_nuclei(nuc)]
         self.channels = []
         
         for Z, A in self.nuclei:
@@ -297,7 +297,7 @@ class SimProp_model(Cross_Section_Model):
         if self.params.shape[0] != num_species:
             print('Warning: Number of species in file does not match number of parameter lines.')
 
-        self.nuclei = [(int(Z), int(A)) for A, Z in self.params[:, :2] if self.filtering_nuclei((Z, A))]
+        self.nuclei = [(int(Z), int(A)) for A, Z in self.params[:, :2] if self.filter_nuclei((Z, A))]
         self.nuclei.sort()
 
         self.channels = []
