@@ -60,14 +60,11 @@ class GDR_atlas(object):
         self.smlo_params = pd.read_fwf(self.smlo_filename, widths=2*[4,] + 9*[9,] + [5,], header=3)
         self.smlo_params.rename(columns={'#  Z':'Z'}, inplace=True)
 
-        self.nuclei = list(zip(self.slo_params.Z, self.slo_params.A))
+        self.nuclei = [nuc for nuc in list(zip(self.slo_params.Z, self.slo_params.A)) if nuc[1] in Allowed]
         self.channels = []
 
         if channel_set is None:
             for Z, A in self.nuclei:
-                if A not in Allowed:
-                    continue
-
                 if A == 2:
                     channels = [(1, 1)]
                 elif A == 3:
