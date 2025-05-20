@@ -52,6 +52,12 @@ class Cross_Section_Model():
         else:
             self.erange = kwargs['erange'] # in MeV
 
+        # filtering function, takes nucleus, returns bollean saying if it should be included
+        if 'filter_nuclei' not in kwargs:
+            self.filter = lambda nuc: True
+        else:
+            self.filter_nuclei = kwargs['filter_nuclei']
+
     def cross_section(self, *args, **kwargs):
         # To be defined in each case
         pass
@@ -61,8 +67,8 @@ class GDR_atlas(Cross_Section_Model):
     """Models the Giant Dipole Resonance of a large number of nuclei.
        Data and models obtained from https://www-nds.iaea.org/PSFdatabase/atlas-gdr.html
     """
-    def __init__(self, channel_set=None, Allowed=range(1, 1000)):
-        Cross_Section_Model.__init__(self)
+    def __init__(self, *args, channel_set=None, **kwargs):
+        Cross_Section_Model.__init__(self, *args, **kwargs)
 
         self.slo_filename = os.path.join(main_path, 'data/gdr_parameters_exp&systematics/gdr-parameters_exp&systematics_slo.dat')
         self.slo_params = pd.read_fwf(self.slo_filename, widths=2*[4,] + 9*[9,] + [5,], header=3)
@@ -72,7 +78,7 @@ class GDR_atlas(Cross_Section_Model):
         self.smlo_params = pd.read_fwf(self.smlo_filename, widths=2*[4,] + 9*[9,] + [5,], header=3)
         self.smlo_params.rename(columns={'#  Z':'Z'}, inplace=True)
 
-        self.nuclei = [nuc for nuc in list(zip(self.slo_params.Z, self.slo_params.A)) if nuc[1] in Allowed]
+        self.nuclei = [nuc for nuc in list(zip(self.slo_params.Z, self.slo_params.A)) if self.filtering_nuclei(nuc)]
         self.channels = []
 
         if channel_set is None:
@@ -180,14 +186,14 @@ class PSB_model(Cross_Section_Model):
     """Models the cross sections from the Puget Stecker Bredekamp 1976 paper
        Source: https://ui.adsabs.harvard.edu/abs/1976ApJ...205..638P/abstract
     """
-    def __init__(self):
-        Cross_Section_Model.__init__(self)
+    def __init__(self, *args, **kwargs):
+        Cross_Section_Model.__init__(self, *args, **kwargs)
 
         self.PSB_filename = os.path.join(main_path, 'data/PSB1976.csv')
         self.params = pd.read_csv(self.PSB_filename, header=1)
         self.params.fillna(0, inplace=True)
 
-        self.nuclei = list(zip(self.params.Z, self.params.A))
+        self.nuclei = [nuc for nuc in list(zip(self.params.Z, self.params.A)) if self.filtering_nuclei(nuc)]
         self.channels = []
         
         for Z, A in self.nuclei:
@@ -255,7 +261,7 @@ class SimProp_model(Cross_Section_Model):
     """Models the cross sections in accordance with SimPropv2r4
        Source: https://iopscience.iop.org/article/10.1088/1475-7516/2017/11/009
     """
-    def __init__(self, filename=None, M=0):
+    def __init__(self, *args, filename=None, M=0, **kwargs):
         """Loads one of the models defined in the code
 
         Arguments:
@@ -264,7 +270,7 @@ class SimProp_model(Cross_Section_Model):
                   by default, assumes the PSB model is used.
         M: the input parameter used in SimProp for the given file (see publication).
         """
-        Cross_Section_Model.__init__(self)
+        Cross_Section_Model.__init__(self, *args, **kwargs)
 
         self.M = M
 
@@ -291,7 +297,7 @@ class SimProp_model(Cross_Section_Model):
         if self.params.shape[0] != num_species:
             print('Warning: Number of species in file does not match number of parameter lines.')
 
-        self.nuclei = [(int(Z), int(A)) for A, Z in self.params[:, :2]]
+        self.nuclei = [(int(Z), int(A)) for A, Z in self.params[:, :2] if self.filtering_nuclei((Z, A))]
         self.nuclei.sort()
 
         self.channels = []
@@ -427,14 +433,14 @@ class CRPropa_model(Cross_Section_Model):
     """Loads the cross sections provided with CRPropa-data
        Source: https://iopscience.iop.org/article/10.1088/1475-7516/2017/11/009
     """
-    def __init__(self, path=None):
+    def __init__(self, *args, path=None, **kwargs):
         """Loads the tabulated cross sections
 
         Arguments:
         ----------
         path: path to the cross section tables
         """
-        Cross_Section_Model.__init__(self)
+        Cross_Section_Model.__init__(self, *args, **kwargs)
 
         if np.any([name in path for name in ['PD_Talys1.8', 'PD_Talys1.9']]):
             self.tot_xsec_data = np.genfromtxt(os.path.join(path, 'xs_pd_sum.txt'))
