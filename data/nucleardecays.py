@@ -122,7 +122,7 @@ class NuclearDataTable():
         IMP!!! Only up to A=56 due to remaining parsing errors!
         """
         table = self.get_no_isomers_table()
-        unstable = table[logical_and(table['half_life'] < inf)]
+        unstable = table[table['half_life'] < inf]
 
         expression = r'\s*(?P<decays>[\+\-A-Za-z\d]+)[=<>~\sLE]+(?P<value>[\.\d\?#\s\+\-eE]+[\(\)\[\]\w,\d=egsm\.]*);*'
         # TODO: the reggex above still fails for one or two cases with ',e+' in the string
