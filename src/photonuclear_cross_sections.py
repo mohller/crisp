@@ -45,12 +45,24 @@ def get_particle_numbers(channel):
 daughters = [(2, 4), (2, 3), (1, 3), (1, 2), (1, 1), (0, 1)]
 
 
-class GDR_atlas(object):
+class Cross_Section_Model():
+    def __init__(self, *args, **kwargs):
+        if 'erange' not in kwargs:
+            self.erange = (10, 140) # in MeV
+        else:
+            self.erange = kwargs['erange'] # in MeV
+
+    def cross_section(self, *args, **kwargs):
+        # To be defined in each case
+        pass
+
+
+class GDR_atlas(Cross_Section_Model):
     """Models the Giant Dipole Resonance of a large number of nuclei.
        Data and models obtained from https://www-nds.iaea.org/PSFdatabase/atlas-gdr.html
     """
     def __init__(self, channel_set=None, Allowed=range(1, 1000)):
-        object.__init__(self)
+        Cross_Section_Model.__init__(self)
 
         self.slo_filename = os.path.join(main_path, 'data/gdr_parameters_exp&systematics/gdr-parameters_exp&systematics_slo.dat')
         self.slo_params = pd.read_fwf(self.slo_filename, widths=2*[4,] + 9*[9,] + [5,], header=3)
@@ -149,7 +161,9 @@ class GDR_atlas(object):
             else:
                 S2, F2 = 0, 0
 
-        return Strk * (S1 * F1 + S2 * F2) * f_i
+        csec = Strk * (S1 * F1 + S2 * F2) * f_i
+
+        return np.where(np.logical_and(self.erange[0] <= eps, eps < self.erange[1]), csec, np.zeros_like(eps))
     
     def total_cross_section(self, eps, Z, A):
         """Cross section computed as the sum of all the exclusive cross sections
@@ -162,12 +176,12 @@ class GDR_atlas(object):
         return np.sum(channels, axis=0)
 
 
-class PSB_model(object):
+class PSB_model(Cross_Section_Model):
     """Models the cross sections from the Puget Stecker Bredekamp 1976 paper
        Source: https://ui.adsabs.harvard.edu/abs/1976ApJ...205..638P/abstract
     """
     def __init__(self):
-        object.__init__(self)
+        Cross_Section_Model.__init__(self)
 
         self.PSB_filename = os.path.join(main_path, 'data/PSB1976.csv')
         self.params = pd.read_csv(self.PSB_filename, header=1)
@@ -224,7 +238,7 @@ class PSB_model(object):
                 W = np.sqrt(np.pi/8) * (erf( (30 - eps0) / D * np.sqrt(2)) + erf( (eps0 - 2) / D * np.sqrt(2)))
                 csec += 1/W * xi * Sigma_d / D * theta_plus(2, eps) * theta_minus(30, eps) * np.exp(-2 * ((eps - eps0) / D)**2)
         
-        return csec
+        return np.where(np.logical_and(self.erange[0] <= eps, eps < self.erange[1]), csec, np.zeros_like(eps))
     
     def total_cross_section(self, eps, Z, A):
         """Cross section computed as the sum of all the exclusive cross sections
@@ -237,7 +251,7 @@ class PSB_model(object):
         return np.sum(channels, axis=0)
 
 
-class SimProp_model(object):
+class SimProp_model(Cross_Section_Model):
     """Models the cross sections in accordance with SimPropv2r4
        Source: https://iopscience.iop.org/article/10.1088/1475-7516/2017/11/009
     """
@@ -250,7 +264,7 @@ class SimProp_model(object):
                   by default, assumes the PSB model is used.
         M: the input parameter used in SimProp for the given file (see publication).
         """
-        object.__init__(self)
+        Cross_Section_Model.__init__(self)
 
         self.M = M
 
@@ -396,7 +410,7 @@ class SimProp_model(object):
 
         csec[eps > self.eps_max] = 0
 
-        return csec
+        return np.where(np.logical_and(self.erange[0] <= eps, eps < self.erange[1]), csec, np.zeros_like(eps))
     
     def total_cross_section(self, eps, Z, A):
         """Cross section computed as the sum of all the exclusive cross sections
@@ -409,7 +423,7 @@ class SimProp_model(object):
         return np.sum(channels, axis=0)
 
 
-class CRPropa_model(object):
+class CRPropa_model(Cross_Section_Model):
     """Loads the cross sections provided with CRPropa-data
        Source: https://iopscience.iop.org/article/10.1088/1475-7516/2017/11/009
     """
@@ -420,7 +434,7 @@ class CRPropa_model(object):
         ----------
         path: path to the cross section tables
         """
-        object.__init__(self)
+        Cross_Section_Model.__init__(self)
 
         if np.any([name in path for name in ['PD_Talys1.8', 'PD_Talys1.9']]):
             self.tot_xsec_data = np.genfromtxt(os.path.join(path, 'xs_pd_sum.txt'))
@@ -485,7 +499,7 @@ class CRPropa_model(object):
                     if rem == (Z-Zprod, A-Aprod):
                         csec += np.interp(eps, self.eps, channel[3:])
 
-        return csec
+        return np.where(np.logical_and(self.erange[0] <= eps, eps < self.erange[1]), csec, np.zeros_like(eps))
     
     def total_cross_section(self, eps, Z, A):
         """Cross section computed as the sum of all the exclusive cross sections
