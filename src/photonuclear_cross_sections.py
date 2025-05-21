@@ -459,7 +459,7 @@ class CRPropa_model(Cross_Section_Model):
         self.isotopes = np.genfromtxt(os.path.join(path, 'isotopes.txt'))
         
         self.nuclei, self.channels = [], []
-        for Z, A in [(Z, A) for Z, N, A in self.isotopes]:
+        for Z, A in [(Z, A) for Z, N, A in self.isotopes if self.filter_nuclei((Z, A))]:
             channels = self.xsec_data[np.argwhere(np.logical_and(self.xsec_data[:, 0] == Z, self.xsec_data[:, 1] == A)), 2]
             
             if np.any(channels):
