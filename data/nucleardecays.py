@@ -107,6 +107,14 @@ class NuclearDataTable():
     def __init__(self, filename=None):
         self.table = nuclear_data_parser(filename)
 
+    def get_stable_species(self, Amax=220):
+        """Returns a list of stable nuclei
+        """
+        selection = self.table[logical_and(self.table['half_life'] == inf, self.table['A'] <= Amax)]
+
+        return list(zip(selection['Z'], selection['A']))
+
+    
     def get_no_isomers_table(self):
         """Returns the table excluding the isomer states
         """
