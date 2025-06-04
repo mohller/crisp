@@ -3,6 +3,7 @@
 
 import os
 import numpy as np
+from math import factorial
 from scipy.linalg import expm
 import interaction_rates as ir
 from scipy.interpolate import interp1d
@@ -715,7 +716,7 @@ class InteractionCore():
         inverse = np.linalg.inv(np.moveaxis(reduced_tensor, -1, 0))
         inverse_power = inverse**degree
 
-        moment = np.math.factorial(degree) * (-1)**degree * np.matmul(np.matmul(alpha[indices], inverse_power), np.ones_like(alpha[indices]))
+        moment = factorial(degree) * (-1)**degree * np.matmul(np.matmul(alpha[indices], inverse_power), np.ones_like(alpha[indices]))
 
         return moment
     
