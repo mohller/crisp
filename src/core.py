@@ -1469,7 +1469,7 @@ class InteractionCore_UHECR_Source(InteractionCore):
         interaction and the photon field.
         """
         from pandas import DataFrame
-        boosts = np.logspace(1, 14, 181)
+        boosts = np.logspace(0, 12, 131)
 
         if boostfactor is not None:
             boosts *= boostfactor
