@@ -3,6 +3,7 @@
 
 import os
 import numpy as np
+from math import factorial
 from scipy.linalg import expm
 import interaction_rates as ir
 from scipy.interpolate import interp1d
@@ -715,7 +716,7 @@ class InteractionCore():
         inverse = np.linalg.inv(np.moveaxis(reduced_tensor, -1, 0))
         inverse_power = inverse**degree
 
-        moment = np.math.factorial(degree) * (-1)**degree * np.matmul(np.matmul(alpha[indices], inverse_power), np.ones_like(alpha[indices]))
+        moment = factorial(degree) * (-1)**degree * np.matmul(np.matmul(alpha[indices], inverse_power), np.ones_like(alpha[indices]))
 
         return moment
     
@@ -1468,7 +1469,7 @@ class InteractionCore_UHECR_Source(InteractionCore):
         interaction and the photon field.
         """
         from pandas import DataFrame
-        boosts = np.logspace(1, 14, 181)
+        boosts = np.logspace(0, 12, 131)
 
         if boostfactor is not None:
             boosts *= boostfactor
