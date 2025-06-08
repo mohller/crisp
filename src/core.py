@@ -1682,7 +1682,7 @@ class InteractionCore_CRPdata_CMB(InteractionCore):
         if not (path is None):
           self.path = path
           from photonuclear_cross_sections import CRPropa_model
-          self.sim_model = CRPropa_model(self.path)
+          self.sim_model = CRPropa_model(path=self.path)
         elif not (xsec_model is None):
           self.sim_model = xsec_model
         else:
@@ -1744,7 +1744,7 @@ class InteractionCore_CRPdata_EBL(InteractionCore):
         if not (path is None):
           self.path = path
           from photonuclear_cross_sections import CRPropa_model
-          self.sim_model = CRPropa_model(self.path)
+          self.sim_model = CRPropa_model(path=self.path)
         elif not (xsec_model is None):
           self.sim_model = xsec_model
         else:
