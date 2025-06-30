@@ -519,6 +519,37 @@ class CRPropa_model(Cross_Section_Model):
         return np.interp(eps, self.eps, xs)
 
 
+class Model_Rack(Cross_Section_Model):
+    """A model holder that yields values from different models depending 
+    on the nuclear species"""
+    def __init__(self, models=None, **kwargs):
+        """Populates the model set
+
+        Arguments:
+        ----------
+        models: list of models to be used. 
+        
+        
+        **Note**: The models are checked in the ordered given and if they contain 
+        the requested species, then their corresponding cross section is given.
+        """
+        self.models = models
+
+    def cross_section(self, eps, Z, A, nloss=None, rem=None):
+        for model in self.models:
+            if (Z, A) in model.nuclei:
+                return model.cross_section(eps, Z, A, nloss, rem)
+
+        return np.zeros_like(eps)
+
+    def total_cross_section(self, eps, Z, A):
+        for model in self.models:
+            if (Z, A) in model.nuclei:
+                return model.total_cross_section(eps, Z, A)
+
+        return np.zeros_like(eps)
+
+
 def pgamma(eps_r):
     """Photonuclear cross section in the energy range .1-1e4 GeV
     taken from Rachen PhD Thesis. 
