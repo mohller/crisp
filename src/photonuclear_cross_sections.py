@@ -534,6 +534,19 @@ class Model_Rack(Cross_Section_Model):
         the requested species, then their corresponding cross section is given.
         """
         self.models = models
+        
+        nuclei = []
+        for model in self.models:
+            nuclei += model.nuclei
+
+        self.nuclei = list(sorted(set(nuclei)))
+        
+        self.channels = []
+        for nuc in self.nuclei:
+            for model in self.models:
+                if nuc in model.nuclei:
+                    self.channels.append(model.channels[model.nuclei.index(nuc)])
+                    break
 
     def cross_section(self, eps, Z, A, nloss=None, rem=None):
         for model in self.models:
