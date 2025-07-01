@@ -42,8 +42,8 @@ def get_particle_numbers(channel):
 
     return digits
 
+shortlived = [(2, 5), (3, 5), (5, 9)]
 daughters = [(2, 4), (2, 3), (1, 3), (1, 2), (1, 1), (0, 1)]
-
 
 class Cross_Section_Model():
     def __init__(self, *args, **kwargs):
@@ -451,32 +451,34 @@ class CRPropa_model(Cross_Section_Model):
         else:
             self.tot_xsec_data = np.genfromtxt(os.path.join(path, 'xs_sum.txt'))
             self.xsec_data = np.genfromtxt(os.path.join(path, 'xs_thin.txt'))
-        
+
         self.tot_xsec_data[:, 1] += self.tot_xsec_data[:, 0] # changing from (Z, N) to (Z, A)
         self.xsec_data[:, 1] += self.xsec_data[:, 0] # changing from (Z, N) to (Z, A)
 
         self.eps = np.genfromtxt(os.path.join(path, 'eps.txt'))
         self.isotopes = np.genfromtxt(os.path.join(path, 'isotopes.txt'))
-        
+
         self.nuclei, self.channels = [], []
         for Z, A in [(Z, A) for Z, N, A in self.isotopes if self.filter_nuclei((Z, A))]:
             channels = self.xsec_data[np.argwhere(np.logical_and(self.xsec_data[:, 0] == Z, self.xsec_data[:, 1] == A)), 2]
-            
+
+            if (Z, A) == (1, 3):
+                print(channels)
+
             if np.any(channels):
                 rem_list = []
-                small_list = np.zeros(6)
+
                 for channel in channels.flatten():
                     small_prods = np.array(get_particle_numbers(channel))
-                    small_list += small_prods
 
                     Zprod = small_prods.dot([Zd for Zd, _ in daughters])
                     Aprod = small_prods.dot([Ad for _, Ad in daughters])
-                    rem_list.append((int(Z-Zprod), int(A-Aprod)))
 
-                for present, daughter in zip(small_list > 0, daughters):
-                    if present:
-                        rem_list.append(daughter)
-                
+                    if (Z-Zprod, A-Aprod) in shortlived:
+                        rem_list.append((2, 4))
+                    else:
+                        rem_list.append((int(Z-Zprod), int(A-Aprod)))
+
                 rem_list = sorted(list(set(rem_list)))
                 self.channels.append(rem_list)
                 self.nuclei.append((int(Z), int(A)))
@@ -486,15 +488,16 @@ class CRPropa_model(Cross_Section_Model):
         interaction rates.
         """
         csec = np.zeros_like(eps)
-        
+
         if (nloss is None) and (rem is None):
             csec = self.total_cross_section(eps, Z, A)
         elif nloss is not None:
             csec = np.zeros_like(eps)
+
+            for prod in self.channels[self.nuclei.index((Z, A))]:
+              csec += self.cross_section(eps, Z, A, rem=prod)
         else:
-            if rem in daughters:
-                csec = np.zeros_like(eps)
-            else:
+            if rem in self.channels[self.nuclei.index((Z, A))]:
                 channels = self.xsec_data[np.where(np.logical_and(self.xsec_data[:, 0] == Z, self.xsec_data[:, 1] == A))]
 
                 for channel in channels:
@@ -502,21 +505,23 @@ class CRPropa_model(Cross_Section_Model):
                     Zprod = small_prods.dot([Zd for Zd, _ in daughters])
                     Aprod = small_prods.dot([Ad for _, Ad in daughters])
 
-                    if rem == (Z-Zprod, A-Aprod):
+                    if (Z-Zprod, A-Aprod) in [rem] + shortlived:
                         csec += np.interp(eps, self.eps, channel[3:])
+            else:
+                csec = np.zeros_like(eps)
 
         return np.where(np.logical_and(self.erange[0] <= eps, eps < self.erange[1]), csec, np.zeros_like(eps))
-    
+
     def total_cross_section(self, eps, Z, A):
         """Cross section computed as the sum of all the exclusive cross sections
         of the channels of the given nucleus (Z, A)
         """
         xs = self.tot_xsec_data[np.argwhere(np.logical_and(self.tot_xsec_data[:, 0] == Z, self.tot_xsec_data[:, 1] == A))].flatten()[2:]
-        
+
         if len(xs) == 0:
             xs = np.zeros_like(self.eps)
 
-        return np.interp(eps, self.eps, xs)
+        return np.where(np.logical_and(self.erange[0] <= eps, eps < self.erange[1]), np.interp(eps, self.eps, xs), np.zeros_like(eps))
 
 
 class Model_Rack(Cross_Section_Model):
