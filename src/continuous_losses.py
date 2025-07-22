@@ -49,7 +49,7 @@ def Bpp_Blumenthal(Z, A, g, z=0):
         "Reaction rate and energy loss rate for photopair production by relativistic nuclei"
         M. CHodorowski, A. Zdziarski, M. Sikora, ApJ 400, 181-185, 1992
 
-        B = -1/E dE/dt = -1/g dg/dt
+        B = -1/E dE/cdt = -1/g dg/cdt
         Values given in Mpc^-1
     """
     hbc = (hbar * c).to('eV m')
@@ -177,7 +177,9 @@ def g_in_z_evolution(g0, gf=1e6, z0=.1, zf=1e-7, Z=1, A=1):
 
 absolute_thickness = lambda z: np.interp(z, np.logspace(-7, 5, 1000), Lprime_trapz(np.logspace(-7, 5, 1000)))
 pthickness = lambda z0, zf: absolute_thickness(zf) - absolute_thickness(z0)
+thickness_to_lookback_distance = lambda th: np.interp(th, -absolute_thickness(np.logspace(-6, 3, 1000)), cosmo.lookback_distance(np.logspace(-6, 3, 1000)).value)
+lookback_distance_to_thickness = lambda lbd: np.interp(lbd, cosmo.lookback_distance(np.logspace(-6, 3, 1000)).value, -absolute_thickness(np.logspace(-6, 3, 1000)))
 
 gvgrid = np.logspace(13, 7, 5000)
-funvals_B70 = cumulative_trapezoid(1 / gvgrid / Bpp_Blumenthal(1, 1, gvgrid, 0), gvgrid, initial=1 / gvgrid[0] / Bpp_Blumenthal(1, 1, gvgrid[0], 0))
+funvals_B70 = cumulative_trapezoid(1 / gvgrid / Bpp_Blumenthal(1, 1, gvgrid, 0), gvgrid) + 1 / gvgrid[0] / Bpp_Blumenthal(1, 1, gvgrid[0], 0)
 universal_thickness_B70 = lambda g0, gf: np.interp(gf, gvgrid[::-1], funvals_B70[::-1]) - np.interp(g0, gvgrid[::-1], funvals_B70[::-1])
