@@ -73,10 +73,12 @@ class GDR_atlas(Cross_Section_Model):
         self.slo_filename = os.path.join(main_path, 'data/gdr_parameters_exp&systematics/gdr-parameters_exp&systematics_slo.dat')
         self.slo_params = pd.read_fwf(self.slo_filename, widths=2*[4,] + 9*[9,] + [5,], header=3)
         self.slo_params.rename(columns={'#  Z':'Z'}, inplace=True)
+        self.slo_params.fillna(0, inplace=True)
 
         self.smlo_filename = os.path.join(main_path, 'data/gdr_parameters_exp&systematics/gdr-parameters_exp&systematics_smlo.dat')
         self.smlo_params = pd.read_fwf(self.smlo_filename, widths=2*[4,] + 9*[9,] + [5,], header=3)
         self.smlo_params.rename(columns={'#  Z':'Z'}, inplace=True)
+        self.smlo_params.fillna(0, inplace=True)
 
         self.nuclei = [nuc for nuc in list(zip(self.slo_params.Z, self.slo_params.A)) if self.filter_nuclei(nuc)]
         self.channels = []
@@ -98,15 +100,16 @@ class GDR_atlas(Cross_Section_Model):
 
                 self.channels.append(channels)
 
-
     def cross_section(self, eps, Z, A, nloss=None, rem=None, gdr_type='slo'):
         """Returns the cross section in mb, takes energy eps in MeV
+           Works for individual channels, using the PSB coefficients.
+           !! Not part of the GDR atlas !!
         """
         if nloss is None:
             if rem is not None:
                 nloss = A - rem[1]
             else:
-                return self.total_cross_section(eps, Z, A)
+                return self.total_cross_section(eps, Z, A, gdr_type=gdr_type)
 
         # branchings as in PSB
         branchings = np.array([
@@ -124,62 +127,39 @@ class GDR_atlas(Cross_Section_Model):
             f_i = branchings[2, nloss - 1]
         elif A > 22:
             f_i = branchings[3, nloss - 1]
-        
-        Strk = 15 * A * (1 - (A - 2*Z)/A) # in MeV * mb
 
-        if gdr_type == 'slo':
-            params = self.slo_params[(self.slo_params['Z']==Z) & (self.slo_params['A']==A)]
-
-            S1 = params['S1'].values[0] # in MeV
-            E1 = params['Er1'].values[0] # in MeV
-            G1 = params['Wr1'].values[0] # in MeV
-
-            F1 = 2 / np.pi * eps**2 * G1 / ((eps**2 - E1**2)**2 + (eps*G1)**2)
-
-            if not np.isnan(params['E2'].values[0]):
-                S2 = params['S2'].values[0] # in MeV
-                E2 = params['E2'].values[0] # in MeV
-                G2 = params['Wr2'].values[0] # in MeV
-
-                F2 = 2 / np.pi * eps**2 * G2 / ((eps**2 - E2**2)**2 + (eps*G2)**2)
-            else:
-                S2, F2 = 0, 0
-        
-        elif gdr_type == 'smlo':
-            params = self.smlo_params[(self.smlo_params['Z']==Z) & (self.smlo_params['A']==A)]
-
-            S1 = params['S1'].values[0] # in MeV
-            E1 = params['Er1'].values[0] # in MeV
-            G1 = params['Wr1'].values[0] # in MeV
-
-            G1 *= eps / E1
-
-            F1 = 2 / np.pi * eps**2 * G1 / ((eps**2 - E1**2)**2 + (eps*G1)**2)
-
-            if not np.isnan(params['E2'].values[0]):
-                S2 = params['S2'].values[0] # in MeV
-                E2 = params['E2'].values[0] # in MeV
-                G2 = params['Wr2'].values[0] # in MeV
-
-                G2 *= eps / E2
-
-                F2 = 2 / np.pi * eps**2 * G2 / ((eps**2 - E2**2)**2 + (eps*G2)**2)
-            else:
-                S2, F2 = 0, 0
-
-        csec = Strk * (S1 * F1 + S2 * F2) * f_i
+        csec = self.total_cross_section(eps, Z, A, gdr_type=gdr_type) * f_i
 
         return np.where(np.logical_and(self.erange[0] <= eps, eps < self.erange[1]), csec, np.zeros_like(eps))
-    
-    def total_cross_section(self, eps, Z, A):
+
+    def total_cross_section(self, eps, Z, A, gdr_type='slo'):
         """Cross section computed as the sum of all the exclusive cross sections
         of the channels of the given nucleus (Z, A)
         """
-        channels = []
-        for _, Arem in self.channels[self.nuclei.index((Z, A))]:
-            channels.append(self.cross_section(eps, Z, A, A-Arem))
+        phi = np.where(eps < 140, np.where(eps < 20, np.exp(-73.3 / eps),
+                      np.polyval([9.3537e-9, -3.4762e-6, 4.1222e-4, -9.8343e-3, 8.3714e-2], eps)),
+                      np.exp(-24.2 / eps))
 
-        return np.sum(channels, axis=0)
+        sgm_QD = 397.8 * Z * (A - Z) / A * (np.sqrt(eps - 2.224) / eps)**3 * phi
+
+        F_SLO = lambda G, E: 2 / np.pi * eps**2 * G / ((eps**2 - E**2)**2 + (eps*G)**2) if G and E else np.zeros_like(eps)
+        F_SMLO = lambda G, E: 2 / np.pi * eps**2 * (G/E*eps) / ((eps**2 - E**2)**2 + (eps*(G/E*eps))**2) if G and E else np.zeros_like(eps)
+
+        sgm_TRK = 60 * Z * (A - Z) / A # in MeV * mb
+        sgm_GDR_fun = lambda S1, F1, S2, F2: sgm_TRK * (S1 * F1 + S2 * F2)
+
+        if gdr_type == 'slo':
+            params = self.slo_params[(self.slo_params['Z']==Z) & (self.slo_params['A']==A)]
+            sgm_GDR = sgm_GDR_fun(params['S1'].values, F_SLO(*params[['Wr1', 'Er1']].values.flatten()),
+                                  params['S2'].values, F_SLO(*params[['Wr2', 'E2']].values.flatten()))
+        elif gdr_type == 'smlo':
+            params = self.smlo_params[(self.smlo_params['Z']==Z) & (self.smlo_params['A']==A)]
+            sgm_GDR = sgm_GDR_fun(params['S1'].values, F_SMLO(*params[['Wr1', 'Er1']].values.flatten()),
+                                  params['S2'].values, F_SMLO(*params[['Wr2', 'E2']].values.flatten()))
+
+        csec = np.nan_to_num(sgm_GDR) + sgm_QD
+
+        return np.where(np.logical_and(self.erange[0] <= eps, eps < self.erange[1]), csec, np.zeros_like(eps))
 
 
 class PSB_model(Cross_Section_Model):
