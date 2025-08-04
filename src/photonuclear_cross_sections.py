@@ -195,7 +195,7 @@ class PSB_model(Cross_Section_Model):
 
         self.nuclei = [nuc for nuc in list(zip(self.params.Z, self.params.A)) if self.filter_nuclei(nuc)]
         self.channels = []
-        
+
         for Z, A in self.nuclei:
             if A == 2:
                 channels = [(1, 1)]
@@ -211,7 +211,7 @@ class PSB_model(Cross_Section_Model):
             elif A in range(23, 57):
                 channels = [([Zr for Zr, Ar in self.nuclei if Ar == A-nloss][0], A-nloss) for nloss in range(1, 16)
                             if [Zr for Zr, Ar in self.nuclei if Ar == A-nloss] != []]
-                
+
             self.channels.append(channels)
 
     def cross_section(self, eps, Z, A, nloss=None, rem=None):
@@ -226,26 +226,25 @@ class PSB_model(Cross_Section_Model):
                 nloss = A - rem[1]
             else:
                 return self.total_cross_section(eps, Z, A)
-            
+
         zeta = float(params.iloc[0]['zeta'])
         Sigma_d = 59.8 * (A - Z) * Z / A # in MeV * mb
 
         csec = zeta * Sigma_d * theta_plus(30, eps) / 120 # applies for all nloss values
+        f_i = float(params.iloc[0][f'{nloss}'])
+        csec *= f_i
 
         if nloss in [1, 2]:
-            f_i = float(params.iloc[0][f'{nloss}'])
             eps0 = float(params.iloc[0][f'eps0{nloss}'])
             xi = float(params.iloc[0][f'xi{nloss}'])
             D = float(params.iloc[0][f'Delta{nloss}'])
 
-            csec *= f_i 
-            
             if D != 0:
                 W = np.sqrt(np.pi/8) * (erf( (30 - eps0) / D * np.sqrt(2)) + erf( (eps0 - 2) / D * np.sqrt(2)))
                 csec += 1/W * xi * Sigma_d / D * theta_plus(2, eps) * theta_minus(30, eps) * np.exp(-2 * ((eps - eps0) / D)**2)
-        
+
         return np.where(np.logical_and(self.erange[0] <= eps, eps < self.erange[1]), csec, np.zeros_like(eps))
-    
+
     def total_cross_section(self, eps, Z, A):
         """Cross section computed as the sum of all the exclusive cross sections
         of the channels of the given nucleus (Z, A)
