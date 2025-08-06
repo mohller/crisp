@@ -181,5 +181,5 @@ thickness_to_lookback_distance = lambda th: np.interp(th, -absolute_thickness(np
 lookback_distance_to_thickness = lambda lbd: np.interp(lbd, cosmo.lookback_distance(np.logspace(-6, 3, 1000)).value, -absolute_thickness(np.logspace(-6, 3, 1000)))
 
 gvgrid = np.logspace(13, 7, 5000)
-funvals_B70 = cumulative_trapezoid(1 / gvgrid / Bpp_Blumenthal(1, 1, gvgrid, 0), gvgrid) + 1 / gvgrid[0] / Bpp_Blumenthal(1, 1, gvgrid[0], 0)
+funvals_B70 = cumulative_trapezoid(1 / gvgrid / Bpp_Blumenthal(1, 1, gvgrid, 0), gvgrid, initial=0) + 1 / gvgrid[0] / Bpp_Blumenthal(1, 1, gvgrid[0], 0)
 universal_thickness_B70 = lambda g0, gf: np.interp(gf, gvgrid[::-1], funvals_B70[::-1]) - np.interp(g0, gvgrid[::-1], funvals_B70[::-1])
