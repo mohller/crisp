@@ -171,7 +171,7 @@ class GDR_atlas(Cross_Section_Model):
                       np.exp(-24.2 / eps))
 
         sgm_QD = 397.8 * Z * (A - Z) / A * phi * \
-                 np.where(eps >= 2.224, (np.sqrt(eps - 2.224) / eps)**3, np.zeros_like(eps))
+                 (np.sqrt(eps - 2.224, where=eps >= 2.224, out=np.zeros_like(eps)) / eps)**3
 
         F_SLO = lambda G, E: 2 / np.pi * eps**2 * G / ((eps**2 - E**2)**2 + (eps*G)**2) if G and E else np.zeros_like(eps)
         F_SMLO = lambda G, E: 2 / np.pi * eps**2 * (G/E*eps) / ((eps**2 - E**2)**2 + (eps*(G/E*eps))**2) if G and E else np.zeros_like(eps)
