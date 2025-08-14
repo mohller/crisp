@@ -63,6 +63,36 @@ class Cross_Section_Model():
         pass
 
 
+    def cross_section_table(self, *args, nuclei_list=None, **kwargs):
+        """Returns an array with cross sections of the species provided
+           in nuclei_list, otherwise the full list of nuclei is used.
+        """
+        if 'eps' not in kwargs:
+            eps = np.linspace(*self.erange, 100) # in MeV
+        else:
+            eps = kwargs['eps']
+
+        if nuclei_list is None:
+            nuclei_list = self.nuclei
+
+        cross_section_table = np.vstack([self.cross_section(eps, *nuc) 
+                                         for nuc in nuclei_list])
+        return cross_section_table
+
+    def energy_weighted_cross_section_table(self, *args, **kwargs):
+        """Returns an array with energy weighted cross sections of the species 
+           provided in nuclei_list, otherwise the full list of nuclei is used.
+        """
+        if 'eps' not in kwargs:
+            eps = np.linspace(*self.erange, 100) # in MeV
+        else:
+            eps = kwargs['eps']
+
+        cs_table = self.cross_section_table(*args, **kwargs)
+        
+        return 2 / eps**2 * cumulative_trapezoid(cs_table, eps, initial=0)
+
+
 class GDR_atlas(Cross_Section_Model):
     """Models the Giant Dipole Resonance of a large number of nuclei.
        Data and models obtained from https://www-nds.iaea.org/PSFdatabase/atlas-gdr.html
