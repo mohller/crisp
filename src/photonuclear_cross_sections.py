@@ -391,7 +391,7 @@ class SimProp_model(Cross_Section_Model):
                     if self.M == 2:
                         csec += xi / (1 + ((eps - eps0) / D)**2)
                     else:
-                        W = np.sqrt(np.pi) / 2 * D * (erf( (self.eps_mid - eps0) / D) + erf( (self.eps_mid - eps0) / D))
+                        W = np.sqrt(np.pi) / 2 * D * (erf( (self.eps_max - eps0) / D) + erf( (eps0 - self.eps_min) / D))
                         csec += xi * Sigma_d / W * theta_plus(epsmin, eps) * theta_minus(self.eps_mid, eps) * np.exp(-((eps - eps0) / D)**2)
         elif self.M == 3:
             t_N, h1_N, x1_N, w1_N, h2_N, x2_N, w2_N, c_N, t_a, h1_a, x1_a, w1_a, h2_a, x2_a, w2_a, c_a = params
