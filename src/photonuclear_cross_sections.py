@@ -307,7 +307,7 @@ class SimProp_model(Cross_Section_Model):
         if self.params.shape[0] != num_species:
             print('Warning: Number of species in file does not match number of parameter lines.')
 
-        self.nuclei = [(int(Z), int(A)) for A, Z in self.params[:, :2] if self.filter_nuclei((Z, A))]
+        self.nuclei = [(1, 1)] + [(int(Z), int(A)) for A, Z in self.params[:, :2] if self.filter_nuclei((Z, A))]
         self.nuclei.sort()
 
         self.channels = []
