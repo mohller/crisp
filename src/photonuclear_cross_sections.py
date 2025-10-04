@@ -310,6 +310,13 @@ class SimProp_model(Cross_Section_Model):
         self.nuclei = [(int(Z), int(A)) for A, Z in self.params[:, :2] if self.filter_nuclei((Z, A))]
         self.nuclei.sort()
 
+        self.branchings = np.array([
+            [.8,  .2,  0,   0,   0,    0,   0,    0,   0,    0,   0,    0,    0,    0,   0],
+            [1.,   0,  0,   0,   0,    0,   0,    0,   0,    0,   0,    0,    0,    0,   0],
+            [.1,  .3, .1,  .1,  .2,   .2,   0,    0,   0,    0,   0,    0,    0,    0,   0],
+            [.1, .35, .1, .05, .15, .045, .04, .035, .03, .025, .02, .018, .015, .012, .01]
+        ])
+
         self.channels = [[(1, 1)]]
         if M in [0, 1, 2]:
             for Z, A in self.nuclei[1:]:
@@ -321,8 +328,10 @@ class SimProp_model(Cross_Section_Model):
             for Z, A in self.nuclei[1:]:
                 channels = [([Zr for Zr, Ar in self.nuclei if Ar == A-nloss][0], A-nloss) for nloss in [1, 4]
                             if [Zr for Zr, Ar in self.nuclei if Ar == A-nloss] != []]
-                    
+
                 self.channels.append(channels)
+            
+            self.channels[self.nuclei.index((4, 9))] = [(1, 1), (2, 4)]
 
     def cross_section(self, eps, Z, A, nloss=None, rem=None):
         """The cross section as modeled in the reference to compute the
@@ -336,21 +345,14 @@ class SimProp_model(Cross_Section_Model):
             else:
                 return self.total_cross_section(eps, Z, A)
 
-        branchings = np.array([
-            [.8,  .2,  0,   0,   0,    0,   0,    0,   0,    0,   0,    0,    0,    0,   0],
-            [1.,   0,  0,   0,   0,    0,   0,    0,   0,    0,   0,    0,    0,    0,   0],
-            [.1,  .3, .1,  .1,  .2,   .2,   0,    0,   0,    0,   0,    0,    0,    0,   0],
-            [.1, .35, .1, .05, .15, .045, .04, .035, .03, .025, .02, .018, .015, .012, .01]
-        ])
-
         if A in [3, 4]:
-            f_i = branchings[0, nloss - 1]
+            f_i = self.branchings[0, nloss - 1]
         elif A in [2, 9]:
-            f_i = branchings[1, nloss - 1]
+            f_i = self.branchings[1, nloss - 1]
         elif A in range(10, 23):
-            f_i = branchings[2, nloss - 1]
+            f_i = self.branchings[2, nloss - 1]
         elif A in range(23, 57):
-            f_i = branchings[3, nloss - 1]
+            f_i = self.branchings[3, nloss - 1]
         
         params = self.params[np.logical_and(self.params[:, 1] == Z, self.params[:, 0] == A)].flatten()[2:]
 
@@ -377,30 +379,27 @@ class SimProp_model(Cross_Section_Model):
             m3comp = lambda h, x, w: h / (1 + ((eps - x) / w)**2)
 
             if nloss == 1:
-                csec = np.where(np.logical_and(t_N <= eps, eps < self.eps_mid), m3comp(h1_N, x1_N, w1_N) + m3comp(h2_N, x2_N, w2_N), 0) + \
-                       np.where(np.logical_and(self.eps_mid <= eps, eps <= self.eps_max), c_N, 0)
+                csec = np.where(np.logical_and(t_N <= eps, eps < self.eps_mid), m3comp(h1_N, x1_N, w1_N) + m3comp(h2_N, x2_N, w2_N), np.zeros_like(eps)) + \
+                       np.where(np.logical_and(self.eps_mid <= eps, eps <= self.eps_max), c_N, np.zeros_like(eps))
             elif nloss == 4:
-                csec = np.where(np.logical_and(t_a <= eps, eps < self.eps_mid), m3comp(h1_a, x1_a, w1_a) + m3comp(h2_a, x2_a, w2_a), 0) + \
-                       np.where(np.logical_and(self.eps_mid <= eps, eps <= self.eps_max), c_a, 0)
+                csec = np.where(np.logical_and(t_a <= eps, eps < self.eps_mid), m3comp(h1_a, x1_a, w1_a) + m3comp(h2_a, x2_a, w2_a), np.zeros_like(eps)) + \
+                       np.where(np.logical_and(self.eps_mid <= eps, eps <= self.eps_max), c_a, np.zeros_like(eps))
             else:
                 csec = np.zeros_like(eps)
 
-            print('Warning: Total cross sections for M3 are not well defined')
         elif self.M == 4:
             t_N, h1_N, x1_N, w1_N, c_N, t_a, h1_a, x1_a, w1_a, c_a = params
 
             m4comp = lambda h, x, w: h * np.exp(-(eps - x)**2 / w)
 
             if nloss == 1:
-                csec = np.where(np.logical_and(t_N <= eps, eps < self.eps_mid), m4comp(h1_N, x1_N, w1_N), 0) + \
-                       np.where(np.logical_and(self.eps_mid <= eps, eps <= self.eps_max), c_N, 0)
+                csec = np.where(np.logical_and(t_N <= eps, eps < self.eps_mid), m4comp(h1_N, x1_N, w1_N), np.zeros_like(eps)) + \
+                       np.where(np.logical_and(self.eps_mid <= eps, eps <= self.eps_max), c_N, np.zeros_like(eps))
             elif nloss == 4:
-                csec = np.where(np.logical_and(t_a <= eps, eps < self.eps_mid), m4comp(h1_a, x1_a, w1_a), 0) + \
-                       np.where(np.logical_and(self.eps_mid <= eps, eps <= self.eps_max), c_a, 0)
+                csec = np.where(np.logical_and(t_a <= eps, eps < self.eps_mid), m4comp(h1_a, x1_a, w1_a), np.zeros_like(eps)) + \
+                       np.where(np.logical_and(self.eps_mid <= eps, eps <= self.eps_max), c_a, np.zeros_like(eps))
             else:
                 csec = np.zeros_like(eps)
-
-            print('Warning: Total cross sections for M4 are not well defined')
 
         csec[eps > self.eps_max] = 0
 
