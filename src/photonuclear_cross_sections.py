@@ -62,7 +62,6 @@ class Cross_Section_Model():
         # To be defined in each case
         pass
 
-
     def cross_section_table(self, *args, nuclei_list=None, **kwargs):
         """Returns an array with cross sections of the species provided
            in nuclei_list, otherwise the full list of nuclei is used.
@@ -78,6 +77,25 @@ class Cross_Section_Model():
         cross_section_table = np.vstack([self.cross_section(eps, *nuc) 
                                          for nuc in nuclei_list])
         return cross_section_table
+
+    def channels_table(self, *args, nuclei_list=None, **kwargs):
+        """Returns an array with cross sections of the species provided
+           in nuclei_list, otherwise the full list of nuclei is used.
+        """
+        if 'eps' not in kwargs:
+            eps = np.linspace(*self.erange, 100) # in MeV
+        else:
+            eps = kwargs['eps']
+
+        if nuclei_list is None:
+            nuclei_list = self.nuclei
+
+        channels_table = []
+        for nuc, channels in (nuclei_list, channels):
+            for rem in channels:
+                channels_table.append(self.cross_section(eps, *nuc, rem=rem))
+
+        return np.vstack(channels_table)
 
     def energy_weighted_cross_section_table(self, *args, **kwargs):
         """Returns an array with energy weighted cross sections of the species 
