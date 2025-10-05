@@ -88,7 +88,7 @@ class Cross_Section_Model():
             eps = kwargs['eps']
 
         channels_table = []
-        for nuc, channels in (self.nuclei, self.channels):
+        for nuc, channels in zip(self.nuclei, self.channels):
             for rem in channels:
                 channels_table.append(self.cross_section(eps, *nuc, rem=rem))
 
