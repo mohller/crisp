@@ -110,6 +110,19 @@ class Cross_Section_Model():
         
         return 2 / eps**2 * cumulative_trapezoid(cs_table, eps, initial=0)
 
+    def energy_weighted_channels_table(self, *args, **kwargs):
+        """Returns an array with energy weighted cross sections of the species 
+           provided in nuclei_list, otherwise the full list of nuclei is used.
+        """
+        if 'eps' not in kwargs:
+            eps = np.linspace(*self.erange, 100) # in MeV
+        else:
+            eps = kwargs['eps']
+
+        ch_table = self.channels_table(*args, **kwargs)
+        
+        return 2 / eps**2 * cumulative_trapezoid(ch_table, eps, initial=0)
+
 
 class GDR_atlas(Cross_Section_Model):
     """Models the Giant Dipole Resonance of a large number of nuclei.
