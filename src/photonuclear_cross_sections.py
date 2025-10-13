@@ -52,7 +52,7 @@ class Cross_Section_Model():
         else:
             self.erange = kwargs['erange'] # in MeV
 
-        # filtering function, takes nucleus, returns bollean saying if it should be included
+        # filtering function, takes nucleus, returns True if it should be included
         if 'filter_nuclei' not in kwargs:
             self.filter_nuclei = lambda nuc: True
         else:
@@ -87,8 +87,14 @@ class Cross_Section_Model():
         else:
             eps = kwargs['eps']
 
+        if nuclei_list is None:
+            nuclei_list = self.nuclei
+
+        idcs = [self.nuclei.index(nuc) for nuc in nuclei_list]
+        channels_list = [xsec_mr.channels[idx] for idx in idcs]
+        
         channels_table = []
-        for nuc, channels in zip(self.nuclei, self.channels):
+        for nuc, channels in zip(nuclei_list, channels_list):
             for rem in channels:
                 channels_table.append(self.cross_section(eps, *nuc, rem=rem))
 
