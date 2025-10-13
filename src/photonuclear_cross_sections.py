@@ -91,7 +91,7 @@ class Cross_Section_Model():
             nuclei_list = self.nuclei
 
         idcs = [self.nuclei.index(nuc) for nuc in nuclei_list]
-        channels_list = [xsec_mr.channels[idx] for idx in idcs]
+        channels_list = [self.channels[idx] for idx in idcs]
         
         channels_table = []
         for nuc, channels in zip(nuclei_list, channels_list):
