@@ -1,10 +1,10 @@
 from pickle import load
-from numpy import pi, exp, array, vectorize, logspace, log, log10, trapz, loadtxt, newaxis
+from numpy import pi, exp, array, vectorize, logspace, log, log10, trapezoid, loadtxt, newaxis
 from scipy.constants import h, c, electron_volt, Boltzmann
 import os
 main_path = os.path.abspath(os.path.join(os.path.dirname( __file__ ), '..'))
 
-def target_photons_spectrum(Emin=1e-6, Emax=1e4, Ebr=1e3, si1=1, si2=2, normal=None):
+def target_photons_spectrum(Emin=1e-6, Emax=1e-4, Ebr=1e-3, si1=1, si2=2, normal=None):
     """Returns a photon spectrum modeled as a broken power law
 
     Arguments:
@@ -23,7 +23,7 @@ def target_photons_spectrum(Emin=1e-6, Emax=1e4, Ebr=1e3, si1=1, si2=2, normal=N
         Normalization parameters:
             (e1, e2) - energy range
             norm - value of integral of fluence over the 
-            given range (integral of E**2 * dN/dE)
+            given range (integral of E * dN/dE)
     Returns:
     --------
 
@@ -49,7 +49,7 @@ def target_photons_spectrum(Emin=1e-6, Emax=1e4, Ebr=1e3, si1=1, si2=2, normal=N
 
     egrid = logspace(log10(e1), log10(e2), 1000)
     dnde = array([spectrum(e) for e in egrid])
-    Fluence_integral = trapz(egrid**2 * dnde * log(10), x=log10(egrid))
+    Fluence_integral = trapezoid(egrid**2 * dnde * log(10), x=log10(egrid))
 
     A = norm / Fluence_integral  # renormalizing the spectrum
 
