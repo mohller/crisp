@@ -513,7 +513,8 @@ class CRPropa_model(Cross_Section_Model):
             csec = np.zeros_like(eps)
 
             for prod in self.channels[self.nuclei.index((Z, A))]:
-              csec += self.cross_section(eps, Z, A, rem=prod)
+                if nloss == prod[1]:
+                    csec += self.cross_section(eps, Z, A, rem=prod)
         else:
             if rem in self.channels[self.nuclei.index((Z, A))]:
                 channels = self.xsec_data[np.where(np.logical_and(self.xsec_data[:, 0] == Z, self.xsec_data[:, 1] == A))]
