@@ -573,18 +573,22 @@ class Model_Rack(Cross_Section_Model):
                     break
 
     def cross_section(self, eps, Z, A, nloss=None, rem=None):
+        csec = np.zeros_like(eps)
+
         for model in self.models:
             if (Z, A) in model.nuclei:
-                return model.cross_section(eps, Z, A, nloss, rem)
+                csec += model.cross_section(eps, Z, A, nloss, rem)
 
-        return np.zeros_like(eps)
+        return csec
 
     def total_cross_section(self, eps, Z, A):
+        csec = np.zeros_like(eps)
+
         for model in self.models:
             if (Z, A) in model.nuclei:
-                return model.total_cross_section(eps, Z, A)
+                csec += model.total_cross_section(eps, Z, A)
 
-        return np.zeros_like(eps)
+        return csec
 
 
 def pgamma(eps_r):
