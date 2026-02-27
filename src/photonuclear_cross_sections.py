@@ -556,13 +556,13 @@ class Photomeson(Cross_Section_Model):
         if 'erange' not in kwargs:
             kwargs['erange'] = (140, 1e9) # in MeV
 
+        Cross_Section_Model.__init__(self, *args, **kwargs)
+        
         self.pmm = pmm
 
         self.nuclei = [id2nuc(nid) for nid in self.pmm.nonel_idcs if self.filter_nuclei(id2nuc(nid))]
         self.channels = [[id2nuc(pid) for nid, pid in self.pmm.incl_idcs if (nid == mid) and self.filter_nuclei(id2nuc(pid))]
                          for mid in self.pmm.nonel_idcs if self.filter_nuclei(id2nuc(mid))]
-
-        Cross_Section_Model.__init__(self, *args, **kwargs)
 
     def cross_section(self, eps, Z, A, nloss=None, rem=None):
         """The cross section adapted to the photomeson model.
