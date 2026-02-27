@@ -543,6 +543,52 @@ class CRPropa_model(Cross_Section_Model):
         return np.where(np.logical_and(self.erange[0] <= eps, eps < self.erange[1]), np.interp(eps, self.eps, xs), np.zeros_like(eps))
 
 
+class Photomeson(Cross_Section_Model):
+
+    def __init__(self, *args, pmm=None, **kwargs):
+        """Class to couple photomeson models.
+        Requires a pmm argument that holds an instance of
+        a photomeson model defined in AstroPhoMes.
+        """
+        nuc2id = lambda Z, A: A*100 + Z
+        id2nuc = lambda nucid: (nucid % 100, nucid // 100)
+
+        if 'erange' not in kwargs:
+            kwargs['erange'] = (140, 1e9) # in MeV
+
+        self.pmm = pmm
+
+        self.nuclei = [id2nuc(nid) for nid in self.pmm.nonel_idcs]
+        self.channels = [[id2nuc(pid) for nid, pid in spm.incl_idcs if nid == mid]
+                         for mid in spm.nonel_idcs]
+
+        Cross_Section_Model.__init__(self, *args, **kwargs)
+
+    def cross_section(self, eps, Z, A, nloss=None, rem=None):
+        """The cross section adapted to the photomeson model.
+        """
+        nuc2id = lambda Z, A: A*100 + Z
+        id2nuc = lambda nucid: (nucid % 100, nucid // 100)
+
+        csec = np.zeros_like(eps)
+
+        if A == 2:
+            csec = 1e-3 * np.interp(1e-3*eps, *self.pmm.cs_nonel(nuc2id(Z, A)))
+            return csec
+
+        if (nloss is None) and (rem is None):
+            csec = 1e-3 * np.interp(1e-3*eps, *self.pmm.cs_nonel(nuc2id(Z, A)))
+        elif nloss is not None:
+            for (nid, pid) in self.pmm.incl_idcs:
+                if id2nuc(nid)[1] - id2nuc(pid)[1] == nloss:
+                    csec += self.cross_section(eps, Z, A, rem=id2nuc(pid))
+        else: # rem is not None
+            if (nuc2id(Z, A), nuc2id(*rem)) in self.pmm.incl_idcs:
+                csec += 1e-3*np.interp(1e-3*eps, *self.pmm.cs_incl(nuc2id(Z, A), nuc2id(*rem)))
+
+        return np.where(np.logical_and(self.erange[0] <= eps, eps < self.erange[1]), csec, np.zeros_like(eps))
+
+
 class Model_Rack(Cross_Section_Model):
     """A model holder that yields values from different models depending 
     on the nuclear species"""
