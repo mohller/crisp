@@ -1524,6 +1524,122 @@ class InteractionCore_UHECR_Source(InteractionCore):
         self.marginal_light_yields = all_merged
 
 
+class InteractionCore_Source(InteractionCore):
+    """ Producing interaction matrices from CRPropA interaction files.
+        Using cross section models for photodisintegration and for photomeson.
+    """
+
+    def __init__(self, epsrange, target_photon_spectrum, path=None, xsec_model=None, nuclear_decay_On=False):
+        """ Based on a cross section model
+        """
+
+        if not (path is None):
+            self.path = path
+            from photonuclear_cross_sections import CRPropa_model
+
+            self.sim_model = CRPropa_model(path=self.path)
+        elif not (xsec_model is None):
+            self.sim_model = xsec_model
+        else:
+            raise ValueError('Error: no cross sections provided.')
+
+        self.epsrange = epsrange
+        self.target_photons = target_photon_spectrum
+
+        InteractionCore.__init__(self, nuclear_decay_On)
+
+
+    def _construct_from_files(self):
+        """Using model cross sections to produce the rates for a source
+        of UHECR with the background photon field provided.
+        """
+        from scipy.constants import c, parsec
+        from interaction_rates import interaction_rate_from_cross_section
+
+        boosts = np.logspace(0, 12, 131)
+        eps = np.logspace(np.log10(self.epsrange[0]), np.log10(self.epsrange[1]), 300) # in GeV
+        eps = np.logspace(-2, 6, 300) # in GeV, for the cross section
+
+        pdis_rates_cmb, branchings_cmb, mlyp, mlyn = [], [], [], []
+        for (Z, A), products in zip(self.sim_model.nuclei, self.sim_model.channels):
+            branchings, lyp, lyn = [], [], []
+
+            for Zrem, Arem in products:
+                cross_section = 1e-27 * self.sim_model.cross_section(eps * 1e3, Z, A, rem=(Zrem, Arem)) # to cm2
+                print()
+                pdis_rates = interaction_rate_from_cross_section(boosts * A * .939, A, self.target_photons, eps, cross_section)
+                pdis_rates /= c / parsec / 1e6 # ito Mpc
+
+                branchings.append(np.append([Zrem, Arem], pdis_rates))
+                lyp.append(np.append([Zrem, Arem], (Z - Zrem) * pdis_rates))
+                lyn.append(np.append([Zrem, Arem], (A - Z - Arem + Zrem) * pdis_rates))
+
+            if lyp != []:
+                mlyp.append(np.vstack(lyp))
+            else:
+                mlyp.append(np.array([]))
+
+            if lyn != []:
+                mlyn.append(np.vstack(lyn))
+            else:
+                mlyn.append(np.array([]))
+
+            pdis_rates_cmb.append(np.sum(np.atleast_2d((branchings)), axis=0)[2:])
+            branchings_cmb.append(branchings)
+
+        branchings_cmb = [np.vstack(br) for br in branchings_cmb]
+        marginal_light_yields = [[np.atleast_2d(np.hstack([br[:, :2], np.zeros_like(br[:, 2:])])) for br in branchings_cmb] for _ in range(4)]
+        marginal_light_yields.append(mlyp)
+        marginal_light_yields.append(mlyn)
+
+        self.boosts = boosts
+        self.nuclei = self.sim_model.nuclei.copy()
+        self.all_rates = np.vstack(pdis_rates_cmb)
+        self.all_branchings = branchings_cmb
+        self.marginal_light_yields = marginal_light_yields
+
+        # adding photomeson rates
+        # rates_pmes, allmr_pmes, merged_pmes = self._construct_photomeson_superposition()
+        # self.all_rates += rates_pmes
+
+        # new_branchings = [mr1 + mr2 for mr1, mr2 in zip(allmr_pmes, self.all_branchings)]
+        # self.all_branchings = new_branchings
+
+    def _construct_photomeson_superposition(self, data_directory='/content/CRPropa3-data/tables/', boostfactor=None):
+        """Using CRPROPA cross sections to produce the rates for a source
+        of UHECR with a background photon field as a broken power law.
+
+        CRPropA cross section file contains  is structured in different files depending on the
+        interaction and the photon field.
+        """
+        cols = [f'{i}' for i in range(len(self.boosts))]
+
+        xsp = np.genfromtxt(data_directory + 'PPP/xs_proton.txt')
+        xsn = np.genfromtxt(data_directory + 'PPP/xs_neutron.txt')
+        xsp[:, 1] *= 1e-3 # mubarn to mbarn
+        xsn[:, 1] *= 1e-3 # mubarn to mbarn
+
+        df_rates_pmes, df_brnch_pmes, merged_yields_pmes = \
+            generate_photomeson_tables_from_cross_sections(self.nuclei, xsp, xsn, self.target_photons, boosts=self.boosts)
+
+        # preparing all rates
+        rates_pmes = np.vstack([df_rates_pmes.loc[(nuc[1], nuc[0])] for nuc in self.nuclei])
+
+        # preparing marginal rates
+        new_mr = []
+        for nuc, rate, branches in zip(self.nuclei, rates_pmes, self.all_branchings):
+            branch_set = []
+            for branch in branches:
+                if (nuc[1], nuc[0], branch[1], branch[0]) in df_brnch_pmes.index:
+                    branch_set.append(df_brnch_pmes.loc[(nuc[1], nuc[0], branch[1], branch[0])].values[2:])
+                else:
+                    branch_set.append(np.zeros(133))
+
+            new_mr.append(np.vstack(branch_set))
+
+        return rates_pmes, new_mr, merged_yields_pmes
+
+
 class InteractionCore_PSB_CMB(InteractionCore):
     def _construct_from_files(self):
         """Based on PSB-model of nuclear cascades
