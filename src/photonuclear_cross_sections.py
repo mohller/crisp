@@ -560,7 +560,7 @@ class Photomeson(Cross_Section_Model):
 
         self.nuclei = [id2nuc(nid) for nid in self.pmm.nonel_idcs]
         self.channels = [[id2nuc(pid) for nid, pid in spm.incl_idcs if nid == mid]
-                         for mid in spm.nonel_idcs]
+                         for mid in self.pmm.nonel_idcs]
 
         Cross_Section_Model.__init__(self, *args, **kwargs)
 
