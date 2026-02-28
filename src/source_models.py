@@ -308,6 +308,7 @@ class UHECRSourceModel(ABC):
         alpha, mr, tr, redtens = interactions_core.get_distribution_parameters(mass_lims=(Ainj, 0), injection_type=('only species', (Zinj, Ainj)), absorption_type=('only mass', [1]))
         spec_evol = interactions_core.species_evolution_boost_range(distances, alpha=alpha, mass_range=mr, boost_range=boosts, true_range=tr)
     
+        self.boosts = boosts
         self.distances = distances
         self.spec_evol = spec_evol
     
