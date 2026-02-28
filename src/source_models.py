@@ -320,12 +320,12 @@ class UHECRSourceModel(ABC):
            boosts: boost grid for the computation
            distance_grid: grid of distances for the computation, fraction relative to the total thickness of source
         """
-        injection_time = distances[-1] / c_in_Mpc_sec
-        tgrid = np.cumsum(injection_time / timegridsize * np.ones(timegridsize))
-    
         if update_response:
             self.compute_temporal_response(interactions_core, nucinj, boosts, distance_grid)
         
+        injection_time = self.distances[-1] / c_in_Mpc_sec
+        tgrid = np.cumsum(injection_time / timegridsize * np.ones(timegridsize))
+    
         regular_spec_evol = interp1d(self.distances, np.permute_dims(self.spec_evol, (2, 0, 1)), 
                                      bounds_error=False, fill_value=0)(c_in_Mpc_sec * tgrid)
     
