@@ -323,11 +323,11 @@ class UHECRSourceModel(ABC):
         if update_response:
             self.compute_temporal_response(interactions_core, nucinj, boosts, distance_grid)
         
-        injection_time = self.distances[-1] / c_in_Mpc_sec
+        injection_time = self.distances[-1] / c_SI.to('Mpc/s').m
         tgrid = np.cumsum(injection_time / timegridsize * np.ones(timegridsize))
     
         regular_spec_evol = interp1d(self.distances, np.permute_dims(self.spec_evol, (2, 0, 1)), 
-                                     bounds_error=False, fill_value=0)(c_in_Mpc_sec * tgrid)
+                                     bounds_error=False, fill_value=0)(c_SI.to('Mpc/s').m * tgrid)
     
         # define constant injection function
         Qinj = lambda t, tmax: self.get_parameter('em_density').m * np.diff(tgrid)[0] * (1 - np.heaviside(t - tmax, 1))
