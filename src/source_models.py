@@ -285,6 +285,61 @@ class UHECRSourceModel(ABC):
                              for k, v in sorted(self._inputs.items()))
         return f"{self.__class__.__name__}({inputs_str})"
 
+    def compute_temporal_response(self, interactions_core, nucinj=(26, 56), boosts=None, distance_grid=np.logspace(-3.5, .5, 50)):
+        """Computes the temporal response of the nuclear densities for the source.
+    
+           Arguments:
+           ----------
+           interactions_core: instance of InteractionCore_Source 
+           nucinj: the injected species, injected constantly over the variability timescale of the source.
+           boosts: boost grid for the computation
+           distance_grid: grid of distances for the computation, fraction relative to the total thickness of source
+        """
+        Zinj, Ainj = 26, 56
+    
+        if boosts is None:
+            boosts = interactions_core.boosts
+    
+        traversed_length = self.get_parameter('w').to('Mpc').m
+        distances = distance_grid * traversed_length 
+    
+        alpha, mr, tr, redtens = interactions_core.get_distribution_parameters(mass_lims=(Ainj, 0), injection_type=('only species', (Zinj, Ainj)), absorption_type=('only mass', [1]))
+        spec_evol = interactions_core.species_evolution_boost_range(distances, alpha=alpha, mass_range=mr, boost_range=br, true_range=tr)
+    
+        self.distances = distances
+        self.spec_evol = spec_evol
+    
+    def simulate_time_evolution(self, update_response=False, interactions_core=None, nucinj=(26, 56), boosts=None, distance_grid=np.logspace(-3.5, .5, 50), timegridsize=1000):
+        """Computes the temporal evolution of the nuclear densities for the source.
+    
+           Arguments:
+           ----------
+           update_response: is responso should be recomputed, default False
+           interactions_core: instance of InteractionCore_Source 
+           nucinj: the injected species, injected constantly over the variability timescale of the source.
+           boosts: boost grid for the computation
+           distance_grid: grid of distances for the computation, fraction relative to the total thickness of source
+        """
+        injection_time = distances[-1] / c_in_Mpc_sec
+        tgrid = np.cumsum(injection_time / timegridsize * np.ones(timegridsize))
+    
+        if update_response:
+            self.compute_temporal_response(interactions_core, nucinj, boosts, distance_grid)
+        
+        regular_spec_evol = interp1d(self.distances, np.permute_dims(self.spec_evol, (2, 0, 1)), 
+                                     bounds_error=False, fill_value=0)(c_in_Mpc_sec * tgrid)
+    
+        # define constant injection function
+        Qinj = lambda t, tmax: self.get_parameter('em_density').m * np.diff(tgrid)[0] * (1 - np.heaviside(t - tmax, 1))
+        q0 = Qinj(tgrid, 1)
+    
+        # Convolution of injection and delta-injection evolution 
+        convolved = convolve(regular_spec_evol, q0[None, None, :], mode='full')
+        conv_time_grid = np.append(tgrid - tgrid[0], tgrid[-1] + tgrid[:-1])
+    
+        self.conv_time_grid = conv_time_grid
+        self.convolved = convolved
+
 
 # Example: GRB photospheric
 class PhotosphericModel(UHECRSourceModel):
