@@ -6,6 +6,7 @@ from abc import ABC, abstractmethod
 from typing import Dict, Any, List, Tuple, ClassVar
 from dataclasses import dataclass
 from sympy import symbols, Eq, pi, Rational
+from scipy.signal import convolve
 import scipy.constants as physconst
 from scipy.interpolate import interp1d
 import astropy.units as umod
