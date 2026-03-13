@@ -1,4 +1,5 @@
-# ![](doc/crisp_logo.svg)<br> Cosmic Ray Stochastic Interactions for Propagation
+# ![](doc/crisp_logo.svg#gh-light-mode-only)<br> Cosmic Ray Stochastic Interactions for Propagation
+# ![](doc/crisp_logo_light.svg#gh-dark-mode-only)<br> Cosmic Ray Stochastic Interactions for Propagation
 
 A convenience package to compute quantities related to the propagation of UHECRs based on closed form probability distribution functions. Applicable for both in-source and extragalactic propagation scenarios.
 
