@@ -1,6 +1,7 @@
 astropy
 numpy
+matplotlib
 pandas
-scipy
 pint
+scipy
 sympy
