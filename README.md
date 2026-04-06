@@ -4,8 +4,11 @@
 A convenience package to compute quantities related to the propagation of ultrahigh-energy based on closed form probability distribution functions. Applicable for both in-source and extragalactic propagation scenarios.
 
 ## Usage
-Clone the repo and see the examples folder.
-A python package is in preparation for installation with pip.
+
+[![Binder](https://gesis.mybinder.org/badge_logo.svg)](https://gesis.mybinder.org/v2/gh/mohller/crisp/HEAD)
+
+Try it on Binder or just clone the repo and see the examples folder.\
+A python package is being prepared for installation with pip.
 
 ## Citation
 
