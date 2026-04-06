@@ -22,6 +22,5 @@ setup(
         'Development Status :: 3 - Alpha',
         'Intended Audience :: Science/Research',
         'License :: OSI Approved :: MIT License',
-    ],
-    license=
+    ]
 )
