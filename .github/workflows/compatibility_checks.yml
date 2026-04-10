@@ -1,0 +1,53 @@
+name: Post-Release Compatibility Matrix
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  release:
+    types: [published]
+  workflow_dispatch:
+
+jobs:
+  compatibility:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false  # keep testing other combos even if one fails
+      matrix:
+        deps: ["min", "latest", "pre"]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: 'pip'
+
+      - name: Install project & test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          # Install your project + test framework
+          pip install -e ".[dev]"  # Adjust to your setup (pyproject.toml, requirements.txt, etc.)
+
+      - name: Install specific package versions
+        run: |
+          pip install pkg-alpha==${{ matrix.pkg-alpha }}
+          pip install pkg-beta==${{ matrix.pkg-beta }}
+
+      - name: Run compatibility tests
+        run: |
+          # Replace with your test/compatibility command
+          pytest tests/ --tb=short -v -p no:warnings
+
+      - name: Upload test artifacts (optional)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: compat-logs-py${{ matrix.python-version }}-alpha${{ matrix.pkg-alpha }}-beta${{ matrix.pkg-beta }}
+          path: |
+            pytest.xml
+            logs/
