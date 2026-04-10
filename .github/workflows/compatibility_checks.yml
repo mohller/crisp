@@ -31,18 +31,9 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           # Install your project + test framework
-          pip install -e ".[dev]"  # Adjust to your setup (pyproject.toml, requirements.txt, etc.)
+          pip install -e ".[dev]"
 
       - name: Run compatibility tests
         run: |
           # Replace with your test/compatibility command
           pytest tests/ --tb=short -v -p no:warnings
-
-      - name: Upload test artifacts (optional)
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: compat-logs-py${{ matrix.python-version }}-alpha${{ matrix.pkg-alpha }}-beta${{ matrix.pkg-beta }}
-          path: |
-            pytest.xml
-            logs/
