@@ -1,7 +1,2 @@
-astropy
-numpy
-matplotlib
-pandas
-pint
-scipy
-sympy
+# Install the package in editable mode with all dev dependencies
+-e .[dev,docs]
