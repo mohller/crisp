@@ -1,0 +1,8 @@
+# MANIFEST.in
+include README.md
+include LICENSE
+recursive-include crisp *.py
+recursive-exclude crisp __pycache__
+recursive-exclude crisp *.pyc
+graft examples
+graft data
