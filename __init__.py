@@ -9,3 +9,13 @@ distribution functions.
 __version__ = "0.1.0"
 __author__ = "Leonel Morejon"
 __email__ = "leonel.morejon@uni-wuppertal.de"
+
+try:
+    from importlib.metadata import version, PackageNotFoundError
+except ImportError:
+    from importlib_metadata import version, PackageNotFoundError
+
+try:
+    __version__ = version("crisp-py")
+except PackageNotFoundError:
+    __version__ = "unknown"
