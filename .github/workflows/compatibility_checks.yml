@@ -33,11 +33,6 @@ jobs:
           # Install your project + test framework
           pip install -e ".[dev]"  # Adjust to your setup (pyproject.toml, requirements.txt, etc.)
 
-      - name: Install specific package versions
-        run: |
-          pip install pkg-alpha==${{ matrix.pkg-alpha }}
-          pip install pkg-beta==${{ matrix.pkg-beta }}
-
       - name: Run compatibility tests
         run: |
           # Replace with your test/compatibility command
