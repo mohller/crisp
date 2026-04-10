@@ -5,9 +5,9 @@ import os
 import numpy as np
 from math import factorial
 from scipy.linalg import expm
-import interaction_rates as ir
 from scipy.interpolate import interp1d
-from UHECR_statistics import prepare_species_list
+from .interaction_rates import cs_photomeson, interaction_rate_from_cross_section
+from .UHECR_statistics import prepare_species_list
 from astropy import units as u
 from astropy.constants import c, m_p, m_n
 c_in_Mpc_sec = c.to('Mpc/s').value
@@ -1535,7 +1535,7 @@ class InteractionCore_Source(InteractionCore):
 
         if not (path is None):
             self.path = path
-            from photonuclear_cross_sections import CRPropa_model
+            from .photonuclear_cross_sections import CRPropa_model
 
             self.sim_model = CRPropa_model(path=self.path)
         elif not (xsec_model is None):
@@ -1554,7 +1554,7 @@ class InteractionCore_Source(InteractionCore):
         of UHECR with the background photon field provided.
         """
         from scipy.constants import c, parsec
-        from interaction_rates import interaction_rate_from_cross_section
+        from .interaction_rates import interaction_rate_from_cross_section
 
         boosts = np.logspace(0, 12, 131)
         eps = np.logspace(np.log10(self.epsrange[0]), np.log10(self.epsrange[1]), 300) # in GeV
@@ -1645,9 +1645,9 @@ class InteractionCore_PSB_CMB(InteractionCore):
         """Based on PSB-model of nuclear cascades
         """
         from scipy.constants import c, parsec
-        from interaction_rates import interaction_rate_from_cross_section
-        from background_photon_models import cmb_photon_density_GeVcm3
-        from photonuclear_cross_sections import PSB_model
+        from .interaction_rates import interaction_rate_from_cross_section
+        from .background_photon_models import cmb_photon_density_GeVcm3
+        from .photonuclear_cross_sections import PSB_model
 
         boosts = np.logspace(6, 14, 201)
         eps = 1e-3 * np.linspace(5, 50, 200) # in GeV
@@ -1707,9 +1707,9 @@ class InteractionCore_SimProp_CMB(InteractionCore):
         """Based on the cross section models implemented in SimProp v2.4
         """
         from scipy.constants import c, parsec
-        from interaction_rates import interaction_rate_from_cross_section
-        from background_photon_models import cmb_photon_density_GeVcm3
-        from photonuclear_cross_sections import SimProp_model
+        from .interaction_rates import interaction_rate_from_cross_section
+        from .background_photon_models import cmb_photon_density_GeVcm3
+        from .photonuclear_cross_sections import SimProp_model
 
         boosts = np.logspace(6, 14, 201)
         eps = 1e-3 * np.linspace(5, 50, 200) # in GeV
@@ -1753,9 +1753,9 @@ class InteractionCore_GDRA_CMB(InteractionCore):
         """Based on the cross sections from the GDR atlas
         """
         from scipy.constants import c, parsec
-        from interaction_rates import interaction_rate_from_cross_section
-        from background_photon_models import cmb_photon_density_GeVcm3
-        from photonuclear_cross_sections import GDR_atlas
+        from .interaction_rates import interaction_rate_from_cross_section
+        from .background_photon_models import cmb_photon_density_GeVcm3
+        from .photonuclear_cross_sections import GDR_atlas
 
         boosts = np.logspace(6, 14, 201)
         eps = 1e-3 * np.linspace(5, 50, 200) # in GeV
@@ -1798,7 +1798,7 @@ class InteractionCore_CRPdata_CMB(InteractionCore):
     def __init__(self, path=None, nuclear_decay_On=False, xsec_model=None):
         if not (path is None):
           self.path = path
-          from photonuclear_cross_sections import CRPropa_model
+          from .photonuclear_cross_sections import CRPropa_model
           self.sim_model = CRPropa_model(path=self.path)
         elif not (xsec_model is None):
           self.sim_model = xsec_model
@@ -1811,8 +1811,8 @@ class InteractionCore_CRPdata_CMB(InteractionCore):
         """Based on the cross sections data files used in CRPropa
         """
         from scipy.constants import c, parsec
-        from interaction_rates import interaction_rate_from_cross_section
-        from background_photon_models import cmb_photon_density_GeVcm3
+        from .interaction_rates import interaction_rate_from_cross_section
+        from .background_photon_models import cmb_photon_density_GeVcm3
 
         boosts = np.logspace(6, 14, 201)
         eps = 1e-3 * np.logspace(-1, 2.1, 300) # in GeV
@@ -1860,7 +1860,7 @@ class InteractionCore_CRPdata_EBL(InteractionCore):
         self.z = z
         if not (path is None):
           self.path = path
-          from photonuclear_cross_sections import CRPropa_model
+          from .photonuclear_cross_sections import CRPropa_model
           self.sim_model = CRPropa_model(path=self.path)
         elif not (xsec_model is None):
           self.sim_model = xsec_model
@@ -1873,8 +1873,8 @@ class InteractionCore_CRPdata_EBL(InteractionCore):
         """Based on the cross sections data files used in CRPropa
         """
         from scipy.constants import c, parsec
-        from interaction_rates import interaction_rate_from_cross_section
-        from background_photon_models import eblg_interp
+        from .interaction_rates import interaction_rate_from_cross_section
+        from .background_photon_models import eblg_interp
 
         eblmodel = lambda energ: eblg_interp(energ * 1e9, self.z).flatten() * 1e3
 

@@ -1,7 +1,7 @@
 import numpy as np
 from astropy.constants import c, hbar, alpha, m_p
 from astropy.units import cm, GeV, g, s
-from photonuclear_cross_sections import *
+from .photonuclear_cross_sections import *
 
 def gyroradius(Z, B, E):
     """Computes the gyroradius for a particles with charge Z in
