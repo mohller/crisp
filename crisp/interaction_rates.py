@@ -129,6 +129,7 @@ def compute_rates(pdensity, pgrid, eweighted_xsec, egrid, boostgrid=None):
     a table of interaction rates in 1/Mpc
     """
     from scipy.signal import fftconvolve
+    from scipy.interpolate import interp1d
 
     N = 3001
     common_grid = np.logspace(-9, 9, N) # in eV
