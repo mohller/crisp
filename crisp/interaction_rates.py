@@ -128,6 +128,7 @@ def compute_rates(pdensity, pgrid, eweighted_xsec, egrid, boostgrid=None):
     -------
     a table of interaction rates in 1/Mpc
     """
+    from astropy import units as u
     from scipy.signal import fftconvolve
     from scipy.interpolate import interp1d
 
