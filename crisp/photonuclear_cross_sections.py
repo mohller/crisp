@@ -111,7 +111,7 @@ class Cross_Section_Model():
 
         cs_table = self.cross_section_table(*args, **kwargs)
         
-        return 2 / eps**2 * cumulative_trapezoid(cs_table, eps, initial=0)
+        return 2 / eps**2 * cumulative_trapezoid(cs_table * eps, eps, initial=0)
 
     def energy_weighted_channels_table(self, *args, **kwargs):
         """Returns an array with energy weighted cross sections of the species 
@@ -124,7 +124,7 @@ class Cross_Section_Model():
 
         ch_table = self.channels_table(*args, **kwargs)
         
-        return 2 / eps**2 * cumulative_trapezoid(ch_table, eps, initial=0)
+        return 2 / eps**2 * cumulative_trapezoid(ch_table * eps, eps, initial=0)
 
 
 class GDR_atlas(Cross_Section_Model):
