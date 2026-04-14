@@ -112,3 +112,40 @@ def interaction_rate_from_cross_section(energies, A, ng, eg, cs):
 
     return rates
 
+
+def compute_rates(pdensity, pgrid, eweighted_xsec, egrid, boostgrid=None):
+    """Computes interaction rates from a table of energy weighted cross sections
+    and a function giving the photon densities.
+
+    Arguments
+    ---------
+    pdensity : a function yielding target photon spectral density in [eV^-1 cm^-3] and taking energy in eV
+    pgrid : photon energy grid in eV
+    eweighted_xsec : energy weighted cross section table in mb
+    egrid : energy grid in MeV for the energy weighted cross section table
+
+    Returns
+    -------
+    a table of interaction rates in 1/Mpc
+    """
+    from scipy.signal import fftconvolve
+
+    N = 3001
+    common_grid = np.logspace(-9, 9, N) # in eV
+    t = np.log(common_grid)
+    dt = np.diff(t)[0]
+    conv_grid = np.linspace(t[0]-t[-1], t[-1]-t[0], 2*N-1)
+
+    photon_edens = np.interp(common_grid, pgrid, (pgrid * pdensity(pgrid)), left=0, right=0)
+
+    ewxsec_interp = interp1d(egrid * 1e6, eweighted_xsec, bounds_error=False, fill_value=0)(common_grid)
+    ewxsec_interp *= u.mbarn.to('cm^2')
+
+    inter_rates = fftconvolve(np.repeat(np.atleast_2d(photon_edens), len(eweighted_xsec), axis=0),
+                                        ewxsec_interp[:, ::-1], mode='full', axes=1)
+
+    inter_rates *= dt / u.cm.to('Mpc')
+    interp_rates = interp1d(conv_grid, inter_rates, kind='cubic',
+                            fill_value=0, bounds_error=False)
+
+    return interp_rates(-np.log(2*boostgrid))
