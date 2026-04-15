@@ -833,8 +833,8 @@ class InteractionCore():
 
         self.tensor = tensor
         self.light_prod_tensor = np.stack(ly_all_mats)
-        self.interpolator = interp1d(self.boosts, self.tensor, 'cubic')
-        self.interpyields = interp1d(self.boosts, self.light_prod_tensor, 'previous')
+        self.interpolator = lambda boostval: interp1d(self.boosts, self.light_prod_tensor, 'previous')(boostval)
+        self.interpyields = lambda boostval: interp1d(self.boosts, self.tensor, 'cubic')(boostval)
 
     def get_distribution_parameters(self, mass_lims=(56, 11), injection_type=('only species', (26, 56)), absorption_type=('only mass', [54]), boost_range=None):
         """Produces the injection vector and mass_range required to
