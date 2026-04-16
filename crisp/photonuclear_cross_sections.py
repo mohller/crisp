@@ -54,7 +54,10 @@ class Cross_Section_Model():
 
         # filtering function, takes nucleus, returns True if it should be included
         if 'filter_nuclei' not in kwargs:
-            self.filter_nuclei = lambda nuc: True
+            def selection_function(nuc):
+                return True
+                
+            self.filter_nuclei = selection_function
         else:
             self.filter_nuclei = kwargs['filter_nuclei']
 
