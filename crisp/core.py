@@ -482,7 +482,9 @@ class InteractionCore():
     """Base class to produce interaction matrices
     """
 
-    def __init__(self, nuclear_decay_On=False):
+    def __init__(self, nuclear_decay_On=False, ftype=np.float64):
+        self.ftype = ftype
+        
         self._construct_from_files()
         self._genenerate_complete_matrices()
 
@@ -844,8 +846,8 @@ class InteractionCore():
         # check that all rows add up to one!!!
         # np.all(np.isclose(np.einsum('ijk, j -> ik', tensor, np.ones(186)), 0))
 
-        self.tensor = tensor
-        self.light_prod_tensor = np.stack(ly_all_mats)
+        self.tensor = tensor.astype(self.ftype)
+        self.light_prod_tensor = np.stack([lyt.astype(self.ftype) for lyt in ly_all_mats])
         self.interpolator = lambda boostval: interp1d(self.boosts, self.light_prod_tensor, 'previous')(boostval)
         self.interpyields = lambda boostval: interp1d(self.boosts, self.tensor, 'cubic')(boostval)
 
