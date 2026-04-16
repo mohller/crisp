@@ -15,6 +15,16 @@ mp_in_GeV = (m_p * c**2).to('GeV')
 mn_in_GeV = (m_n * c**2).to('GeV')
 mb_to_cm2 = u.mbarn.to('cm^2')
 
+def get_nucid(nuc):
+    '''Utility function: returns neucos id from (Z, A) tuple
+    '''
+    return nuc[1] * 100 + nuc[0]
+
+def get_ZA(nucid):
+    '''Utility function: returns (Z, A) tuple from neucos id
+    '''
+    return (nucid % 100, nucid // 100)
+
 def merge_marginal_rates(mrates1, mrates2):
     """Joining rates for different species
     """
@@ -377,9 +387,6 @@ def fix_dead_end(product, rate):
     
     ndt = NuclearDataTable(path.join(datapath, 'data/nubase2016.txt'))
     decaydata = ndt.prepare_decay_table()
-
-    get_nucid = lambda nuc: nuc[1] * 100 + nuc[0]
-    get_ZA = lambda nucid: (nucid % 100, nucid // 100)
 
     final_products = [product, ]
     final_rate = rate
@@ -758,8 +765,14 @@ class InteractionCore():
     def _genenerate_complete_matrices(self):
         """Generates, for each boost, a complete interaction matrix from the interaction tables
         """
+        def ZA_ordinal(nuc):
+            '''Useful to sort by mass and charge.
+               Returns and ordinal that places (Z, A) values in the desired order.
+            '''
+            return nuc[1]*1000 + nuc[0]
+        
         self.species = self.nuclei.copy()
-        self.species.sort(key=lambda nuc: nuc[1]*1000 + nuc[0], reverse=True)
+        self.species.sort(key=ZA_ordinal, reverse=True)
         self.species += [(0, 1), (1, 1)]
 
         # generate interaction tensor by slices
