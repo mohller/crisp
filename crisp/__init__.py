@@ -19,3 +19,12 @@ try:
     __version__ = version("crisp-py")
 except PackageNotFoundError:
     __version__ = "unknown"
+
+from . import core
+from . import interaction_rates
+from . import photonuclear_cross_sections
+from . import background_photon_models
+from . import continuous_losses
+from . import source_models
+
+__all__ = ['core', 'interaction_rates', 'photonuclear_cross_sections', 'background_photon_models', 'continuous_losses', 'source_models']
