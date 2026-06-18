@@ -106,7 +106,7 @@ def interaction_rate_from_cross_section(energies, A, ng, eg, cs):
     for Ej in energies:
         boost = Ej / m
         epsilon = y / boost / 2
-        rates.append(np.trapz(ng(epsilon) * f(y) / boost, y))
+        rates.append(np.trapezoid(ng(epsilon) * f(y) / boost, y))
 
     rates = c.to('cm/s').value * np.array(rates)
 

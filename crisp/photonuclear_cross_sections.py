@@ -7,7 +7,9 @@ import numpy as np
 import pandas as pd
 from scipy.integrate import cumulative_trapezoid
 from scipy.interpolate import InterpolatedUnivariateSpline
-main_path = os.path.abspath(os.path.join(os.path.dirname( __file__ ), '..'))
+
+# Resolve the data directory relative to this package, regardless of install method
+_DATA_DIR = os.path.join(os.path.dirname(__file__), 'data')
 
 theta_plus = lambda z, eps : np.heaviside(eps - z, 1)
 theta_minus = lambda z, eps : theta_plus(-z, -eps)
@@ -137,12 +139,12 @@ class GDR_atlas(Cross_Section_Model):
     def __init__(self, *args, channel_set=None, **kwargs):
         Cross_Section_Model.__init__(self, *args, **kwargs)
 
-        self.slo_filename = os.path.join(main_path, 'data/gdr_parameters_exp&systematics/gdr-parameters_exp&systematics_slo.dat')
+        self.slo_filename = os.path.join(_DATA_DIR, 'gdr_parameters_exp&systematics/gdr-parameters_exp&systematics_slo.dat')
         self.slo_params = pd.read_fwf(self.slo_filename, widths=2*[4,] + 9*[9,] + [5,], header=3)
         self.slo_params.rename(columns={'#  Z':'Z'}, inplace=True)
         self.slo_params.fillna(0, inplace=True)
 
-        self.smlo_filename = os.path.join(main_path, 'data/gdr_parameters_exp&systematics/gdr-parameters_exp&systematics_smlo.dat')
+        self.smlo_filename = os.path.join(_DATA_DIR, 'gdr_parameters_exp&systematics/gdr-parameters_exp&systematics_smlo.dat')
         self.smlo_params = pd.read_fwf(self.smlo_filename, widths=2*[4,] + 9*[9,] + [5,], header=3)
         self.smlo_params.rename(columns={'#  Z':'Z'}, inplace=True)
         self.smlo_params.fillna(0, inplace=True)
@@ -237,7 +239,7 @@ class PSB_model(Cross_Section_Model):
     def __init__(self, *args, **kwargs):
         Cross_Section_Model.__init__(self, *args, **kwargs)
 
-        self.PSB_filename = os.path.join(main_path, 'data/PSB1976.csv')
+        self.PSB_filename = os.path.join(_DATA_DIR, 'PSB1976.csv')
         self.params = pd.read_csv(self.PSB_filename, header=1)
         self.params.fillna(0, inplace=True)
 
@@ -332,7 +334,7 @@ class SimProp_model(Cross_Section_Model):
             elif M == 4:
                 filename = 'xsect_Gauss2_TALYS-restored.txt'
 
-        self.filename = os.path.join(main_path, 'data', filename)
+        self.filename = os.path.join(_DATA_DIR, filename)
 
         with open(self.filename) as file:
             num_species, eps_mid, eps_max = [float(val) for val in file.readline().split()]
@@ -799,7 +801,7 @@ def universal_function(energy_grid):
     from pickle import load as pickle_load
     from scipy.interpolate import UnivariateSpline
 
-    with open('EXFOR_data/universal-spline.pkl', 'rb') as f:
+    with open(os.path.join(_DATA_DIR, 'universal-spline.pkl'), 'rb') as f:
         tck = pickle_load(f, encoding='latin1')
 
     egrid = energy_grid[energy_grid < 1.9]
@@ -829,7 +831,7 @@ def cs_photomeson(Evals, A):
         from pickle import load as pickle_load
         from scipy.interpolate import UnivariateSpline
 
-        path_to_file = os.path.join(main_path, 'data/universal-spline.pkl')
+        path_to_file = os.path.join(_DATA_DIR, 'universal-spline.pkl')
         with open(path_to_file, 'rb') as f:
             tck = pickle_load(f, encoding='latin1')
     

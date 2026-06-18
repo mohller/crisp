@@ -953,8 +953,19 @@ class InteractionCore_CRPropA(InteractionCore):
     def __init__(self, data_files=None):
 
         if data_files is None:
+            # The CRPropa data directory must be provided by the user.
+            # Download the CRPropa data from https://github.com/CRPropa/CRPropa3-data
+            # and pass its path here, or set CRPROPA_DATA_PATH in the environment.
+            import os
+            crpropa_data = os.environ.get('CRPROPA_DATA_PATH', '')
+            if not crpropa_data:
+                raise ValueError(
+                    "InteractionCore_CRPropA requires the CRPropa data directory.\n"
+                    "Either pass data_files={'path': '/your/crpropa/data/', ...} or\n"
+                    "set the environment variable CRPROPA_DATA_PATH=/your/crpropa/data/"
+                )
             self.data_files = {
-                'path' : os.path.abspath('GitProjects/CRPropa3/data-2021-07-30/data/'),
+                'path' : crpropa_data,
                 
                 'photodisintegration': {
                     'rates_cmb' : 'Photodisintegration/rate_CMB.txt',

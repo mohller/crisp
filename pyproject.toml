@@ -49,3 +49,6 @@ Homepage = "https://github.com/mohller/crisp"
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["crisp*"]
+
+[tool.setuptools.package-data]
+crisp = ["data/*", "data/**/*"]

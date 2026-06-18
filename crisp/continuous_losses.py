@@ -34,7 +34,7 @@ def Bpp_generic(Z, mA, g, z=0, phot_dens=None):
     integral_grid = []
     for gval in g / mec2.value:
         nu = np.logspace(np.log10(1 / gval), 4, 300)
-        integral_grid.append(np.trapz(phot_dens(nu, z) * phi(2*gval*nu) / nu**2, nu))
+        integral_grid.append(np.trapezoid(phot_dens(nu, z) * phi(2*gval*nu) / nu**2, nu))
 
     bpp = mec2.value**2 * (alpha*r_e**2 / u.m**3 * mec2 / mpc2 / g**2 / 2 * np.array(integral_grid)).to('1/Mpc').value
 
@@ -68,7 +68,7 @@ def Bpp_Blumenthal(Z, A, g, z=0):
     
     chi = np.logspace(.4, 6, 500)
     nu_eval = 10**np.linspace(-4, 1.15, 100)
-    fnu_eval = np.array([nuval**2 * np.trapz(phi(chi) / (np.exp(nuval * chi) - 1), chi) for nuval in nu_eval] )
+    fnu_eval = np.array([nuval**2 * np.trapezoid(phi(chi) / (np.exp(nuval * chi) - 1), chi) for nuval in nu_eval] )
     fnu = lambda nu: np.interp(nu, nu_eval, fnu_eval)
     
     # f_nu = np.vectorize(f_nu)
@@ -78,15 +78,35 @@ def Bpp_Blumenthal(Z, A, g, z=0):
     return bpp * Z**2/A * (1 + z)**3
 
 def Bpp_crpropa(Z, A, g, z):
-    """Compute pair production losses
-    Based on CRPropa's implementation of the original formula:
-        Blumenthal, G. R. (1970) PRD 1(6), 1596
-        "Energy Loss of High-Energy Cosmic Rays in Pair-Producing Collisions with Ambient Photons."
-        https://doi.org/10.1103/PhysRevD.1.1596
-        B = -1/E dE/dt = -1/g dg/dt
-        Values given in Mpc^-1
-    """    
-    with open('/home/leonel/Downloads/Bpp_data', 'rb') as fileobj:
+    """Compute pair production losses based on CRPropa's tabulated data.
+
+    This function requires an external binary data file (``Bpp_data``) exported
+    from CRPropa.  Pass the path to that file via the ``data_path`` argument,
+    or set the environment variable ``CRISP_BPP_DATA`` before importing.
+
+    Parameters
+    ----------
+    Z, A : int
+        Charge and mass numbers of the nucleus.
+    g : array_like
+        Lorentz boost(s).
+    z : float
+        Redshift.
+
+    Raises
+    ------
+    FileNotFoundError
+        If the Bpp_data file cannot be found.
+    """
+    import os
+    data_path = os.environ.get('CRISP_BPP_DATA', '')
+    if not data_path or not os.path.isfile(data_path):
+        raise FileNotFoundError(
+            "Bpp_crpropa requires an external CRPropa data file.\n"
+            "Set the environment variable CRISP_BPP_DATA to its path, e.g.:\n"
+            "  export CRISP_BPP_DATA=/path/to/Bpp_data"
+        )
+    with open(data_path, 'rb') as fileobj:
         data = np.load(fileobj)
 
     return np.interp(g, data[0, :], Z**2/A * data[1, :] * (1 + z)**3)
