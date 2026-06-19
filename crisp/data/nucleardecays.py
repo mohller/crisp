@@ -1,15 +1,16 @@
+from pathlib import Path
 from numpy import nan, inf, log, isclose, logical_and
 import re
 import pandas as pnd
-import sys
-sys.path.append('./')
+
+_DATA_DIR = Path(__file__).parent
 
 def nuclear_data_parser(filename=None):
-    """Returns a pandas DataFrame which contains the information in the 
+    """Returns a pandas DataFrame which contains the information in the
     file a txt file available in https://www.anl.gov/phy/atomic-mass-data-resources.
     """
     if filename is None:
-        filename = 'nubase2016.txt'
+        filename = _DATA_DIR / 'nubase2016.txt'
 
     cut_idcs = [(  0,   3),
                 (  4,   9),
