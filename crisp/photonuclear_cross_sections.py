@@ -770,9 +770,9 @@ def Lorentzian(Evals, A, Z=None, Scale=1 / np.pi, TRKnorm=True):
     if TRKnorm:
         x = np.linspace(1, 60, 90)
         y = Scale * G / 2. / ((x - Em)**2 + G**2 / 4.)
-        cs *= 60. * N * Z / A / np.trapz(y, x)  # MeV * mb
+        cs *= 60. * N * Z / A / np.trapezoid(y, x)  # MeV * mb
 
-    # print 60.*Z*N/A, np.trapz(cs, Evals)
+    # print 60.*Z*N/A, np.trapezoid(cs, Evals)
 
     return cs
 
