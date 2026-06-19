@@ -5,9 +5,13 @@ A convenience package to compute quantities related to the propagation of ultrah
 
 ## Usage
 
-[![Binder](https://gesis.mybinder.org/badge_logo.svg)](https://gesis.mybinder.org/v2/gh/mohller/crisp/HEAD)
+Try the examples directly in your browser — no installation needed:
 
-Try it on Binder or clone the repo and see the examples folder.
+| Notebook | Binder | Colab |
+|----------|--------|-------|
+| Cross Sections | [![Binder](https://gesis.mybinder.org/badge_logo.svg)](https://gesis.mybinder.org/v2/gh/mohller/crisp/HEAD?filepath=examples/Cross_Sections.ipynb) | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/mohller/crisp/blob/main/examples/Cross_Sections.ipynb) |
+| Injection Composition | [![Binder](https://gesis.mybinder.org/badge_logo.svg)](https://gesis.mybinder.org/v2/gh/mohller/crisp/HEAD?filepath=examples/Injection_composition.ipynb) | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/mohller/crisp/blob/main/examples/Injection_composition.ipynb) |
+| Nuclear Decays | [![Binder](https://gesis.mybinder.org/badge_logo.svg)](https://gesis.mybinder.org/v2/gh/mohller/crisp/HEAD?filepath=examples/Nuclear_Decays.ipynb) | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/mohller/crisp/blob/main/examples/Nuclear_Decays.ipynb) |
 
 ## Installation
 
