@@ -1,5 +1,5 @@
 from pickle import load
-from numpy import pi, exp, array, vectorize, logspace, log, log10, trapezoid, loadtxt, newaxis
+from numpy import pi, expm1, array, vectorize, logspace, log, log10, trapezoid, loadtxt, newaxis
 from scipy.constants import h, c, electron_volt, Boltzmann
 import os
 from importlib.resources import files as _pkg_files
@@ -76,7 +76,8 @@ def black_body_spectral_radiance(T, erange):
     B : array_like
         spectral radiance in W/sr/m^2/Hz
     """
-    return 2/(h*c)**2 * (erange*electron_volt)**3 / (exp(erange*electron_volt/Boltzmann/T) - 1)
+    x = erange * electron_volt / Boltzmann / T
+    return 2/(h*c)**2 * (erange*electron_volt)**3 / expm1(np.minimum(x, 709.))
 
 
 def black_body_spectral_radiance_wavelength(T, lamrange):
