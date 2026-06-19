@@ -68,7 +68,7 @@ def Bpp_Blumenthal(Z, A, g, z=0):
     
     chi = np.logspace(.4, 6, 500)
     nu_eval = 10**np.linspace(-4, 1.15, 100)
-    fnu_eval = np.array([nuval**2 * np.trapezoid(phi(chi) / (np.exp(nuval * chi) - 1), chi) for nuval in nu_eval] )
+    fnu_eval = np.array([nuval**2 * np.trapezoid(phi(chi) / np.expm1(np.minimum(nuval * chi, 709.)), chi) for nuval in nu_eval])
     fnu = lambda nu: np.interp(nu, nu_eval, fnu_eval)
     
     # f_nu = np.vectorize(f_nu)
