@@ -7,8 +7,23 @@ A convenience package to compute quantities related to the propagation of ultrah
 
 [![Binder](https://gesis.mybinder.org/badge_logo.svg)](https://gesis.mybinder.org/v2/gh/mohller/crisp/HEAD)
 
-Try it on Binder or just clone the repo and see the examples folder.\
-A python package is being prepared for installation with pip.
+Try it on Binder or clone the repo and see the examples folder.
+
+## Installation
+
+Install directly from PyPI:
+
+```bash
+pip install crisp-py
+```
+
+Or clone the repository and install in editable mode for development:
+
+```bash
+git clone https://github.com/mohller/crisp.git
+cd crisp
+pip install -e .
+```
 
 ## Citation
 
