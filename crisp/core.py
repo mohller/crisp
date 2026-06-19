@@ -848,8 +848,8 @@ class InteractionCore():
 
         self.tensor = tensor.astype(self.ftype)
         self.light_prod_tensor = np.stack([lyt.astype(self.ftype) for lyt in ly_all_mats])
-        self.interpolator = lambda boostval: interp1d(self.boosts, self.light_prod_tensor, 'previous')(boostval)
-        self.interpyields = lambda boostval: interp1d(self.boosts, self.tensor, 'cubic')(boostval)
+        self.interpolator = lambda boostval: interp1d(self.boosts, self.tensor, 'previous')(boostval)
+        self.interpyields = lambda boostval: interp1d(self.boosts, self.light_prod_tensor, 'cubic')(boostval)
 
     def get_distribution_parameters(self, mass_lims=(56, 11), injection_type=('only species', (26, 56)), absorption_type=('only mass', [54]), boost_range=None):
         """Produces the injection vector and mass_range required to
@@ -905,11 +905,12 @@ class InteractionCore():
             boost_range = self.boosts
 
         reduced_tensor = self.interpolator(boost_range)
-        
+        reduced_tensor = reduced_tensor[np.ix_(mass_range, mass_range, range(len(boost_range)))]
+
         # if it is a matrix
         if len(reduced_tensor[:, :, 0]) > 1:
-            # make diagonal zero 
-            reduced_tensor -= np.dstack([np.diag(np.diag(reduced_tensor[:, :, k])) for k in range(reduced_tensor.shape[-1])]) 
+            # make diagonal zero
+            reduced_tensor -= np.dstack([np.diag(np.diag(reduced_tensor[:, :, k])) for k in range(reduced_tensor.shape[-1])])
             # recompute diagonal including absorption states
             reduced_tensor -= np.stack([np.diag(row) for row in reduced_tensor.sum(axis=1).T], axis=2)
 
