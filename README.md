@@ -14,7 +14,7 @@ Try it on Binder or clone the repo and see the examples folder.
 Install directly from PyPI:
 
 ```bash
-pip install crisp-py
+pip install crisp-pypi
 ```
 
 Or clone the repository and install in editable mode for development:
