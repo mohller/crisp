@@ -26,5 +26,13 @@ from . import photonuclear_cross_sections
 from . import background_photon_models
 from . import continuous_losses
 from . import source_models
+from . import data_download
+from .data_download import fetch_crpropa_tables
 
-__all__ = ['core', 'interaction_rates', 'photonuclear_cross_sections', 'background_photon_models', 'continuous_losses', 'source_models']
+fetch_crpropa_tables(verbose=False)
+
+__all__ = [
+    'core', 'interaction_rates', 'photonuclear_cross_sections',
+    'background_photon_models', 'continuous_losses', 'source_models',
+    'data_download', 'fetch_crpropa_tables',
+]

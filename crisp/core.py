@@ -957,7 +957,6 @@ class InteractionCore_CRPropA(InteractionCore):
             # The CRPropa data directory must be provided by the user.
             # Download the CRPropa data from https://github.com/CRPropa/CRPropa3-data
             # and pass its path here, or set CRPROPA_DATA_PATH in the environment.
-            import os
             crpropa_data = os.environ.get('CRPROPA_DATA_PATH', '')
             if not crpropa_data:
                 raise ValueError(
@@ -1481,10 +1480,10 @@ class InteractionCore_UHECR_Source(InteractionCore):
     """
     
     def __init__(self, data_directory, target_photon_spectrum, boostfactor=None):
-        """ Requires a string specifying the directory where CRPropa 
-            cross section files are stored (argument data_directory) 
+        """ Requires a string specifying the directory where CRPropa
+            cross section files are stored (argument data_directory)
         """
-        
+
         self._construct_from_files(data_directory, target_photon_spectrum, boostfactor)
         self._genenerate_complete_matrices()
 
@@ -1503,8 +1502,9 @@ class InteractionCore_UHECR_Source(InteractionCore):
 
         cols = [f'{i}' for i in range(len(boosts))]
 
-        eps_crpropa = np.genfromtxt(data_directory + 'PD_Talys1.8_Khan/eps.txt') / 1e3 # in GeV
-        branchings = np.genfromtxt(data_directory + 'PD_Talys1.8_Khan/xs_pd_thin.txt')
+        _pd_dir = 'PD_Talys1.8_Khan' if os.path.isdir(data_directory + 'PD_Talys1.8_Khan') else 'PD_Talys1.9'
+        eps_crpropa = np.genfromtxt(data_directory + f'{_pd_dir}/eps.txt') / 1e3 # in GeV
+        branchings = np.genfromtxt(data_directory + f'{_pd_dir}/xs_pd_thin.txt')
         df_rates_pdis, df_brnch_pdis, merged_yields_pdis = \
             generate_photodisinteg_tables_from_cross_sections(eps_crpropa, branchings, target_photons, boosts=boosts)
         
@@ -1632,7 +1632,7 @@ class InteractionCore_Source(InteractionCore):
         # new_branchings = [mr1 + mr2 for mr1, mr2 in zip(allmr_pmes, self.all_branchings)]
         # self.all_branchings = new_branchings
 
-    def _construct_photomeson_superposition(self, data_directory='/content/CRPropa3-data/tables/', boostfactor=None):
+    def _construct_photomeson_superposition(self, data_directory=None, boostfactor=None):
         """Using CRPROPA cross sections to produce the rates for a source
         of UHECR with a background photon field as a broken power law.
 
