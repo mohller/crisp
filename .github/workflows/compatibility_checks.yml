@@ -13,8 +13,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
-      fail-fast: false  # keep testing other combos even if one fails
+      fail-fast: false
       matrix:
+        python-version: ["3.10", "3.11", "3.12"]
         deps: ["min", "latest", "pre"]
 
     steps:
@@ -27,13 +28,32 @@ jobs:
           python-version: ${{ matrix.python-version }}
           cache: 'pip'
 
-      - name: Install project & test dependencies
+      - name: Install minimum declared dependencies
+        if: matrix.deps == 'min'
         run: |
           python -m pip install --upgrade pip
-          # Install your project + test framework
+          pip install -e ".[dev]" \
+            "astropy==6.0" "numpy==1.26" "pandas==2.1.0" \
+            "scipy==1.11.0" "pint==0.22" "sympy==1.12" "matplotlib==3.8.0"
+
+      - name: Install latest stable dependencies
+        if: matrix.deps == 'latest'
+        run: |
+          python -m pip install --upgrade pip
           pip install -e ".[dev]"
+
+      - name: Install pre-release dependencies
+        if: matrix.deps == 'pre'
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]" --pre
+
+      - name: Cache CRPropa tables
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/crisp
+          key: crpropa-tables-v1
 
       - name: Run compatibility tests
         run: |
-          # Replace with your test/compatibility command
           pytest tests/ --tb=short -v -p no:warnings
