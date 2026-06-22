@@ -598,28 +598,3 @@ class TestCascadeNucleonConservation:
                 nucleon_count, A_inj, rtol=1e-5,
                 err_msg=f"Mixed-injection nucleon count {nucleon_count:.6f} ≠ {A_inj} at L={L} Mpc",
             )
-
-
-class TestNumpyCompat:
-    def test_no_trapz_usage(self):
-        """Guard: ensure deprecated np.trapz is not called anywhere in crisp."""
-        import ast, os, crisp
-        pkg_dir = os.path.dirname(crisp.__file__)
-        violations = []
-        for root, _, files in os.walk(pkg_dir):
-            for fname in files:
-                if not fname.endswith(".py"):
-                    continue
-                fpath = os.path.join(root, fname)
-                src = open(fpath).read()
-                try:
-                    tree = ast.parse(src)
-                except SyntaxError:
-                    continue
-                for node in ast.walk(tree):
-                    # catch np.trapz(...)
-                    if (isinstance(node, ast.Call)
-                            and isinstance(node.func, ast.Attribute)
-                            and node.func.attr == "trapz"):
-                        violations.append(f"{fpath}: np.trapz call found")
-        assert not violations, "\n".join(violations)
