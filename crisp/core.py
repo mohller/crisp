@@ -836,8 +836,8 @@ class InteractionCore():
 
                 for branch in nuc_branches:
                     try:
-                        j = self.species.index(tuple(branch[:2]))                        
-                        ly_matrices[i, j, :] = branch[2:]
+                        j = self.species.index(tuple(branch[:2]))
+                        ly_matrices[i, j, :] += branch[2:]
                     except:
                         print('problem with product', branch[:2], 'of nucleus', self.species[i])
                         continue
