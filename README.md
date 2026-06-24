@@ -29,6 +29,23 @@ cd crisp
 pip install -e .
 ```
 
+### Cross-section tables (optional, downloaded post-installation)
+
+The code employs photodisintegration and photopion cross-section tables from the
+[CRPropa3-data](https://github.com/CRPropa/CRPropa3-data) repository.
+These tables are **not bundled** with the package, but **are downloaded automatically post installation the first time it is used**. The user can, however, use some of the cross section models available in CRISP as alternative.
+
+The user can also fetch the tables any time once with either:
+
+```python
+import crisp
+crisp.fetch_crpropa_tables()          # saves to ~/.cache/crisp/CRPropa3-data/tables/
+```
+
+```bash
+crisp-fetch-data                      # on the terminal, equivalent
+```
+
 ## Citation
 
 Use of the code should be aknowledged citing
