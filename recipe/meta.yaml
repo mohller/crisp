@@ -1,0 +1,66 @@
+{% set version = "0.1.0" %}
+
+package:
+  name: crisp
+  version: {{ version }}
+
+# Source is the GitHub release tarball, independent of the PyPI package
+# After tagging the release, compute the sha256 with:
+#   curl -sL https://github.com/mohller/crisp/archive/refs/tags/v{{ version }}.tar.gz | sha256sum
+source:
+  url: https://github.com/mohller/crisp/archive/refs/tags/v{{ version }}.tar.gz
+  sha256: PLACEHOLDER  # replace after: git tag v{{ version }} && git push origin v{{ version }}
+
+build:
+  number: 0
+  noarch: python
+  script: {{ PYTHON }} -m pip install . -vv --no-deps --no-build-isolation
+  entry_points:
+    - crisp-fetch-data = crisp.data_download:fetch_crpropa_tables
+
+requirements:
+  host:
+    - python >=3.10
+    - pip
+    - setuptools >=61.0
+    - wheel
+  run:
+    - python >=3.10
+    - astropy >=6.0
+    - numpy >=1.26
+    - pandas >=2.1
+    - scipy >=1.11
+    - pint >=0.22
+    - sympy >=1.12
+    - matplotlib >=3.8
+
+test:
+  imports:
+    - crisp
+    - crisp.core
+    - crisp.background_photon_models
+    - crisp.continuous_losses
+    - crisp.source_models
+    - crisp.data_download
+  requires:
+    - pip
+  commands:
+    - pip check
+  # Note: crisp-fetch-data is not called here because conda-forge CI has no network
+  # access. The import tests above cover the entry point declaration via pip check.
+
+about:
+  home: https://github.com/mohller/crisp
+  summary: Cosmic Ray Stochastic Interactions for Propagation
+  description: |
+    A convenience package to compute quantities related to the propagation of
+    ultrahigh-energy cosmic rays based on closed-form probability distribution
+    functions. Applicable for both in-source and extragalactic propagation scenarios.
+  license: MIT
+  license_file: LICENSE
+  doc_url: https://github.com/mohller/crisp
+  dev_url: https://github.com/mohller/crisp
+
+extra:
+  recipe-maintainers:
+    - mohller
