@@ -33,7 +33,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -e ".[dev]" \
-            "astropy==6.0" "numpy==1.26" "pandas==2.1.0" \
+            "astropy==6.0" "numpy==2.0" "pandas==2.1.0" \
             "scipy==1.11.0" "pint==0.22" "sympy==1.12" "matplotlib==3.8.0"
 
       - name: Install latest stable dependencies
