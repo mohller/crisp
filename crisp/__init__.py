@@ -29,7 +29,10 @@ from . import source_models
 from . import data_download
 from .data_download import fetch_crpropa_tables
 
-fetch_crpropa_tables(verbose=False)
+try:
+    fetch_crpropa_tables(verbose=False)
+except Exception:
+    pass  # e.g. no network or disk access; download later
 
 __all__ = [
     'core', 'interaction_rates', 'photonuclear_cross_sections',
