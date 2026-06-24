@@ -365,7 +365,7 @@ class PhotosphericModel(UHECRSourceModel):
         super().__init__(**inputs)
 
         # computing target photon field
-        from background_photon_models import target_photons_spectrum
+        from .background_photon_models import target_photons_spectrum
 
         target_photons_GRB = \
         target_photons_spectrum(self._inputs['photon_energy_min'].m,
