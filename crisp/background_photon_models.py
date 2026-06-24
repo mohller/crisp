@@ -1,5 +1,6 @@
 from pickle import load
-from numpy import pi, expm1, array, vectorize, logspace, log, log10, trapezoid, loadtxt, newaxis, minimum
+from numpy import pi, expm1, array, vectorize, logspace, log, log10, loadtxt, newaxis, minimum
+from numpy import trapezoid
 from scipy.constants import h, c, electron_volt, Boltzmann
 import os
 from importlib.resources import files as _pkg_files
