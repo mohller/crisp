@@ -44,7 +44,6 @@ def get_particle_numbers(channel):
 
     return digits
 
-shortlived = [(2, 5), (3, 5), (5, 9)]
 daughters = [(2, 4), (2, 3), (1, 3), (1, 2), (1, 1), (0, 1)]
 
 class Cross_Section_Model():
@@ -497,10 +496,7 @@ class CRPropa_model(Cross_Section_Model):
                     Zprod = small_prods.dot([Zd for Zd, _ in daughters])
                     Aprod = small_prods.dot([Ad for _, Ad in daughters])
 
-                    if (Z-Zprod, A-Aprod) in shortlived:
-                        rem_list.append((2, 4))
-                    else:
-                        rem_list.append((int(Z-Zprod), int(A-Aprod)))
+                    rem_list.append((int(Z-Zprod), int(A-Aprod)))
 
                 rem_list = sorted(list(set(rem_list)))
                 self.channels.append(rem_list)
@@ -529,7 +525,7 @@ class CRPropa_model(Cross_Section_Model):
                     Zprod = small_prods.dot([Zd for Zd, _ in daughters])
                     Aprod = small_prods.dot([Ad for _, Ad in daughters])
 
-                    if (Z-Zprod, A-Aprod) in [rem] + shortlived:
+                    if (Z-Zprod, A-Aprod) == rem:
                         csec += np.interp(eps, self.eps, channel[3:])
             else:
                 csec = np.zeros_like(eps)
