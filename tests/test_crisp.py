@@ -598,3 +598,64 @@ class TestCascadeNucleonConservation:
                 nucleon_count, A_inj, rtol=1e-5,
                 err_msg=f"Mixed-injection nucleon count {nucleon_count:.6f} ≠ {A_inj} at L={L} Mpc",
             )
+
+
+# ---------------------------------------------------------------------------
+# InteractionCore save / load
+# ---------------------------------------------------------------------------
+
+class TestInteractionCoreSaveLoad:
+    """Verify that save()/load() recreates the PSB model exactly."""
+
+    @pytest.fixture(scope="class")
+    def ic(self):
+        from crisp.core import InteractionCore_PSB_CMB
+        return InteractionCore_PSB_CMB()
+
+    @pytest.fixture(scope="class")
+    def ic_loaded(self, ic, tmp_path_factory):
+        path = str(tmp_path_factory.mktemp("ic") / "psb")
+        ic.save(path)
+        from crisp.core import InteractionCore_PSB_CMB
+        ic2 = InteractionCore_PSB_CMB()
+        ic2.load(path)
+        return ic2
+
+    def test_tensor_round_trip(self, ic, ic_loaded):
+        np.testing.assert_array_equal(ic.tensor, ic_loaded.tensor)
+
+    def test_light_prod_tensor_round_trip(self, ic, ic_loaded):
+        np.testing.assert_array_equal(ic.light_prod_tensor, ic_loaded.light_prod_tensor)
+
+    def test_boosts_round_trip(self, ic, ic_loaded):
+        np.testing.assert_array_equal(ic.boosts, ic_loaded.boosts)
+
+    def test_nuclei_round_trip(self, ic, ic_loaded):
+        assert ic.nuclei == ic_loaded.nuclei
+
+    def test_species_round_trip(self, ic, ic_loaded):
+        assert ic.species == ic_loaded.species
+
+    def test_all_branchings_round_trip(self, ic, ic_loaded):
+        for orig, loaded in zip(ic.all_branchings, ic_loaded.all_branchings):
+            np.testing.assert_array_equal(orig, loaded)
+
+    def test_interpolator_matches(self, ic, ic_loaded):
+        b = np.logspace(7, 12, 20)
+        np.testing.assert_allclose(ic.interpolator(b), ic_loaded.interpolator(b))
+
+    def test_interpyields_matches(self, ic, ic_loaded):
+        b = np.logspace(7, 12, 20)
+        np.testing.assert_allclose(ic.interpyields(b), ic_loaded.interpyields(b))
+
+    def test_load_replaces_in_place(self, ic, tmp_path_factory):
+        """load() must populate the existing object, not return a new one."""
+        path = str(tmp_path_factory.mktemp("ic_ref") / "psb")
+        ic.save(path)
+        ref = ic
+        result = ic.load(path)
+        assert ref is ic
+        assert result is None
+
+
+# ---------------------------------------------------------------------------

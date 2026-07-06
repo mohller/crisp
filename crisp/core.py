@@ -851,6 +851,73 @@ class InteractionCore():
         self.interpolator = lambda boostval: interp1d(self.boosts, self.tensor, 'previous')(boostval)
         self.interpyields = lambda boostval: interp1d(self.boosts, self.light_prod_tensor, 'cubic')(boostval)
 
+    def save(self, path):
+        """Saves the data to a .npz file.
+
+        Saves all arrays needed to reconstruct an instance with load().
+
+        Arguments:
+        ----------
+        path : str or path-like — destination file (.npz appended if absent)
+        """
+        path = str(path)
+        if not path.endswith('.npz'):
+            path += '.npz'
+
+        data = {
+            'boosts':             self.boosts,
+            'tensor':             self.tensor,
+            'light_prod_tensor':  self.light_prod_tensor,
+            'nuclei':             np.array(self.nuclei,  dtype=np.int32),
+            'species':            np.array(self.species, dtype=np.int32),
+            'n_light':            np.array([len(self.marginal_light_yields)], dtype=np.int32),
+        }
+
+        for i, br in enumerate(self.all_branchings):
+            data[f'br_{i}'] = br
+
+        for li, light_yields in enumerate(self.marginal_light_yields):
+            for ni, arr in enumerate(light_yields):
+                data[f'mly_{li}_{ni}'] = arr
+
+        np.savez(path, **data)
+
+    def load(self, path):
+        """Populate an instance from a file saved with save().
+
+        Replaces all computed attributes in place, bypassing
+        _construct_from_files() and _generate_complete_matrices().
+        The existing object reference remains valid after the call.
+
+        Arguments:
+        ----------
+        path : str or path-like — source file (.npz appended if absent)
+        """
+        path = str(path)
+        if not path.endswith('.npz'):
+            path += '.npz'
+
+        d = np.load(path, allow_pickle=False)
+
+        self.boosts            = d['boosts']
+        self.tensor            = d['tensor']
+        self.light_prod_tensor = d['light_prod_tensor']
+        self.ftype             = d['tensor'].dtype
+        self.nuclei  = [tuple(row) for row in d['nuclei'].tolist()]
+        self.species = [tuple(row) for row in d['species'].tolist()]
+
+        n_nuc   = len(self.nuclei)
+        n_light = int(d['n_light'][0])
+
+        self.all_branchings = [d[f'br_{i}'] for i in range(n_nuc)]
+        self.marginal_light_yields = [
+            [d[f'mly_{li}_{ni}'] for ni in range(n_nuc)]
+            for li in range(n_light)
+        ]
+
+        self.interpolator = lambda boostval: interp1d(self.boosts, self.tensor, 'previous')(boostval)
+        self.interpyields = lambda boostval: interp1d(self.boosts, self.light_prod_tensor, 'cubic')(boostval)
+
     def get_distribution_parameters(self, mass_lims=(56, 11), injection_type=('only species', (26, 56)), absorption_type=('only mass', [54]), boost_range=None):
         """Produces the injection vector and mass_range required to
         produce the distribution of nuclei starting from a certain mass

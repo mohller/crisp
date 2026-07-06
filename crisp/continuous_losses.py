@@ -1,5 +1,5 @@
 import numpy as np
-from scipy.integrate import cumulative_trapezoid
+from scipy.integrate import cumulative_trapezoid, trapezoid
 from astropy import units as u
 from astropy.cosmology import WMAP9 as cosmo
 from astropy.constants import c, m_e, alpha, e, eps0, k_B, hbar, m_p
@@ -34,7 +34,7 @@ def Bpp_generic(Z, mA, g, z=0, phot_dens=None):
     integral_grid = []
     for gval in g / mec2.value:
         nu = np.logspace(np.log10(1 / gval), 4, 300)
-        integral_grid.append(np.trapezoid(phot_dens(nu, z) * phi(2*gval*nu) / nu**2, nu))
+        integral_grid.append(trapezoid(phot_dens(nu, z) * phi(2*gval*nu) / nu**2, nu))
 
     bpp = mec2.value**2 * (alpha*r_e**2 / u.m**3 * mec2 / mpc2 / g**2 / 2 * np.array(integral_grid)).to('1/Mpc').value
 
@@ -68,7 +68,7 @@ def Bpp_Blumenthal(Z, A, g, z=0):
     
     chi = np.logspace(.4, 6, 500)
     nu_eval = 10**np.linspace(-4, 1.15, 100)
-    fnu_eval = np.array([nuval**2 * np.trapezoid(phi(chi) / np.expm1(np.minimum(nuval * chi, 709.)), chi) for nuval in nu_eval])
+    fnu_eval = np.array([nuval**2 * trapezoid(phi(chi) / np.expm1(np.minimum(nuval * chi, 709.)), chi) for nuval in nu_eval])
     fnu = lambda nu: np.interp(nu, nu_eval, fnu_eval)
     
     # f_nu = np.vectorize(f_nu)
