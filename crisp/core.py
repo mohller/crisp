@@ -1764,7 +1764,7 @@ class InteractionCore_PSB_CMB(InteractionCore):
                 elif Arem in [5, 6, 7, 8]:
                     Arem, Zrem = 4, 2
                 else:
-                    Zrem = int(psb_model.params[psb_model.params['A'] == Arem]['Z'])
+                    Zrem = int(psb_model.params[psb_model.params['A'] == Arem]['Z'].iloc[0])
 
                 cross_section = 1e-27 * psb_model.cross_section(eps * 1e3, Z, A, nloss) # to cm2
                 pdis_rates = interaction_rate_from_cross_section(A*boosts, A, cmb_photon_density_GeVcm3, eps, cross_section)
