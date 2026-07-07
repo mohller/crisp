@@ -16,7 +16,7 @@ except ImportError:
     from importlib_metadata import version, PackageNotFoundError
 
 try:
-    __version__ = version("crisp-py")
+    __version__ = version("crisp-pypi")
 except PackageNotFoundError:
     __version__ = "unknown"
 
