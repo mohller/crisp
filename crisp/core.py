@@ -553,7 +553,12 @@ class InteractionCore():
         bigLambda = np.append(np.append(reduced_tensor, np.swapaxes(t_vs_boost, 1, 2), axis=1), np.zeros((1, c+1, d)), axis=0)
 
         if type(L) is np.ndarray:
-            expmatL = expm(np.moveaxis(L[:, None, None, None] * bigLambda, -1, 0))
+            # Per-boost sub-batches avoid a scipy batched-expm precision issue
+            # that appears when matrices with widely different norms share a batch.
+            expmatL = np.stack([
+                expm(L[:, None, None] * bigLambda[:, :, b])
+                for b in range(bigLambda.shape[-1])
+            ])
         else:
             expmatL = expm(np.moveaxis(bigLambda * L, -1, 0))
 
@@ -634,7 +639,10 @@ class InteractionCore():
         ones = np.ones_like(-np.moveaxis(reduced_tensor, -1, 0).dot(np.ones_like(alpha[indices])))
 
         if type(L) is np.ndarray:
-            expmatL = expm(np.moveaxis(L[:, None, None, None] * reduced_tensor, -1, 0))
+            expmatL = np.stack([
+                expm(L[:, None, None] * reduced_tensor[:, :, b])
+                for b in range(reduced_tensor.shape[-1])
+            ])
         else:
             expmatL = expm(np.moveaxis(reduced_tensor * L, -1, 0))
 
@@ -682,7 +690,10 @@ class InteractionCore():
             omega = - np.moveaxis(reduced_tensor, -1, 0).dot(np.ones_like(alpha[indices]))
 
         if type(L) is np.ndarray:
-            expmatL = expm(np.moveaxis(L[:, None, None, None] * reduced_tensor, -1, 0))
+            expmatL = np.stack([
+                expm(L[:, None, None] * reduced_tensor[:, :, b])
+                for b in range(reduced_tensor.shape[-1])
+            ])
         else:
             expmatL = expm(np.moveaxis(reduced_tensor * L, -1, 0))
 
