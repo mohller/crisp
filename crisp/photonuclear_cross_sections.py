@@ -397,7 +397,7 @@ class SimProp_model(Cross_Section_Model):
         if self.M in [0, 1, 2]:
             zeta = params[-1]
             Sigma_d = 60 * (A - Z) * Z / A # in MeV * mb
-            csec = zeta * f_i * Sigma_d * theta_plus(self.eps_mid, np.zeros_like(eps)) / (self.eps_max - self.eps_mid) # applies for all nloss values
+            csec = zeta * f_i * Sigma_d * theta_plus(self.eps_mid, eps) / (self.eps_max - self.eps_mid) # applies for all nloss values
             
             if nloss in [1, 2]:
                 eps0 = params[2 + 3*(nloss-1)]
