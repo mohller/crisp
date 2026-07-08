@@ -55,17 +55,16 @@ def nuclear_data_parser(filename=None):
 
     table['half_life'] = pnd.to_numeric(table['half_life'], errors='coerce')
 
-    # cleaning up column excitation energy 
+    # cleaning up column excitation energy
     series = table['Eexc'].map(str)
     series = series.map(lambda string: string.split('#')[0])
-    series[series == 'nan'] = 0
-    series[series == 'non-exist'] = 0
+    series = series.replace({'nan': '0', 'non-exist': '0'})
     table['Eexc'] = pnd.to_numeric(series)
 
-    # cleaning up column excitation energy 
+    # cleaning up column excitation energy
     series = table['mass_excess_keV'].map(str)
     series = series.map(lambda string: string.split('#')[0])
-    series[series == 'nan'] = 0
+    series = series.replace({'nan': '0'})
     table['mass_excess_keV'] = pnd.to_numeric(series)
 
     def to_secs(units):
