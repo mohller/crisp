@@ -66,6 +66,36 @@ class Cross_Section_Model():
         # To be defined in each case
         pass
 
+    def _mapped_remnant(self, Z, A, nloss):
+        """Remnant (Zrem, Arem) after losing nloss nucleons, mapped onto nuclides
+        the cascade can handle: the model nuclide of that mass when present,
+        Be8/He5 (disintegrated further by nuclear decays) for the particle-unstable
+        masses 8 and 5, He4 for the untabulated stable masses 6 and 7, and a free
+        proton for mass 1. Returns None when no remnant exists.
+        """
+        Arem = int(A - nloss)
+        if Arem < 1:
+            return None
+        elif Arem == 1:
+            return (1, 1)
+        elif Arem == 5:
+            return (2, 5)
+        elif Arem in (6, 7):
+            return (2, 4)
+        elif Arem == 8:
+            return (4, 8)
+
+        candidates = [Zr for Zr, Ar in self.nuclei if Ar == Arem]
+        if not candidates:
+            return None
+        return (candidates[0], Arem)
+
+    def _nloss_values_for_remnant(self, Z, A, rem):
+        """All nucleon losses whose mapped remnant is rem (several nloss can
+        share a remnant through the mass 6, 7 -> He4 mapping)."""
+        return [nloss for nloss in range(1, min(16, A))
+                if self._mapped_remnant(Z, A, nloss) == tuple(rem)]
+
     def cross_section_table(self, *args, nuclei_list=None, **kwargs):
         """Returns an array with cross sections of the species provided
            in nuclei_list, otherwise the full list of nuclei is used.
@@ -243,24 +273,19 @@ class PSB_model(Cross_Section_Model):
         self.params.fillna(0, inplace=True)
 
         self.nuclei = [nuc for nuc in list(zip(self.params.Z, self.params.A)) if self.filter_nuclei(nuc)]
+
+        # One channel per distinct mapped remnant (Cross_Section_Model._mapped_remnant):
+        # remnant masses absent from the table are not dropped but mapped to the real
+        # particle-unstable nuclides (A=8 -> Be8, A=5 -> He5, disintegrated further by
+        # nuclear decays), He4 for the untabulated stable A=6,7, and a free proton for
+        # A=1. cross_section(rem=...) sums all nloss leading to the same remnant.
         self.channels = []
-
         for Z, A in self.nuclei:
-            if A == 2:
-                channels = [(1, 1)]
-            elif A == 3:
-                channels = [(1, 1), (1, 2)]
-            elif A == 4:
-                channels = [(1, 2), (2, 3)]
-            elif A == 9:
-                channels = [(2, 4)]
-            elif A in range(10, 23):
-                channels = [([Zr for Zr, Ar in self.nuclei if Ar == A-nloss][0], A-nloss) for nloss in range(1, 7)
-                            if [Zr for Zr, Ar in self.nuclei if Ar == A-nloss] != []]
-            elif A in range(23, 57):
-                channels = [([Zr for Zr, Ar in self.nuclei if Ar == A-nloss][0], A-nloss) for nloss in range(1, 16)
-                            if [Zr for Zr, Ar in self.nuclei if Ar == A-nloss] != []]
-
+            channels = []
+            for nloss in range(1, min(16, A)):
+                remnant = self._mapped_remnant(Z, A, nloss)
+                if remnant is not None and remnant not in channels:
+                    channels.append(remnant)
             self.channels.append(channels)
 
     def cross_section(self, eps, Z, A, nloss=None, rem=None):
@@ -272,7 +297,12 @@ class PSB_model(Cross_Section_Model):
 
         if nloss is None:
             if rem is not None:
-                nloss = A - rem[1]
+                # several nloss values can share a remnant (valley mapping)
+                nloss_values = self._nloss_values_for_remnant(Z, A, rem)
+                if not nloss_values:
+                    return np.zeros_like(np.asarray(eps, dtype=float))
+                return np.sum([self.cross_section(eps, Z, A, nloss=nl)
+                               for nl in nloss_values], axis=0)
             else:
                 return self.total_cross_section(eps, Z, A)
 
@@ -299,8 +329,8 @@ class PSB_model(Cross_Section_Model):
         of the channels of the given nucleus (Z, A)
         """
         channels = []
-        for _, Arem in self.channels[self.nuclei.index((Z, A))]:
-            channels.append(self.cross_section(eps, Z, A, A-Arem))
+        for remnant in self.channels[self.nuclei.index((Z, A))]:
+            channels.append(self.cross_section(eps, Z, A, rem=remnant))
 
         return np.sum(channels, axis=0)
 
@@ -355,14 +385,25 @@ class SimProp_model(Cross_Section_Model):
             [.1, .35, .1, .05, .15, .045, .04, .035, .03, .025, .02, .018, .015, .012, .01]
         ])
 
-        self.channels = [[(1, 1)]]
         if M in [0, 1, 2]:
-            for Z, A in self.nuclei[1:]:
-                channels = [([Zr for Zr, Ar in self.nuclei if Ar == A-nloss][0], A-nloss) for nloss in range(1, 16)
-                            if [Zr for Zr, Ar in self.nuclei if Ar == A-nloss] != []]
-                    
+            # One channel per distinct remnant. nloss values whose remnant mass
+            # is absent from the table are not dropped (that would lose channel
+            # strength and leave dead ends, e.g. Be9): the remnant is the real
+            # particle-unstable nuclide where nuclear decays disintegrate it
+            # further (A=8 -> Be8, A=5 -> He5), He4 for the stable but
+            # untabulated A=6,7 (Stecker-Salamon chain prescription), and a
+            # free proton for A=1. Since several nloss can then share one
+            # remnant, cross_section(rem=...) sums all nloss leading to it.
+            self.channels = []
+            for Z, A in self.nuclei:
+                channels = []
+                for nloss in range(1, min(16, A)):
+                    remnant = self._mapped_remnant(Z, A, nloss)
+                    if remnant is not None and remnant not in channels:
+                        channels.append(remnant)
                 self.channels.append(channels)
         elif M in [3, 4]:
+            self.channels = [[(1, 1)]]
             for Z, A in self.nuclei[1:]:
                 channels = [([Zr for Zr, Ar in self.nuclei if Ar == A-nloss][0], A-nloss) for nloss in [1, 4]
                             if [Zr for Zr, Ar in self.nuclei if Ar == A-nloss] != []]
@@ -379,6 +420,13 @@ class SimProp_model(Cross_Section_Model):
 
         if (nloss is None):
             if rem is not None:
+                if self.M in [0, 1, 2]:
+                    # several nloss values can share a remnant (valley mapping)
+                    nloss_values = self._nloss_values_for_remnant(Z, A, rem)
+                    if not nloss_values:
+                        return np.zeros_like(np.asarray(eps, dtype=float))
+                    return np.sum([self.cross_section(eps, Z, A, nloss=nl)
+                                   for nl in nloss_values], axis=0)
                 nloss = A - rem[1]
             else:
                 return self.total_cross_section(eps, Z, A)
@@ -448,8 +496,8 @@ class SimProp_model(Cross_Section_Model):
         of the channels of the given nucleus (Z, A)
         """
         channels = []
-        for _, Arem in self.channels[self.nuclei.index((Z, A))]:
-            channels.append(self.cross_section(eps, Z, A, A-Arem))
+        for remnant in self.channels[self.nuclei.index((Z, A))]:
+            channels.append(self.cross_section(eps, Z, A, rem=remnant))
 
         return np.sum(channels, axis=0)
 
