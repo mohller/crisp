@@ -2,8 +2,53 @@ from pathlib import Path
 from numpy import nan, inf, log, isclose, logical_and
 import re
 import pandas as pnd
+from scipy.constants import physical_constants
 
 _DATA_DIR = Path(__file__).parent
+
+U_GEV  = physical_constants['atomic mass constant energy equivalent in MeV'][0] * 1e-3
+ME_GEV = physical_constants['electron mass energy equivalent in MeV'][0] * 1e-3
+
+_nuclear_masses_cache = None
+
+def nuclear_masses_GeV(filename=None):
+    """Nuclear ground-state masses from the nubase table.
+
+    Returns a dict {(Z, A): mass in GeV} with
+        m(Z, A) = A*u + mass_excess(Z, A) - Z*m_e
+    (the atomic mass excess converted to a nuclear mass; electron binding
+    energies, at the eV level, are neglected).
+
+    The default table is parsed once and cached for the process.
+    """
+    global _nuclear_masses_cache
+    if filename is not None:
+        table = NuclearDataTable(filename).get_no_isomers_table()
+    elif _nuclear_masses_cache is not None:
+        return _nuclear_masses_cache
+    else:
+        table = NuclearDataTable().get_no_isomers_table()
+
+    masses = {}
+    for Z, A, delta_keV in table[['Z', 'A', 'mass_excess_keV']].values:
+        masses[(int(Z), int(A))] = int(A) * U_GEV + delta_keV * 1e-6 - int(Z) * ME_GEV
+
+    if filename is None:
+        _nuclear_masses_cache = masses
+    return masses
+
+def nuclear_mass_GeV(Z, A):
+    """Nuclear ground-state mass in GeV of the nuclide (Z, A), from nubase.
+
+    Falls back to A*u (no mass excess) with a warning for nuclides absent
+    from the table.
+    """
+    masses = nuclear_masses_GeV()
+    if (int(Z), int(A)) not in masses:
+        import warnings
+        warnings.warn(f'No nubase mass for (Z, A) = ({Z}, {A}); using A*u.')
+        return int(A) * U_GEV
+    return masses[(int(Z), int(A))]
 
 def nuclear_data_parser(filename=None):
     """Returns a pandas DataFrame which contains the information in the
