@@ -84,6 +84,38 @@ def interaction_rate_synchrotron(energies, Z, A, mgn_field):
     return  2/3 * h_alpha_c2 * Z**2 * (energies / m)**4 / Rg**2 / energies
 
 
+def interaction_rate_from_cross_section_boosts(boosts, ng, eg, cs):
+    """Returns the interaction rate from the cross section and the photon spectrum,
+    taking the Lorentz factors directly.
+
+    Boost-native variant of interaction_rate_from_cross_section: the rate
+    integral only depends on the Lorentz factor, so no nuclear mass enters.
+    Prefer this entry point when working on a boost grid; use the nuclear
+    masses (e.g. crisp.data.nucleardecays.nuclear_mass_GeV) only to convert
+    between energies and boosts at the interface.
+
+    Parameters:
+    -----------
+    boosts    : uhecr's Lorentz factors
+    ng        : a function describing the photon spectral density. Should take
+                energy in GeV and return photon density in GeV^-1 cm^-3
+    eg        : photon grid for the cross section (energy in nucleus rest frame in GeV)
+    cs        : cross section for photonuclear interaction evaluated in eg, given in cm^2
+    Returns:
+    --------
+    rates     : interaction rates corresponding to cross section provided in s^-1
+    """
+    (ymin, ymax), f = get_interp_response_function(eg, cs)
+    y = np.logspace(-3., np.log10(ymax), 100)
+
+    rates = []
+    for boost in boosts:
+        epsilon = y / boost / 2
+        rates.append(np.trapezoid(ng(epsilon) * f(y) / boost, y))
+
+    return c.to('cm/s').value * np.array(rates)
+
+
 def interaction_rate_from_cross_section(energies, A, ng, eg, cs):
     """Returns the interaction rate from the cross section and the photon spectrum
     Parameters:
