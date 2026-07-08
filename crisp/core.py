@@ -374,6 +374,142 @@ def generate_photomeson_tables_from_cross_sections(nuclei, xsp, xsn, target_phot
         
     return df_rates_pmes, pmes_branchings, merged_yields
 
+
+def build_pion_prod_kernel(boosts, target_photons, inelasticity=None):
+    """Compute the pion production kernel for proton and neutron parents.
+
+    K[s, i, j] is the rate [Mpc⁻¹] at which a proton (s=0) or neutron (s=1) at
+    Lorentz factor boosts[i] produces a pion at Lorentz factor boosts[j].
+
+    The spread across pion boost bins arises from the energy-dependent mean
+    inelasticity κ̄(ε'): photons at different rest-frame energies map to
+    different pion boost bins even for a fixed parent boost.
+
+    For a nucleus (Z, A) at boost boosts[i] the pion rate into boost bin j is:
+        Z * K[0, i, j] + (A-Z) * K[1, i, j]
+
+    Uses the parametric photomeson cross section (Rachen model, A=1).
+    Proton and neutron are treated as equal at this level of approximation;
+    supply separate callables via `inelasticity` to override.
+
+    Arguments:
+    ----------
+    boosts         : 1-D array of Lorentz factors (parent boost grid)
+    target_photons : callable, n_γ(ε) in GeV⁻¹ cm⁻³ with ε in GeV
+    inelasticity   : None → default parametric κ̄(ε'), or callable κ̄(ε') with ε' in GeV
+
+    Returns:
+    --------
+    K : ndarray, shape (2, n_boost, n_boost)
+    """
+    mp_GeV  = 0.939   # proton mass in GeV
+    mpi_GeV = 0.140   # pion mass in GeV
+    eps_th  = 0.145   # pion production threshold in nucleon rest frame (GeV)
+
+    if inelasticity is None:
+        def kappa(eps_prime):
+            # SOPHIA-motivated: κ̄ ≈ 0.20 at threshold, rising to 0.50 at high ε'
+            return np.minimum(0.2 + 0.07 * np.log10(np.maximum(eps_prime, eps_th) / eps_th), 0.5)
+    else:
+        kappa = inelasticity
+
+    e_grid    = np.logspace(np.log10(eps_th), 4.0, 500)  # rest-frame photon energies (GeV)
+    de        = np.gradient(e_grid)
+    cs_vals   = cs_photomeson(e_grid, A=1)                # cm², proton ≈ neutron
+    kappa_arr = kappa(e_grid)
+
+    n_b = len(boosts)
+    K   = np.zeros((2, n_b, n_b))
+
+    for i, gamma in enumerate(boosts):
+        eps_lab = e_grid / (2.0 * gamma)               # lab-frame photon energies (GeV)
+        ng      = target_photons(eps_lab)               # GeV⁻¹ cm⁻³
+
+        # differential rate contribution per rest-frame energy bin
+        dR = (c_in_Mpc_sec / (2.0 * gamma)) * ng * cs_vals * de  # Mpc⁻¹
+
+        # pion Lorentz factor produced at each rest-frame photon energy
+        gamma_pi = kappa_arr * gamma * (mp_GeV / mpi_GeV)
+
+        j_arr = np.searchsorted(boosts, gamma_pi) - 1
+        valid = (j_arr >= 0) & (j_arr < n_b) & (dR > 0)
+
+        np.add.at(K[0, i], j_arr[valid], dR[valid])
+        np.add.at(K[1, i], j_arr[valid], dR[valid])   # proton ≈ neutron
+
+    return K
+
+
+def build_proton_recoil_kernel(boosts, target_photons, inelasticity=None,
+                                branching_pp=2/3, branching_np=2/3):
+    """Build the secondary-proton production kernel for photomeson interactions.
+
+    K[s, i, j] is the rate [Mpc⁻¹] at which a proton (s=0) or neutron (s=1)
+    at Lorentz factor boosts[i] produces a secondary proton at boosts[j].
+
+    The secondary proton carries fraction (1−κ̄) of the parent energy:
+        γ_p = (1 − κ̄(ε')) × Γ_parent
+
+    so it always appears below the parent boost, spread across 1–4 bins by the
+    energy-dependent inelasticity.
+
+    Default branching fractions come from Δ(1232) isospin decomposition:
+    - Δ⁺ (from p+γ) → p + π⁰ with probability 2/3  → branching_pp = 2/3
+    - Δ⁰ (from n+γ) → p + π⁻ with probability 2/3  → branching_np = 2/3
+
+    For a nucleus (Z, A) at boost boosts[i], secondary proton rate into boost j:
+        Z * K[0, i, j] + (A-Z) * K[1, i, j]
+
+    Uses the same parametric cross section and default inelasticity as
+    build_pion_prod_kernel; both should be called with the same inelasticity
+    to maintain energy conservation (pion energy + proton energy = parent energy).
+
+    Arguments:
+    ----------
+    boosts         : 1-D array of Lorentz factors (parent boost grid)
+    target_photons : callable, n_γ(ε) in GeV⁻¹ cm⁻³ with ε in GeV
+    inelasticity   : None → default parametric κ̄(ε'), or callable κ̄(ε') in GeV
+    branching_pp   : fraction of p+γ interactions yielding a secondary proton (default 2/3)
+    branching_np   : fraction of n+γ interactions yielding a secondary proton (default 2/3)
+
+    Returns:
+    --------
+    K : ndarray, shape (2, n_boost, n_boost)
+    """
+    eps_th = 0.145   # pion production threshold in nucleon rest frame (GeV)
+
+    if inelasticity is None:
+        def kappa(eps_prime):
+            return np.minimum(0.2 + 0.07 * np.log10(np.maximum(eps_prime, eps_th) / eps_th), 0.5)
+    else:
+        kappa = inelasticity
+
+    e_grid    = np.logspace(np.log10(eps_th), 4.0, 500)
+    de        = np.gradient(e_grid)
+    cs_vals   = cs_photomeson(e_grid, A=1)
+    kappa_arr = kappa(e_grid)
+
+    n_b = len(boosts)
+    K   = np.zeros((2, n_b, n_b))
+
+    for i, gamma in enumerate(boosts):
+        eps_lab = e_grid / (2.0 * gamma)
+        ng      = target_photons(eps_lab)
+
+        dR = (c_in_Mpc_sec / (2.0 * gamma)) * ng * cs_vals * de   # Mpc⁻¹
+
+        # secondary proton boost: (1-κ̄) × Γ  [mass unchanged — proton rest mass]
+        gamma_p = (1.0 - kappa_arr) * gamma
+
+        j_arr = np.searchsorted(boosts, gamma_p) - 1
+        valid = (j_arr >= 0) & (j_arr < n_b) & (dR > 0)
+
+        np.add.at(K[0, i], j_arr[valid], branching_pp * dR[valid])
+        np.add.at(K[1, i], j_arr[valid], branching_np * dR[valid])
+
+    return K
+
+
 def fix_dead_end(product, rate):
     """Takes dead end nucleus (product) and computes the products of its
     disintegration and the corresponding rate.
