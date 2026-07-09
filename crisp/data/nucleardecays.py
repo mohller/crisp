@@ -1,8 +1,13 @@
+import logging
 from pathlib import Path
 from numpy import nan, inf, log, isclose, logical_and
 import re
 import pandas as pnd
 from scipy.constants import physical_constants
+
+# data-quality diagnostics are logged at DEBUG level; enable them with e.g.
+# logging.getLogger('crisp').setLevel(logging.DEBUG) (plus a handler)
+logger = logging.getLogger(__name__)
 
 _DATA_DIR = Path(__file__).parent
 
@@ -171,8 +176,13 @@ class NuclearDataTable():
     def prepare_decay_table(self):
         """Based on the output of nuclear_data_parser returns
         a table containing the children and branching ratio per
-        decay channel for a range of nuclei. 
+        decay channel for a range of nuclei.
         IMP!!! Only up to A=56 due to remaining parsing errors!
+
+        Data-quality alerts (failed decay strings, branching sums != 1 — all
+        known cases above A=56) are logged at DEBUG level on the
+        'crisp.data.nucleardecays' logger; enable them for debugging with
+        logging.basicConfig(level=logging.DEBUG).
         """
         table = self.get_no_isomers_table()
         unstable = table[logical_and(table['half_life'] < inf, table['A'] <= 258)]
@@ -217,8 +227,8 @@ class NuclearDataTable():
                         daughters.append(nucid[p])
                 
                 if daughters == []:
+                    logger.debug('Empty daughters: decay regex failed on %r', dlab)
                     continue
-                    print('Error empty daughters!! regex failed on string:', dlab)
 
                 first_val = re.compile(regvals).findall(val)[0]
                 if first_val != '?':
@@ -257,10 +267,12 @@ class NuclearDataTable():
             for idx, _ in enumerate(corrected[nuc]['channels']):
                 corrected[nuc]['channels'][idx][0] /= tot
 
-        # crosschecking that branchings add up to unity
+        # crosschecking that branchings add up to unity (known offenders sit
+        # above A=56, outside the documented validity of this parser)
         for key, decaydata in corrected.items():
             chans = decaydata['channels']
             if not isclose(sum([ch[0] for ch in chans]), 1):
-                print('!!! Problem found in branching:', key, chans, sum([ch[0] for ch in chans]))
+                logger.debug('Branching sum != 1 for nucid %s: %s (sum %s)',
+                             key, chans, sum([ch[0] for ch in chans]))
 
         return corrected
