@@ -158,10 +158,16 @@ class TestPhotonuclearCrossSections:
         assert psb is not None
 
     def test_psb_carbon12_regression(self):
-        """PSB cross section for C-12 at 100 MeV (regression value)."""
+        """PSB cross section for C-12 at 100 MeV (regression value).
+
+        Value doubled (0.79235 -> 1.5847) when the A=10-22 channel table was
+        completed: the old channels dropped the remnant masses 8-5, i.e. half
+        the PSB1976 multiplicity weight, and the total at 100 MeV is pure
+        quasi-deuteron plateau, proportional to the summed weights.
+        """
         psb = self.pcs.PSB_model()
         xs = psb.cross_section(np.array([100.0]), 6, 12)
-        assert_allclose(xs[0], 0.79235, rtol=1e-3)
+        assert_allclose(xs[0], 1.5847, rtol=1e-3)
 
     def test_psb_fe56_regression(self):
         """PSB cross section for Fe-56 at 100 MeV (regression value)."""
@@ -375,8 +381,9 @@ class TestCascadeNucleonConservation:
     @pytest.fixture(scope="class")
     def psb_cascade(self):
         """Build the PSB CMB interaction core once per test class."""
-        from crisp.core import InteractionCore_PSB_CMB
-        return InteractionCore_PSB_CMB()
+        from crisp.core import InteractionCore
+        from crisp.photonuclear_cross_sections import PSB_model
+        return InteractionCore(xsec_model=PSB_model())
 
     @pytest.fixture(scope="class")
     def fe56_injection(self, psb_cascade):
@@ -609,15 +616,17 @@ class TestInteractionCoreSaveLoad:
 
     @pytest.fixture(scope="class")
     def ic(self):
-        from crisp.core import InteractionCore_PSB_CMB
-        return InteractionCore_PSB_CMB()
+        from crisp.core import InteractionCore
+        from crisp.photonuclear_cross_sections import PSB_model
+        return InteractionCore(xsec_model=PSB_model())
 
     @pytest.fixture(scope="class")
     def ic_loaded(self, ic, tmp_path_factory):
         path = str(tmp_path_factory.mktemp("ic") / "psb")
         ic.save(path)
-        from crisp.core import InteractionCore_PSB_CMB
-        ic2 = InteractionCore_PSB_CMB()
+        from crisp.core import InteractionCore
+        from crisp.photonuclear_cross_sections import PSB_model
+        ic2 = InteractionCore(xsec_model=PSB_model())
         ic2.load(path)
         return ic2
 
