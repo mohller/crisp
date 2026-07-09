@@ -1,8 +1,9 @@
-"""Download CRPropa3 cross-section tables from GitHub.
+"""Download external data dependencies from GitHub.
 
 The CRPropa3-data repository (https://github.com/CRPropa/CRPropa3-data)
-contains photodisintegration and photopion cross-section tables used by
-``InteractionCore_UHECR_Source`` and ``InteractionCore_Source``.
+contains photodisintegration and photopion cross-section tables, and the
+AstroPhoMes repository (https://github.com/mohller/AstroPhoMes) provides the
+photomeson models usable through crisp.photonuclear_cross_sections.Photomeson.
 
 Public API
 ----------
@@ -12,6 +13,13 @@ fetch_crpropa_tables(destination, tables, verbose)
 get_tables_path(destination, auto_download, verbose)
     Resolve the local tables path, downloading if necessary.  Used
     internally by InteractionCore classes.
+
+fetch_astrophomes(destination, verbose)
+    Download the AstroPhoMes repository and cache it locally.
+
+get_astrophomes_path(destination, auto_download, verbose)
+    Resolve the local AstroPhoMes path, downloading if necessary.  Used by
+    crisp.photonuclear_cross_sections.load_astrophomes.
 """
 
 import io
@@ -23,6 +31,12 @@ from pathlib import Path
 _REPO_ZIP = "https://github.com/CRPropa/CRPropa3-data/archive/refs/heads/master.zip"
 _DEFAULT_TABLES = ["PD_Talys1.8_Khan", "PD_Talys1.9", "PD_external", "PPP"]
 _CACHE_DIR = Path.home() / ".cache" / "crisp" / "CRPropa3-data" / "tables"
+
+_ASTROPHOMES_ZIPS = [
+    "https://github.com/mohller/AstroPhoMes/archive/refs/heads/master.zip",
+    "https://github.com/mohller/AstroPhoMes/archive/refs/heads/main.zip",
+]
+_ASTROPHOMES_CACHE = Path.home() / ".cache" / "crisp" / "AstroPhoMes"
 
 
 def fetch_crpropa_tables(destination=None, tables=None, verbose=True):
@@ -129,4 +143,93 @@ def get_tables_path(destination=None, auto_download=True, verbose=True):
         "CRPropa3 tables not found.\n"
         "Run crisp.fetch_crpropa_tables() to download them, or set the\n"
         "CRPROPA_TABLES_PATH environment variable to an existing directory."
+    )
+
+
+def fetch_astrophomes(destination=None, verbose=True):
+    """Download the AstroPhoMes repository from GitHub into a local cache.
+
+    The archive top-level directory is stripped, so the cache directory is
+    the repository root (containing ``config.py`` and ``photomeson_lib/``).
+    Skipped when the destination already holds a copy.
+
+    Parameters
+    ----------
+    destination : str | Path | None
+        Local directory for the repository.
+        Defaults to ``~/.cache/crisp/AstroPhoMes/``.
+    verbose : bool
+        Print progress messages.
+
+    Returns
+    -------
+    str
+        Path to the local repository root.
+    """
+    dest = Path(destination) if destination else _ASTROPHOMES_CACHE
+
+    if (dest / "config.py").exists():
+        return str(dest)
+
+    last_error = None
+    for url in _ASTROPHOMES_ZIPS:
+        try:
+            if verbose:
+                print(f"Downloading AstroPhoMes from {url} …")
+            resp = urllib.request.urlopen(url)
+            with zipfile.ZipFile(io.BytesIO(resp.read())) as zf:
+                names = zf.namelist()
+                prefix = names[0].split("/")[0] + "/"
+                for name in names:
+                    if name.endswith("/") or not name.startswith(prefix):
+                        continue
+                    out = dest / name[len(prefix):]
+                    out.parent.mkdir(parents=True, exist_ok=True)
+                    out.write_bytes(zf.read(name))
+            if verbose:
+                print(f"AstroPhoMes saved to: {dest}")
+            return str(dest)
+        except Exception as exc:            # try the next branch name
+            last_error = exc
+
+    raise RuntimeError(f"Could not download AstroPhoMes: {last_error}")
+
+
+def get_astrophomes_path(destination=None, auto_download=True, verbose=True):
+    """Return the local path to the AstroPhoMes repository.
+
+    Resolution order:
+
+    1. ``ASTROPHOMES_PATH`` environment variable.
+    2. *destination* argument, if the directory already exists.
+    3. Default cache (``~/.cache/crisp/AstroPhoMes/``), if populated.
+    4. Auto-download from GitHub (when ``auto_download=True``).
+
+    Returns
+    -------
+    str
+        Resolved repository root.
+
+    Raises
+    ------
+    FileNotFoundError
+        When the repository is not found and ``auto_download`` is *False*.
+    """
+    env = os.environ.get("ASTROPHOMES_PATH", "")
+    if env and Path(env, "config.py").exists():
+        return env
+
+    if destination is not None and Path(destination, "config.py").exists():
+        return str(destination)
+
+    if (_ASTROPHOMES_CACHE / "config.py").exists():
+        return str(_ASTROPHOMES_CACHE)
+
+    if auto_download:
+        return fetch_astrophomes(destination=destination, verbose=verbose)
+
+    raise FileNotFoundError(
+        "AstroPhoMes repository not found.\n"
+        "Run crisp.fetch_astrophomes() to download it, or set the\n"
+        "ASTROPHOMES_PATH environment variable to an existing working copy."
     )
