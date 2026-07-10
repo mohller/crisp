@@ -1,6 +1,7 @@
 """Production and testing the interaction matrices
 """
 
+import logging
 import os
 import numpy as np
 from math import factorial
@@ -14,6 +15,12 @@ c_in_Mpc_sec = c.to('Mpc/s').value
 mp_in_GeV = (m_p * c**2).to('GeV')
 mn_in_GeV = (m_n * c**2).to('GeV')
 mb_to_cm2 = u.mbarn.to('cm^2')
+
+# construction diagnostics (unmatched products, unresolved decay paths, ...)
+# are logged at DEBUG level; enable with logging.basicConfig(level=logging.DEBUG)
+logger = logging.getLogger(__name__)
+
+
 
 def get_nucid(nuc):
     '''Utility function: returns neucos id from (Z, A) tuple
@@ -105,10 +112,9 @@ def get_marginal_rates(nuclei, rates, boosts, branchings=None):
                     elif (Z == 3) and (A == 6):
                         # nprods = np.array(get_particle_numbers(110000))
                         # prods = np.array([int(np > 0) for np in nprods])
-                        print()
                         Zrem, Arem = 2, 4
                     else:
-                        print(f'No suitable isomer found for remnant ({Zrem:2d}, {Arem:2d})')
+                        logger.debug('No suitable isomer found for remnant (%2d, %2d)', Zrem, Arem)
                 
                 # Largest fragment is not one of the small ones
                 if np.any([(mr[0] == Zrem) and (mr[1] == Arem) for mr in mrates_large]):
@@ -530,7 +536,7 @@ def fix_dead_end(product, rate):
     prodid = get_nucid(product)
     if prodid in decaydata:
         if len(decaydata[prodid]['channels']) > 1:
-            print('Number of possible channels larger than one. Please choose a suitable selection method.')
+            logger.debug('Number of possible channels larger than one. Please choose a suitable selection method.')
             return None
 
         additional = get_ZA(decaydata[prodid]['channels'][0][1])
@@ -1348,7 +1354,7 @@ class InteractionCore():
             main_products = list(zip(nuc_branches[:, 0], nuc_branches[:, 1]))
 
             if np.any([prod not in self.species for prod in main_products]):
-                print(f'For nucleus {mom} some products were not found.')
+                logger.debug('For nucleus %s some products were not found.', mom)
 
             # Fix the channels with dead ends
             # if np.any([prod not in self.species for prod in main_products]):
@@ -1366,7 +1372,7 @@ class InteractionCore():
             try:
                 i = self.species.index(mom)
             except:
-                print('problem with nucleus', self.species[i], ': present in branchings but not in nuclei.')
+                logger.debug('problem with nucleus %s: present in branchings but not in nuclei.', mom)
                 continue
 
             for branch in nuc_branches:
@@ -1374,7 +1380,7 @@ class InteractionCore():
                     j = self.species.index(tuple(branch[:2]))
                     tensor[i, j, :] += branch[2:]
                 except:
-                    print('problem in tensor with product', branch[:2], 'of nucleus', self.species[i])
+                    logger.debug('problem in tensor with product %s of nucleus %s', branch[:2], mom)
                     continue
 
         tensor -= np.stack([np.diag(row) for row in tensor.sum(axis=1).T], axis=2)
@@ -1407,7 +1413,7 @@ class InteractionCore():
                         j = self.species.index(tuple(branch[:2]))
                         ly_matrices[i, j, :] += branch[2:]
                     except:
-                        print('problem with product', branch[:2], 'of nucleus', self.species[i])
+                        logger.debug('problem with product %s of nucleus %s', branch[:2], mom)
                         continue
             ly_all_mats.append( ly_matrices )
 
@@ -1657,7 +1663,7 @@ class InteractionCore():
                     continue
                 outcomes = resolved(product)
                 if outcomes is None:
-                    print(f'No decay path found for product {product}; channel left as is.')
+                    logger.debug('No decay path found for product %s; channel left as is.', product)
                     new_rows.append(row)
                     continue
                 for frac, remnant, counts in outcomes:
