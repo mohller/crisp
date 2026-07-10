@@ -145,9 +145,18 @@ def interaction_rate_from_cross_section(energies, A, ng, eg, cs):
     return rates
 
 
-def compute_rates(pdensity, pgrid, eweighted_xsec, egrid, boostgrid=None):
+def compute_rates(pdensity, pgrid, eweighted_xsec, egrid, boostgrid=None,
+                  common_bounds=(-9, 9), N=3001):
     """Computes interaction rates from a table of energy weighted cross sections
     and a function giving the photon densities.
+
+    Implements the isotropic-field rate as a single log-space convolution of
+    the photon energy density with the energy-weighted cross section
+    g(y) = (2/y^2) int_0^y y' sigma(y') dy', evaluated for the whole boost
+    grid and all cross-section rows at once (one FFT per call). Above the
+    tabulated sigma support the inner integral saturates, so g continues
+    analytically as g(y_max) (y_max / y)^2 — without this tail the rates are
+    underestimated at boosts where 2 Gamma eps_peak exceeds the sigma range.
 
     Arguments
     ---------
@@ -155,6 +164,10 @@ def compute_rates(pdensity, pgrid, eweighted_xsec, egrid, boostgrid=None):
     pgrid : photon energy grid in eV
     eweighted_xsec : energy weighted cross section table in mb
     egrid : energy grid in MeV for the energy weighted cross section table
+    boostgrid : Lorentz factors at which to evaluate the rates
+    common_bounds : log10 range in eV of the internal grid (must cover the
+                    photon field support and the sigma support egrid*1e6)
+    N : number of points of the internal grid
 
     Returns
     -------
@@ -164,15 +177,22 @@ def compute_rates(pdensity, pgrid, eweighted_xsec, egrid, boostgrid=None):
     from scipy.signal import fftconvolve
     from scipy.interpolate import interp1d
 
-    N = 3001
-    common_grid = np.logspace(-9, 9, N) # in eV
+    common_grid = np.logspace(*common_bounds, N) # in eV
     t = np.log(common_grid)
     dt = np.diff(t)[0]
     conv_grid = np.linspace(t[0]-t[-1], t[-1]-t[0], 2*N-1)
 
     photon_edens = np.interp(common_grid, pgrid, (pgrid * pdensity(pgrid)), left=0, right=0)
 
+    eweighted_xsec = np.atleast_2d(eweighted_xsec)
     ewxsec_interp = interp1d(egrid * 1e6, eweighted_xsec, bounds_error=False, fill_value=0)(common_grid)
+
+    # analytic continuation above the sigma support: the inner integral has
+    # saturated, so the energy-weighted cross section falls as 1/y^2
+    ymax = egrid[-1] * 1e6
+    tail = common_grid > ymax
+    ewxsec_interp[:, tail] = eweighted_xsec[:, -1:] * (ymax / common_grid[tail])**2
+
     ewxsec_interp *= u.mbarn.to('cm^2')
 
     inter_rates = fftconvolve(np.repeat(np.atleast_2d(photon_edens), len(eweighted_xsec), axis=0),
