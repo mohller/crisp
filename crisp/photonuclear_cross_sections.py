@@ -47,6 +47,10 @@ def get_particle_numbers(channel):
 daughters = [(2, 4), (2, 3), (1, 3), (1, 2), (1, 1), (0, 1)]
 
 class Cross_Section_Model():
+    # kind of interaction the model describes; photomeson models override this
+    # so Model_Rack and InteractionCore can tell the groups apart
+    interaction_type = 'photodisintegration'
+
     def __init__(self, *args, **kwargs):
         if 'erange' not in kwargs:
             self.erange = (10, 140) # in MeV
@@ -592,7 +596,53 @@ class CRPropa_model(Cross_Section_Model):
         return np.where(np.logical_and(self.erange[0] <= eps, eps < self.erange[1]), np.interp(eps, self.eps, xs), np.zeros_like(eps))
 
 
+def load_astrophomes(model='SingleParticleModel', path=None, auto_download=True,
+                     **model_kwargs):
+    """Load a photomeson model class from the AstroPhoMes repository.
+
+    Resolves the repository through crisp.data_download.get_astrophomes_path
+    (ASTROPHOMES_PATH environment variable, explicit path, local cache, or
+    GitHub download), performs the repository's import dance (its modules do
+    ``from config import *``), and returns an instance of the requested model,
+    ready for the Photomeson wrapper:
+
+        xspm = Photomeson(pmm=load_astrophomes(), filter_nuclei=...)
+
+    Arguments:
+    ----------
+    model : name of the model class in photomeson_lib.photomeson_models
+            (e.g. 'SingleParticleModel', default).
+    path : optional explicit repository path (else resolved as above).
+    auto_download : download from GitHub when not found locally.
+    **model_kwargs : forwarded to the model constructor.
+    """
+    import sys
+    import importlib
+    import importlib.util
+    from .data_download import get_astrophomes_path
+
+    repo = get_astrophomes_path(destination=path, auto_download=auto_download)
+
+    # register the repository's config.py under the (generic) name its
+    # internal `from config import *` expects, without leaving resolution
+    # to whatever else sys.path might contain
+    if 'config' not in sys.modules or not getattr(
+            sys.modules['config'], '__file__', '').startswith(str(repo)):
+        spec = importlib.util.spec_from_file_location(
+            'config', os.path.join(repo, 'config.py'))
+        module = importlib.util.module_from_spec(spec)
+        sys.modules['config'] = module
+        spec.loader.exec_module(module)
+
+    if repo not in sys.path:
+        sys.path.insert(0, repo)
+
+    photomeson_models = importlib.import_module('photomeson_lib.photomeson_models')
+    return getattr(photomeson_models, model)(**model_kwargs)
+
+
 class Photomeson(Cross_Section_Model):
+    interaction_type = 'photomeson'
 
     def __init__(self, *args, pmm=None, **kwargs):
         """Class to couple photomeson models.
@@ -606,12 +656,29 @@ class Photomeson(Cross_Section_Model):
             kwargs['erange'] = (140, 1e9) # in MeV
 
         Cross_Section_Model.__init__(self, *args, **kwargs)
-        
+
         self.pmm = pmm
 
         self.nuclei = [id2nuc(nid) for nid in self.pmm.nonel_idcs if self.filter_nuclei(id2nuc(nid))]
-        self.channels = [[id2nuc(pid) for nid, pid in self.pmm.incl_idcs if (nid == mid) and self.filter_nuclei(id2nuc(pid))]
-                         for mid in self.pmm.nonel_idcs if self.filter_nuclei(id2nuc(mid))]
+
+        # channels list EVERY inclusive daughter of the model: filter_nuclei
+        # restricts only which mothers are tracked. Daughters that are not
+        # tracked species are resolved by the interaction core at construction
+        # (nuclear decay chains), like the photodisintegration models' raw
+        # remnants — dropping them here would lose the interaction from this
+        # model's accounting while cross_section still answers for the pair.
+        self.channels = []
+        for Z, A in self.nuclei:
+            if A == 2:
+                # AstroPhoMes has no inclusive deuteron data (nonel only):
+                # a single breakup channel gamma + d -> p + n (+ pion)
+                self.channels.append([(1, 1)])
+                continue
+            daughters = []
+            for nid, pid in self.pmm.incl_idcs:
+                if nid == nuc2id(Z, A) and id2nuc(pid) not in daughters:
+                    daughters.append(id2nuc(pid))
+            self.channels.append(daughters)
 
     def cross_section(self, eps, Z, A, nloss=None, rem=None):
         """The cross section adapted to the photomeson model.
@@ -622,8 +689,11 @@ class Photomeson(Cross_Section_Model):
         csec = np.zeros_like(eps)
 
         if A == 2:
-            csec = 1e-3 * np.interp(1e-3*eps, *self.pmm.cs_nonel(nuc2id(Z, A)))
-            return csec
+            # nonel total carried by the single (1, 1) channel; zero for any
+            # other requested remnant (a rack sums members per channel)
+            if rem is None or tuple(rem) == (1, 1) or nloss == 1:
+                csec = 1e-3 * np.interp(1e-3*eps, *self.pmm.cs_nonel(nuc2id(Z, A)))
+            return np.where(np.logical_and(self.erange[0] <= eps, eps < self.erange[1]), csec, np.zeros_like(eps))
 
         if (nloss is None) and (rem is None):
             csec = 1e-3 * np.interp(1e-3*eps, *self.pmm.cs_nonel(nuc2id(Z, A)))
@@ -638,34 +708,115 @@ class Photomeson(Cross_Section_Model):
         return np.where(np.logical_and(self.erange[0] <= eps, eps < self.erange[1]), csec, np.zeros_like(eps))
 
 
+class Photomeson_Superposition(Cross_Section_Model):
+    """Superposition photomeson model: every nucleon interacts independently,
+    sigma_A = Z sigma_p + N sigma_n (p ~ n), using the parametric photomeson
+    cross section (cs_photomeson, which also applies the universal-function
+    refinement for nuclei in the resonance region).
+
+    Each interaction ejects the struck nucleon, so every nucleus has a single
+    channel to the mass A-1 remnant (mapped onto the supplied nuclide table by
+    Cross_Section_Model._mapped_remnant, like the photodisintegration
+    single-nucleon channel). Drop it into a Model_Rack next to the
+    photodisintegration models:
+
+        Model_Rack(models=(pdis_model, Photomeson_Superposition(pdis_model.nuclei)))
+
+    A=1 is excluded from the tracked nuclei (free nucleons are appended to the
+    species separately and handled by the photomeson_rates_pn hook), but
+    cross_section remains callable with (Z, A) = (1, 1) or (0, 1) for that hook.
+    """
+    interaction_type = 'photomeson'
+
+    def __init__(self, nuclei, *args, **kwargs):
+        """
+        Arguments:
+        ----------
+        nuclei : nuclide list (Z, A) the model should cover, typically the
+                 photodisintegration model's; A=1 entries are ignored.
+        """
+        if 'erange' not in kwargs:
+            kwargs['erange'] = (145, 1e7)  # in MeV
+        Cross_Section_Model.__init__(self, *args, **kwargs)
+
+        self.nuclei = [(int(Z), int(A)) for Z, A in nuclei
+                       if A > 1 and self.filter_nuclei((Z, A))]
+
+        self.channels = []
+        for Z, A in self.nuclei:
+            remnant = self._mapped_remnant(Z, A, 1)
+            self.channels.append([remnant] if remnant is not None else [])
+
+    def cross_section(self, eps, Z, A, nloss=None, rem=None):
+        """Superposition photomeson cross section in mb; eps in MeV.
+
+        When asked for a specific remnant (rem=) or nucleon loss (nloss=),
+        only this model's own channel (the mapped A-1 remnant) answers;
+        other remnants get zero — essential inside a Model_Rack, whose
+        cross_section sums the models for every requested channel.
+        """
+        eps = np.asarray(eps, dtype=float)
+
+        if rem is not None or nloss is not None:
+            if (Z, A) not in self.nuclei:
+                return np.zeros_like(eps)
+            own = self.channels[self.nuclei.index((Z, A))]
+            asked = tuple(rem) if rem is not None else self._mapped_remnant(Z, A, nloss)
+            if not own or asked != tuple(own[0]):
+                return np.zeros_like(eps)
+
+        csec = 1e27 * cs_photomeson(eps * 1e-3, A)   # cm2 -> mb
+        return np.where(np.logical_and(self.erange[0] <= eps, eps < self.erange[1]),
+                        csec, np.zeros_like(eps))
+
+    def total_cross_section(self, eps, Z, A):
+        return self.cross_section(eps, Z, A)
+
+
 class Model_Rack(Cross_Section_Model):
-    """A model holder that yields values from different models depending 
-    on the nuclear species"""
+    """A model holder that joins the cross sections of different models
+    (photodisintegration and photomeson alike) into one interface."""
     def __init__(self, models=None, **kwargs):
         """Populates the model set
 
         Arguments:
         ----------
-        models: list of models to be used. 
-        
-        
-        **Note**: The models are checked in the ordered given and if they contain 
-        the requested species, then their corresponding cross section is given.
+        models: list of models to be used.
+
+        The rack's nuclei are the union of the models' nuclei, and each
+        nucleus's channels are the union of the remnants over all models
+        containing it (deduplicated, in order of first appearance).
+        cross_section(rem=...) sums the contributions of every model, so a
+        remnant shared between models (e.g. the photodisintegration and
+        photomeson single-nucleon channels) carries the combined rate.
         """
         self.models = models
-        
+
         nuclei = []
         for model in self.models:
             nuclei += model.nuclei
 
         self.nuclei = list(sorted(set(nuclei)))
-        
+
         self.channels = []
         for nuc in self.nuclei:
+            channels = []
             for model in self.models:
                 if nuc in model.nuclei:
-                    self.channels.append(model.channels[model.nuclei.index(nuc)])
-                    break
+                    for remnant in model.channels[model.nuclei.index(nuc)]:
+                        if tuple(remnant) not in channels:
+                            channels.append(tuple(remnant))
+            self.channels.append(channels)
+
+    @property
+    def photodisintegration_models(self):
+        return [m for m in self.models
+                if getattr(m, 'interaction_type', 'photodisintegration') == 'photodisintegration']
+
+    @property
+    def photomeson_models(self):
+        return [m for m in self.models
+                if getattr(m, 'interaction_type', 'photodisintegration') == 'photomeson']
 
     def cross_section(self, eps, Z, A, nloss=None, rem=None):
         csec = np.zeros_like(eps)
@@ -686,12 +837,17 @@ class Model_Rack(Cross_Section_Model):
         return csec
 
 
-def pgamma(eps_r):
-    """Photonuclear cross section in the energy range .1-1e4 GeV
-    taken from Rachen PhD Thesis. 
+def pgamma_components(eps_r):
+    """The proton photomeson cross section of pgamma() decomposed into its
+    physical contributions (Rachen PhD Thesis parametrization):
 
-    Returns the cross section in cm2.
-    """
+        'resonances' : nine baryon resonances (Delta(1232) ... Delta(1950))
+        'direct'     : direct (t-channel) single-pion production
+        'multipion'  : the multi-pion continuum
+
+    Returns a dict of arrays in cm2 on eps_r [GeV]; their sum is pgamma(eps_r).
+    Useful to attribute interaction rates and secondary production by process
+    (cf. Huemmer et al. 2010, ApJ 721, 630)."""
     exp = np.exp
 
     def Qf(eps_r, eps_th, w):
@@ -757,8 +913,19 @@ def pgamma(eps_r):
     mubarn_to_cm2 = 1e-30
     mp = .938
     s = mp**2 + 2*mp*eps_r
-    
-    return mubarn_to_cm2 * (resonances(eps_r) + multipion(eps_r) + direct(eps_r))
+
+    return {'resonances': mubarn_to_cm2 * resonances(eps_r),
+            'direct':     mubarn_to_cm2 * direct(eps_r),
+            'multipion':  mubarn_to_cm2 * multipion(eps_r)}
+
+
+def pgamma(eps_r):
+    """Photonuclear cross section in the energy range .1-1e4 GeV
+    taken from Rachen PhD Thesis.
+
+    Returns the cross section in cm2 (the sum of pgamma_components)."""
+    comps = pgamma_components(eps_r)
+    return comps['resonances'] + comps['direct'] + comps['multipion']
 
 
 def Spread_GDR(A, Z):
@@ -868,8 +1035,10 @@ def cs_photomeson(Evals, A):
     Arguments:
     ----------
 
-    """    
-    cs_grid = pgamma(Evals)
+    """
+    # pgamma is a fit valid in ~0.1-1e4 GeV; outside (notably below threshold)
+    # its exponential pieces produce large negative artifacts -> clip
+    cs_grid = np.clip(pgamma(Evals), 0, None)
 
     if A > 1:
         from pickle import load as pickle_load
@@ -882,7 +1051,8 @@ def cs_photomeson(Evals, A):
         univ_spl = UnivariateSpline._from_tck(tck)
         
         idcs = np.argwhere((.2 < Evals) * (Evals < 1.9))  # selecting resonance regions
-        cs_grid[idcs] = univ_spl(Evals[idcs])  # univ function for nuclei
+        if len(idcs):
+            cs_grid[idcs] = univ_spl(Evals[idcs])  # univ function for nuclei
 
     return A * cs_grid
 
