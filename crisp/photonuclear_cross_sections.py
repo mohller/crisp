@@ -200,51 +200,94 @@ class GDR_atlas(Cross_Section_Model):
                 else:
                     channels = [(Z, A-nloss) for nloss in range(1, 16)]
 
+                # quasi-deuteron channel: gamma + (np pair) -> n + p, remnant
+                # (Z-1, A-2) — the QD strength routes here (charge-correct,
+                # emits one proton and one neutron), not through the GDR
+                # branchings over pure neutron loss
+                qd_rem = (Z - 1, A - 2)
+                if A >= 3 and 0 <= qd_rem[0] <= qd_rem[1] and qd_rem not in channels:
+                    channels.append(qd_rem)
+
                 self.channels.append(channels)
 
     def cross_section(self, eps, Z, A, nloss=None, rem=None, gdr_type='slo'):
-        """Returns the cross section in mb, takes energy eps in MeV
-           Works for individual channels, using the PSB coefficients.
-           !! Not part of the GDR atlas !!
+        """Returns the cross section in mb, takes energy eps in MeV.
+
+        Per channel, following the PSB energy-region structure (!! the
+        branchings are not part of the GDR atlas !!):
+
+        - eps < 30 MeV (the giant dipole proper): the Lorentzian strength
+          goes to the exclusive 1n / 2n channels (0.8 / 0.2), as in PSB's
+          low-energy component — mean mass loss ~1.2 per interaction;
+        - eps >= 30 MeV: the PSB high-energy multiplicity branchings over
+          the neutron-loss channels (mean ~4.3 nucleons for A > 22);
+        - the Levinger quasi-deuteron part is carried at all energies by its
+          physical n + p channel, remnant (Z-1, A-2).
+
+        The channel sum reproduces total_cross_section identically in every
+        energy region.
         """
-        if nloss is None:
-            if rem is not None:
+        if nloss is None and rem is None:
+            return self.total_cross_section(eps, Z, A, gdr_type=gdr_type)
+
+        eps = np.asarray(eps, dtype=float)
+        csec = np.zeros_like(eps)
+
+        if rem is not None:
+            if tuple(rem) == (Z - 1, A - 2):
+                csec = csec + self.quasi_deuteron_cross_section(eps, Z, A)
+            if rem[0] == Z:
                 nloss = A - rem[1]
+
+        if nloss is not None and 1 <= nloss <= 15:
+            # branchings as in PSB (the >= 30 MeV multiplicity table)
+            branchings = np.array([
+                [.8,  .2,  0,   0,   0,    0,   0,    0,   0,    0,   0,    0,    0,    0,   0],
+                [1.,   0,  0,   0,   0,    0,   0,    0,   0,    0,   0,    0,    0,    0,   0],
+                [.1,  .3, .1,  .1,  .2,   .2,   0,    0,   0,    0,   0,    0,    0,    0,   0],
+                [.1, .35, .1, .05, .15, .045, .04, .035, .03, .025, .02, .018, .015, .012, .01]
+            ])
+            # GDR region: exclusive 1n / 2n as in PSB's low-energy component
+            gdr_row = branchings[0]
+
+            if A in [3, 4]:
+                f_lo, f_hi = branchings[0, nloss - 1], branchings[0, nloss - 1]
+            elif A in [2, 9]:
+                f_lo, f_hi = branchings[1, nloss - 1], branchings[1, nloss - 1]
+            elif A in range(10, 23):
+                f_lo, f_hi = gdr_row[nloss - 1], branchings[2, nloss - 1]
+            elif A > 22:
+                f_lo, f_hi = gdr_row[nloss - 1], branchings[3, nloss - 1]
             else:
-                return self.total_cross_section(eps, Z, A, gdr_type=gdr_type)
+                f_lo, f_hi = 0.0, 0.0
 
-        # branchings as in PSB
-        branchings = np.array([
-            [.8,  .2,  0,   0,   0,    0,   0,    0,   0,    0,   0,    0,    0,    0,   0],
-            [1.,   0,  0,   0,   0,    0,   0,    0,   0,    0,   0,    0,    0,    0,   0],
-            [.1,  .3, .1,  .1,  .2,   .2,   0,    0,   0,    0,   0,    0,    0,    0,   0],
-            [.1, .35, .1, .05, .15, .045, .04, .035, .03, .025, .02, .018, .015, .012, .01]
-        ])
-
-        if A in [3, 4]:
-            f_i = branchings[0, nloss - 1]
-        elif A in [2, 9]:
-            f_i = branchings[1, nloss - 1]
-        elif A in range(10, 23):
-            f_i = branchings[2, nloss - 1]
-        elif A > 22:
-            f_i = branchings[3, nloss - 1]
-
-        csec = self.total_cross_section(eps, Z, A, gdr_type=gdr_type) * f_i
+            f_i = np.where(eps < 30.0, f_lo, f_hi)
+            csec = csec + self.gdr_cross_section(eps, Z, A, gdr_type=gdr_type) * f_i
 
         return np.where(np.logical_and(self.erange[0] <= eps, eps < self.erange[1]), csec, np.zeros_like(eps))
 
-    def total_cross_section(self, eps, Z, A, gdr_type='slo'):
-        """Cross section computed as the sum of all the exclusive cross sections
-        of the channels of the given nucleus (Z, A)
+    def quasi_deuteron_cross_section(self, eps, Z, A):
+        """Levinger quasi-deuteron cross section [mb], eps in MeV — the same
+        formula for every nucleus:
+
+            sigma_QD = L (N Z / A) sigma_d(eps) f(eps),   L = 6.5
+
+        with the free-deuteron sigma_d = 61.2 (eps - 2.224)^(3/2) / eps^3 mb
+        and the Pauli-blocking factor f of Chadwick et al., PRC 44, 814
+        (1991) (polynomial for 20-140 MeV, exponential branches outside).
+        Unwindowed — callers apply self.erange.
         """
+        eps = np.asarray(eps, dtype=float)
         phi = np.where(eps < 140, np.where(eps < 20, np.exp(-73.3 / eps),
                       np.polyval([9.3537e-9, -3.4762e-6, 4.1222e-4, -9.8343e-3, 8.3714e-2], eps)),
                       np.exp(-24.2 / eps))
 
-        sgm_QD = 397.8 * Z * (A - Z) / A * phi * \
-                 (np.sqrt(eps - 2.224, where=eps >= 2.224, out=np.zeros_like(eps)) / eps)**3
+        return 397.8 * Z * (A - Z) / A * phi * \
+            (np.sqrt(eps - 2.224, where=eps >= 2.224, out=np.zeros_like(eps)) / eps)**3
 
+    def gdr_cross_section(self, eps, Z, A, gdr_type='slo'):
+        """The giant-dipole (Lorentzian, atlas-parametrized) part of the cross
+        section [mb], eps in MeV. Unwindowed — callers apply self.erange."""
         F_SLO = lambda G, E: 2 / np.pi * eps**2 * G / ((eps**2 - E**2)**2 + (eps*G)**2) if G and E else np.zeros_like(eps)
         F_SMLO = lambda G, E: 2 / np.pi * eps**2 * (G/E*eps) / ((eps**2 - E**2)**2 + (eps*(G/E*eps))**2) if G and E else np.zeros_like(eps)
 
@@ -260,7 +303,15 @@ class GDR_atlas(Cross_Section_Model):
             sgm_GDR = sgm_GDR_fun(params['S1'].values, F_SMLO(*params[['Wr1', 'Er1']].values.flatten()),
                                   params['S2'].values, F_SMLO(*params[['Wr2', 'E2']].values.flatten()))
 
-        csec = np.nan_to_num(sgm_GDR) + sgm_QD
+        return np.nan_to_num(sgm_GDR)
+
+    def total_cross_section(self, eps, Z, A, gdr_type='slo'):
+        """Total photodisintegration cross section [mb], eps in MeV: the GDR
+        Lorentzians plus the Levinger quasi-deuteron term (which the channel
+        sum reproduces identically: GDR x branchings + the (Z-1, A-2) QD
+        channel)."""
+        csec = self.gdr_cross_section(eps, Z, A, gdr_type=gdr_type) \
+            + self.quasi_deuteron_cross_section(eps, Z, A)
 
         return np.where(np.logical_and(self.erange[0] <= eps, eps < self.erange[1]), csec, np.zeros_like(eps))
 
