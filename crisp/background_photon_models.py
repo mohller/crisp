@@ -1,4 +1,5 @@
 from pickle import load
+import numpy as np
 from numpy import pi, expm1, array, vectorize, logspace, log, log10, loadtxt, newaxis, minimum
 from numpy import trapezoid
 from scipy.constants import h, c, electron_volt, Boltzmann
@@ -58,6 +59,76 @@ def target_photons_spectrum(Emin=1e-6, Emax=1e-4, Ebr=1e-3, si1=1, si2=2, normal
     A = norm / Fluence_integral  # renormalizing the spectrum
 
     return vectorize(spectrum)
+
+
+def _normalized_spectrum(shape, Emin, Emax, normal):
+    """Window a spectral shape to [Emin, Emax] and normalize the energy
+    integral: with normal = ((e1, e2), u), int_e1^e2 E n(E) dE = u
+    [GeV / cm^3]. Shared by the GRB prompt-spectrum builders below."""
+    def windowed(e):
+        e = np.asarray(e, dtype=float)
+        return np.where((e >= Emin) & (e <= Emax), shape(np.clip(e, Emin, Emax)), 0.0)
+
+    if normal is None:
+        return windowed
+    (e1, e2), u = normal
+    egrid = logspace(log10(e1), log10(e2), 4000)
+    A = u / trapezoid(egrid * windowed(egrid), egrid)
+    return lambda e: A * windowed(e)
+
+
+def band_photon_spectrum(E_peak, alpha=-1.1, beta=-2.2, Emin=1e-9, Emax=1e-2,
+                         E0=1e-6, normal=None):
+    """Band photon spectrum of GRB prompt emission (Band et al. 1993), in the
+    form of De Lia & Tamborra 2024 (JCAP 10, 054), Eq. (2.3); energies in GeV:
+
+        n(E) = C (E/E0)^alpha exp[-(alpha+2) E / E_peak]          E <= E_c
+               C (E/E0)^beta  e^(beta-alpha) (E_c/E0)^(alpha-beta)  E > E_c
+
+    with the transition energy E_c = (alpha - beta)/(alpha + 2) E_peak (the
+    two branches are continuous there). Fermi-motivated defaults
+    alpha = -1.1, beta = -2.2.
+
+    Arguments:
+    ----------
+    E_peak : comoving peak energy [GeV]
+    alpha, beta : low/high spectral indices (beta < alpha < -... typical)
+    Emin, Emax : support of the spectrum [GeV]
+    E0     : reference energy of the power laws [GeV]
+    normal : ((e1, e2), u) — normalize int E n dE over (e1, e2) to u
+             [GeV/cm^3], as in target_photons_spectrum
+
+    Returns callable e[GeV] -> n(e) [GeV^-1 cm^-3 up to normalization].
+    """
+    E_c = (alpha - beta) / (alpha + 2.0) * E_peak
+
+    def shape(e):
+        lo = (e / E0)**alpha * np.exp(-(alpha + 2.0) * e / E_peak)
+        hi = (e / E0)**beta * np.exp(beta - alpha) * (E_c / E0)**(alpha - beta)
+        return np.where(e <= E_c, lo, hi)
+
+    return _normalized_spectrum(shape, Emin, Emax, normal)
+
+
+def fastcooling_photon_spectrum(E_c, E_peak, index_hi=2.1, Emin=1e-9, Emax=1e-2,
+                                normal=None):
+    """Fast-cooling synchrotron / self-Compton photon spectrum — the joint
+    broken power law of De Lia & Tamborra 2024, Eq. (2.5); energies in GeV:
+
+        n(E) = C (E/E_c)^(-2/3)                                E <= E_c
+               C (E/E_c)^(-3/2)                        E_c  <= E <= E_peak
+               C (E_peak/E_c)^(-3/2) (E/E_peak)^(-index_hi)     E > E_peak
+
+    (continuous at both breaks by construction). index_hi = (k + 2)/2 with k
+    the accelerated-particle index. Normalization as in band_photon_spectrum.
+    """
+    def shape(e):
+        seg1 = (e / E_c)**(-2 / 3)
+        seg2 = (e / E_c)**(-3 / 2)
+        seg3 = (E_peak / E_c)**(-3 / 2) * (e / E_peak)**(-index_hi)
+        return np.where(e <= E_c, seg1, np.where(e <= E_peak, seg2, seg3))
+
+    return _normalized_spectrum(shape, Emin, Emax, normal)
 
 
 def black_body_spectral_radiance(T, erange):
