@@ -56,10 +56,20 @@ def rel_diff(a, b):
     return np.abs(np.asarray(a) - np.asarray(b)).max() / max(np.abs(b).max(), 1e-300)
 
 def static_imbalance(core):
-    """(A, Z) conservation imbalance of tensor + light_prod_tensor, relative."""
+    """(A, Z) conservation imbalance of tensor + light_prod_tensor, relative.
+
+    Photomeson-ejected nucleons are budgeted in core.photomeson_ejecta (their
+    spectral placement lives in the recoil kernel) — the budget closes the
+    static balance of the boost-preserving matrices."""
     A_sp = np.array([s[1] for s in core.species], float)
     Z_sp = np.array([s[0] for s in core.species], float)
     scale = np.abs(core.tensor).max()
+    ej = getattr(core, 'photomeson_ejecta', None)
+    if ej is not None:
+        for ni, nuc in enumerate(core.nuclei):
+            si = core.species.index(tuple(nuc))
+            imbA[si] += ej['p'][ni] + ej['n'][ni]
+            imbZ[si] += ej['p'][ni]
     imbA = (np.einsum('j,ijb->ib', A_sp, core.tensor)
             + np.einsum('l,lijb->ib', A_LIGHT, core.light_prod_tensor))
     imbZ = (np.einsum('j,ijb->ib', Z_sp, core.tensor)
