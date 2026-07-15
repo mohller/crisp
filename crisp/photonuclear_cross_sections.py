@@ -648,7 +648,7 @@ class CRPropa_model(Cross_Section_Model):
 
 
 def load_astrophomes(model='SingleParticleModel', path=None, auto_download=True,
-                     **model_kwargs):
+                     channels=None, **model_kwargs):
     """Load a photomeson model class from the AstroPhoMes repository.
 
     Resolves the repository through crisp.data_download.get_astrophomes_path
@@ -662,9 +662,30 @@ def load_astrophomes(model='SingleParticleModel', path=None, auto_download=True,
     Arguments:
     ----------
     model : name of the model class in photomeson_lib.photomeson_models
-            (e.g. 'SingleParticleModel', default).
+            (e.g. 'SingleParticleModel', default; 'EmpiricalModel' for the
+            improved mass scalings of Morejon et al. 2019).
     path : optional explicit repository path (else resolved as above).
     auto_download : download from GitHub when not found locally.
+    channels : None keeps the model's own channel (multiplicity) table.
+            'superposition' returns a hybrid: the requested model's CROSS
+            SECTIONS (total and inclusive pions) with the SingleParticleModel
+            A-1 channel structure — exclusive single-nucleon-loss channels
+            compatible with the interaction core's per-channel conservation
+            accounting. The EmpiricalModel's genuine table is INCLUSIVE
+            (total multiplicity ~4 for Fe-56) and would overcount the
+            destruction rate if fed to the core as exclusive branches.
+            The hybrid also clips the (slightly negative) threshold artifact
+            of the EmpiricalModel universal-function total cross section.
+            'empirical' keeps the model's full fragment physics as exclusive
+            channels the core can consume: one channel per RESIDUAL nucleus
+            (the single heavy survivor per event, A_res >= max(2,
+            ceil(A/2)); light fragments A <= 4 are excluded as channels and
+            enter through the core's per-channel Delta Z / Delta N ejecta
+            budget instead — deuterons and helium flattened to nucleons),
+            with the residual weights renormalized to exactly one event so
+            the summed channel rate equals the total. This carries the
+            Morejon et al. (2019) mean mass loss (<Delta A> ~ 5.8 for
+            Fe-56) instead of the superposition skeleton's Delta A = 1.
     **model_kwargs : forwarded to the model constructor.
     """
     import sys
@@ -689,7 +710,60 @@ def load_astrophomes(model='SingleParticleModel', path=None, auto_download=True,
         sys.path.insert(0, repo)
 
     photomeson_models = importlib.import_module('photomeson_lib.photomeson_models')
-    return getattr(photomeson_models, model)(**model_kwargs)
+    cls = getattr(photomeson_models, model)
+
+    if channels == 'superposition':
+        base_cs_nonel = cls.cs_nonel
+
+        def cs_nonel_clipped(self, species):
+            egrid, cgrid = base_cs_nonel(self, species)
+            return egrid, np.clip(cgrid, 0.0, None)
+
+        cls = type(model + '_A1Channels', (cls,), {
+            '_fill_multiplicity':
+                photomeson_models.SingleParticleModel._fill_multiplicity,
+            'cs_nonel': cs_nonel_clipped,
+        })
+    elif channels == 'empirical':
+        base_cs_nonel = cls.cs_nonel
+        base_init = cls.__init__
+
+        def cs_nonel_clipped(self, species):
+            egrid, cgrid = base_cs_nonel(self, species)
+            return egrid, np.clip(cgrid, 0.0, None)
+
+        def init_residual(self, *a, **kw):
+            base_init(self, *a, **kw)
+            # residual-system channels: one heavy survivor per event; the
+            # light fragments (A <= 4) are not channels — they flow through
+            # the core's ejecta budget via each channel's Delta Z / Delta N
+            keep = []
+            for (m, prod) in self.incl_idcs:
+                A_m, A_p = m // 100, prod // 100
+                if A_m > A_p >= max(2, (A_m + 1) // 2):
+                    keep.append((m, prod))
+            # trim negligible residual cells (< 1e-3 of an event) before
+            # renormalizing — fidelity loss < 0.1%, rack size ~x5 smaller
+            keep = [k for k in keep
+                    if float(np.asarray(self.multiplicity[k])) >= 1e-3]
+            weight_sum = {}
+            for (m, prod) in keep:
+                w = float(np.asarray(self.multiplicity[(m, prod)]))
+                weight_sum[m] = weight_sum.get(m, 0.0) + w
+            for (m, prod) in keep:
+                if weight_sum[m] > 0:
+                    self.multiplicity[(m, prod)] = \
+                        np.asarray(self.multiplicity[(m, prod)]) / weight_sum[m]
+            self.incl_idcs = [k for k in keep if weight_sum[k[0]] > 0]
+
+        cls = type(model + '_ResidualChannels', (cls,), {
+            '__init__': init_residual,
+            'cs_nonel': cs_nonel_clipped,
+        })
+    elif channels is not None:
+        raise ValueError("channels must be None, 'superposition' or 'empirical'")
+
+    return cls(**model_kwargs)
 
 
 class Photomeson(Cross_Section_Model):
