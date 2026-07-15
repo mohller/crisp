@@ -148,6 +148,18 @@ class UHECRSourceModel(ABC):
             else:
                 self._inputs[key] = value * schema.unit
 
+        # inputs declared in another frame (frames={'name': 'observer', ...})
+        # are converted to each parameter's native frame before any derived
+        # property is computed — an explicit declaration instead of a
+        # silent per-class convention
+        for key, frm in input_frames.items():
+            if key not in self._inputs:
+                raise ValueError(f"frames= given for '{key}' but the "
+                                 "parameter was not provided")
+            schema = self._SCHEMA_MAP[key]
+            self._inputs[key] = self._inputs[key] * self._frame_factor(
+                schema.kind, frm, schema.native_frame, name=key)
+
         self._computed_properties: Dict[str, pint.Quantity] = {}
         self._symbolic_expressions: Dict[str, sp.Expr] = {}
         self._evaluation_mappings: Dict[str, Dict[sp.Symbol, pint.Quantity]] = {}
