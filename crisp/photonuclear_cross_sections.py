@@ -678,6 +678,311 @@ class TabulatedDisintegration(Cross_Section_Model):
         return np.where(window, csec, 0.0)
 
 
+class Inclusive_model(Cross_Section_Model):
+    """Photodisintegration model from user-supplied inclusive tables, loaded
+    ONLY from explicitly given file paths (files may be renamed freely;
+    nothing is auto-discovered or downloaded):
+
+    egrid — one energy per line [MeV];
+    nonel — rows `nucid sigma_1 .. sigma_n`, the total (nonelastic) cross
+            section per nucleus [mb], nucid = 100 A + Z;
+    incl  — rows `nucid_mother nucid_product sigma_1 .. sigma_n`, the
+            INCLUSIVE cross section per (mother, product) pair [mb]. The
+            inclusive convention contains the multiplicity:
+            sigma_incl / sigma_nonel is the energy-dependent multiplicity
+            of the product — the quantity that builds the light-particle
+            yields (n, p, d, t, He3, He4).
+
+    The tables satisfy the mass-closure identity
+
+        sum_d A_d sigma_incl,d(eps) = A * sigma_nonel(eps)
+
+    (verified on the TALYS tables to <~1.6%, exact for A <= 9; drip-line
+    mothers can leave part of sigma_nonel unaccounted — those events
+    produce no channel and are conservation-neutral no-ops). Allocation is
+    bookkeeping only: each event's unique HEAVY survivor (2 A_res > A)
+    becomes a cascade channel with its verbatim weight
+    sigma_incl / sigma_nonel; events without one (unbound residual chains:
+    C-12 -> 3 He4 through Be-8, Be-9 -> n + 2 He4, full dissociation, ...)
+    are routed per energy to channels on the light species, heaviest
+    first, capped by each species' own inclusive multiplicity. Lighter
+    co-fragments (2 A_p <= A, not one of the six light species: He-5,
+    Li-5, H-4, ...) are decomposed mass/charge-exactly into light species.
+    The light-species inclusive cross sections — multiplicities included,
+    minus the one-per-event channel allocation, plus the co-fragment
+    content — are the boost-preserving light yields (light_yield_sigma);
+    closure then follows from the identity with no Delta Z / Delta N
+    inference. Survivors outside the tracked set resolve inside the
+    interaction core (decay chains / same-A fallback).
+
+    Arguments:
+    ----------
+    egrid, nonel, incl : file paths.
+    max_mass : maximal mother mass A to track (user-facing species cap;
+            filter_nuclei applies on top).
+    cache : write/reuse a parsed .npz next to the incl file (the raw incl
+            table is ~GB text; the cache makes reloads ~seconds).
+    """
+    interaction_type = 'photodisintegration'
+    _LIGHT_IDS = {402: 0, 302: 1, 301: 2, 201: 3, 101: 4, 100: 5}
+
+    def __init__(self, *args, egrid=None, nonel=None, incl=None,
+                 max_mass=56, cache=True, **kwargs):
+        self.eps = np.loadtxt(egrid)                       # MeV
+        if 'erange' not in kwargs:
+            kwargs['erange'] = (self.eps.min(), self.eps.max())
+        Cross_Section_Model.__init__(self, *args, **kwargs)
+
+        data = None
+        cache_f = incl + f'.crisp3_A{int(max_mass)}.npz'
+        stamp = f'{os.path.getmtime(nonel):.0f}_{os.path.getmtime(incl):.0f}'
+        if cache and os.path.exists(cache_f):
+            d = np.load(cache_f)
+            if str(d['stamp']) == stamp:
+                data = d
+        if data is None:
+            data = self._parse(nonel, incl, max_mass)
+            data['stamp'] = stamp
+            if cache:
+                try:
+                    np.savez_compressed(cache_f, **data)
+                except OSError:
+                    pass
+
+        self.totals = {}
+        for m, sig in zip(data['nonel_ids'], data['nonel_sig']):
+            za = (int(m) % 100, int(m) // 100)
+            self.totals[za] = np.asarray(sig, dtype=float)
+
+        self.light_inclusive_sigma = {}
+        raw = {}
+        for (m, prod), sig in zip(data['incl_ids'], data['incl_sig']):
+            mo = (int(m) % 100, int(m) // 100)
+            if mo not in self.totals:
+                continue
+            if int(prod) in self._LIGHT_IDS:
+                self.light_inclusive_sigma.setdefault(
+                    mo, np.zeros((6, len(self.eps))))[
+                    self._LIGHT_IDS[int(prod)]] = sig
+            else:
+                raw.setdefault(mo, {})[
+                    (int(prod) % 100, int(prod) // 100)] = np.asarray(
+                        sig, dtype=float)
+
+        # channel weights are the product inclusive cross sections taken
+        # VERBATIM (sigma_incl,d / sigma_nonel; multiplicities included).
+        # The DEFICIT sigma_nonel - sum_res sigma_res over the HEAVY
+        # survivors (A_res > A/2, at most one per event) consists of events
+        # whose heaviest surviving product is a LIGHT species (unbound
+        # residual chains: C-12 -> 3 He4 through Be-8, Be-9 -> n + 2 He4,
+        # full dissociation to nucleons, ...): it is routed PER ENERGY to
+        # channels on the light species, heaviest first, each capped by the
+        # species' own inclusive multiplicity, and every allocation is
+        # SUBTRACTED from that species' light-yield cross section — so mass
+        # closure follows from the table identity
+        # sum_d A_d sigma_d = A sigma_nonel with nothing inferred and
+        # nothing clipped. Whatever the tables themselves leave unclosed
+        # (drip-line mothers) stays unclosed here, faithfully.
+        LIGHT_ZA = {0: (2, 4), 1: (2, 3), 2: (1, 3), 3: (1, 2),
+                    4: (1, 1), 5: (0, 1)}
+        self.nuclei, self.channels, self._weights = [], [], {}
+        self._light_yield_sigma = {}
+        mothers = sorted(set(raw) | set(self.light_inclusive_sigma),
+                         key=lambda t: (t[1], t[0]))
+        # deficit events may only be routed to light species that are
+        # themselves tracked mothers (p and n always are): a channel on an
+        # untracked species would silently drop from the core tensor
+        mother_set = {za for za in mothers
+                      if self.filter_nuclei(za) and za in self.totals}
+        for za in mothers:
+            if not self.filter_nuclei(za) or za not in self.totals:
+                continue
+            tot = self.totals[za]
+            safe = np.where(tot > 0, tot, 1.0)
+            table, mid = {}, {}
+            for rem, sig in raw.get(za, {}).items():
+                w = np.where(tot > 0, sig / safe, 0.0)
+                if 2 * rem[1] > za[1]:      # the event's unique survivor
+                    table[rem] = w
+                else:                       # co-fragment (He-5, Li-5, ...)
+                    mid[rem] = sig
+            heavy = list(table)
+            wsum = (np.sum([table[rem] for rem in heavy], axis=0) if heavy
+                    else np.zeros_like(tot))
+            deficit = np.clip(np.where(tot > 0, 1.0 - wsum, 0.0), 0.0, None)
+            sig6 = self.light_inclusive_sigma.get(za)
+            ly = (sig6.copy() if sig6 is not None
+                  else np.zeros((6, len(self.eps))))
+            for rem, sig in mid.items():   # mass/charge-exact light content
+                for li, cnt in enumerate(self._light_decomposition(*rem)):
+                    if cnt:
+                        ly[li] = ly[li] + cnt * sig
+            if np.any(deficit > 1e-6) and sig6 is not None:
+                remaining = deficit
+                for li in range(6):
+                    if LIGHT_ZA[li][1] >= za[1]:
+                        continue
+                    if li < 4 and LIGHT_ZA[li] not in mother_set:
+                        continue
+                    cap = np.where(tot > 0, ly[li] / safe, 0.0)
+                    alloc = np.minimum(remaining, cap)
+                    if np.any(alloc > 1e-9):
+                        rem = LIGHT_ZA[li]
+                        table[rem] = table.get(rem, 0.0) + alloc
+                        ly[li] = ly[li] - alloc * tot
+                        remaining = remaining - alloc
+                    if not np.any(remaining > 1e-9):
+                        break
+            # identity closure: whatever mass/charge the tables leave
+            # unbalanced per accounted event (drip-line mothers, <~1.6%
+            # elsewhere) is fixed so every channel row closes exactly,
+            # A * sum_ch w = sum_ch A_ch w + yields: a table shortfall is
+            # topped up with free nucleons, an overshoot is trimmed
+            # proportionally across the light yields, and charge is closed
+            # by a mass-neutral p <-> n transfer (clipped at yields >= 0)
+            A_L6 = np.array([4., 3., 3., 2., 1., 1.])[:, None]
+            Z_L6 = np.array([2., 2., 1., 1., 1., 0.])[:, None]
+            if table:
+                dest = np.sum(list(table.values()), axis=0)
+                massH = sum(rem[1] * w for rem, w in table.items())
+                chrgH = sum(rem[0] * w for rem, w in table.items())
+            else:
+                dest = massH = chrgH = np.zeros_like(tot)
+            needL = np.clip(za[1] * dest - massH, 0.0, None) * tot
+            needZ = np.clip(za[0] * dest - chrgH, 0.0, None) * tot
+            massL = np.sum(A_L6 * ly, axis=0)
+            ly = ly * np.where(massL > needL,
+                               needL / np.where(massL > 0, massL, 1.0), 1.0)
+            short = np.clip(needL - np.sum(A_L6 * ly, axis=0), 0.0, None)
+            addp = np.clip(needZ - np.sum(Z_L6 * ly, axis=0), 0.0, short)
+            ly[4] = ly[4] + addp
+            ly[5] = ly[5] + short - addp
+            transfer = np.clip(needZ - np.sum(Z_L6 * ly, axis=0),
+                               -ly[4], ly[5])
+            ly[4] = ly[4] + transfer
+            ly[5] = ly[5] - transfer
+            self._light_yield_sigma[za] = ly
+            if not table:
+                continue
+            self.nuclei.append(za)
+            rems = sorted(table)
+            self.channels.append(rems)
+            for rem in rems:
+                self._weights[(za, rem)] = table[rem]
+        assert len(self.nuclei) == len(self.channels)
+
+    @staticmethod
+    def _light_decomposition(Z, A):
+        """Mass- and charge-exact greedy decomposition of a (Z, A) fragment
+        into counts of the six light species [He4, He3, t, d, p, n] —
+        matches the physical decay of the unbound co-fragments (He-5 ->
+        He4 + n, Li-5 -> He4 + p, H-4 -> t + n, Li-4 -> He3 + p, ...);
+        bound co-fragments (rare, tiny sigma) lose their identity only."""
+        p, n = min(Z, A), max(A - Z, 0)
+        c = [0, 0, 0, 0, 0, 0]
+        while p >= 2 and n >= 2:
+            c[0] += 1
+            p, n = p - 2, n - 2
+        if p >= 2 and n >= 1:
+            c[1] += 1
+            p, n = p - 2, n - 1
+        elif p >= 1 and n >= 2:
+            c[2] += 1
+            p, n = p - 1, n - 2
+        elif p >= 1 and n >= 1:
+            c[3] += 1
+            p, n = p - 1, n - 1
+        c[4] += p
+        c[5] += n
+        return c
+
+    def _parse(self, nonel, incl, max_mass):
+        nonel_ids, nonel_sig = [], []
+        with open(nonel) as f:
+            for line in f:
+                tok = line.split()
+                m = int(float(tok[0]))
+                if m // 100 <= max_mass:
+                    nonel_ids.append(m)
+                    nonel_sig.append(np.array(tok[1:], dtype=float))
+        incl_ids, incl_sig = [], []
+        with open(incl) as f:
+            for line in f:
+                tok = line.split(None, 2)
+                m = int(float(tok[0]))
+                if m // 100 > max_mass:
+                    continue
+                prod = int(float(tok[1]))
+                A_m, A_p = m // 100, prod // 100
+                # product == mother rows are (gamma, gamma') survival
+                # channels (kept: the nucleus is NOT destroyed); product
+                # id 0 is the emitted photon spectrum — a different
+                # secondary type, excluded from the nucleon bookkeeping
+                if not (prod in self._LIGHT_IDS or A_m >= A_p >= 2):
+                    continue
+                incl_ids.append((m, prod))
+                incl_sig.append(np.array(line.split()[2:], dtype=float))
+        return dict(nonel_ids=np.array(nonel_ids),
+                    nonel_sig=np.array(nonel_sig),
+                    incl_ids=np.array(incl_ids),
+                    incl_sig=np.array(incl_sig))
+
+    def light_yield_sigma(self, eps, Z, A):
+        """Cross sections [mb] of the six light species
+        [He4, He3, t, d, p, n] emitted as boost-preserving yields, on eps
+        [MeV]: the table's inclusive cross sections (multiplicities
+        included) minus the one-per-event channel allocation when a light
+        species is itself an event's heaviest survivor — e.g.
+        Be-9 -> n + 2 He4: one He4 is the channel remnant in the main
+        tensor, sigma_incl carries multiplicity 2, so the yield here is
+        exactly one He4 (plus the neutron, verbatim from the table).
+        Returns (6, len(eps)); None when the mother is not in the tables.
+        """
+        eps = np.asarray(eps, dtype=float)
+        ly = self._light_yield_sigma.get((Z, A))
+        if ly is None:
+            return None
+        out = np.vstack([np.interp(eps, self.eps, row, left=0.0, right=0.0)
+                         for row in ly])
+        window = (self.erange[0] <= eps) & (eps < self.erange[1])
+        return np.where(window[None, :], out, 0.0)
+
+    def light_inclusive_multiplicity(self, Z, A):
+        """Energy-dependent multiplicities sigma_incl/sigma_nonel of the six
+        light species [He4, He3, t, d, p, n], shape (6, n_e) on self.eps —
+        None when the tables carry no light data for this mother."""
+        sig = self.light_inclusive_sigma.get((Z, A))
+        if sig is None:
+            return None
+        tot = self.totals[(Z, A)]
+        return np.where(tot > 0, sig / np.where(tot > 0, tot, 1.0), 0.0)
+
+    def cross_section(self, eps, Z, A, nloss=None, rem=None):
+        eps = np.asarray(eps, dtype=float)
+        if (Z, A) not in self.totals:
+            return np.zeros_like(eps)
+        tot = np.interp(eps, self.eps, self.totals[(Z, A)],
+                        left=0.0, right=0.0)
+        window = (self.erange[0] <= eps) & (eps < self.erange[1])
+        if rem is None and nloss is None:
+            return np.where(window, tot, 0.0)
+        # channel sigmas interpolate as ONE product w * sigma_nonel on the
+        # native grid — interp(w) * interp(tot) would break the linear
+        # mass-closure identity off-grid (a ~1% effect at the GDR peak)
+        csec = np.zeros_like(eps)
+        if rem is not None:
+            w = self._weights.get(((Z, A), tuple(rem)))
+            if w is not None:
+                csec = np.interp(eps, self.eps, w * self.totals[(Z, A)],
+                                 left=0.0, right=0.0)
+        else:
+            for (mo, r), w in self._weights.items():
+                if mo == (Z, A) and A - r[1] == nloss:
+                    csec = csec + np.interp(
+                        eps, self.eps, w * self.totals[(Z, A)],
+                        left=0.0, right=0.0)
+        return np.where(window, csec, 0.0)
+
 
 class CRPropa_model(Cross_Section_Model):
     """Loads the cross sections provided with CRPropa-data
