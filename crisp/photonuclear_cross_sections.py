@@ -557,6 +557,128 @@ class SimProp_model(Cross_Section_Model):
         return np.sum(channels, axis=0)
 
 
+class TabulatedDisintegration(Cross_Section_Model):
+    """Photodisintegration model from user-supplied plain-text tables:
+    total cross sections per mother plus a residual (multiplicity)
+    distribution — the totals + multiplicities convention of e.g. NCMC/
+    TALYS-style outputs. Exclusive channels are built as one channel per
+    RESIDUAL nucleus with
+
+        sigma_channel(eps) = sigma_tot(eps) * w_res(eps) / sum_res w(eps),
+
+    the per-energy renormalization guaranteeing exactly one residual per
+    interaction (the core's conservation accounting needs exclusive
+    branches); the nucleon content of each channel follows from
+    Delta Z / Delta N, boost-preserving, as for all photodisintegration
+    channels.
+
+    File formats (whitespace/comma separated, '#' comments):
+
+    totals — first non-comment line: the energy grid in MeV, e.g.
+        eps_MeV  e1 e2 ... en
+    then one row per mother:
+        Z  A  sigma_1 ... sigma_n         [mb]
+
+    multiplicities — one row per (mother, residual):
+        Z  A  Z_res  A_res  w             (energy-independent weight)   or
+        Z  A  Z_res  A_res  w_1 ... w_n   (per-energy weights, on the
+                                           SAME grid as the totals)
+    Rows with A_res outside (0, A) are rejected; residual weights may be
+    given unnormalized (relative branchings suffice).
+
+    Arguments:
+    ----------
+    totals, multiplicities : file paths (or open file-like objects).
+    erange : optional (MeV) window; defaults to the table's grid span.
+    """
+    interaction_type = 'photodisintegration'
+
+    @staticmethod
+    def _read_rows(source):
+        text = source.read() if hasattr(source, 'read') else open(source).read()
+        rows = []
+        for line in text.splitlines():
+            line = line.split('#')[0].replace(',', ' ').strip()
+            if line:
+                rows.append(line.split())
+        return rows
+
+    def __init__(self, *args, totals=None, multiplicities=None, **kwargs):
+        rows = self._read_rows(totals)
+        head = rows[0]
+        try:
+            float(head[0])
+            self.eps = np.array(head, dtype=float)
+        except ValueError:                      # leading label on the grid
+            self.eps = np.array(head[1:], dtype=float)
+        rows = rows[1:]
+        if 'erange' not in kwargs:
+            kwargs['erange'] = (self.eps.min(), self.eps.max())
+        Cross_Section_Model.__init__(self, *args, **kwargs)
+
+        n_e = len(self.eps)
+        self.totals = {}
+        for r in rows:
+            Z, A = int(float(r[0])), int(float(r[1]))
+            if not self.filter_nuclei((Z, A)):
+                continue
+            sig = np.array(r[2:], dtype=float)
+            if len(sig) != n_e or np.any(sig < 0):
+                raise ValueError(f'bad totals row for (Z, A) = ({Z}, {A})')
+            self.totals[(Z, A)] = sig
+
+        raw = {}
+        for r in self._read_rows(multiplicities):
+            Z, A, Zr, Ar = (int(float(v)) for v in r[:4])
+            if (Z, A) not in self.totals:
+                continue
+            if not (0 < Ar < A) or not (0 <= Zr <= Z + (A - Ar)):
+                raise ValueError(
+                    f'unphysical residual ({Zr}, {Ar}) for mother ({Z}, {A})')
+            w = np.array(r[4:], dtype=float)
+            if len(w) == 1:
+                w = np.full(n_e, float(w[0]))
+            elif len(w) != n_e:
+                raise ValueError(
+                    f'multiplicity row for ({Z}, {A}) -> ({Zr}, {Ar}) must '
+                    f'carry 1 or {n_e} weights')
+            if np.any(w < 0):
+                raise ValueError('negative multiplicity')
+            raw.setdefault((Z, A), {})[(Zr, Ar)] = np.asarray(w, dtype=float)
+
+        self.nuclei, self.channels, self._weights = [], [], {}
+        for za, table in sorted(raw.items()):
+            wsum = np.sum(list(table.values()), axis=0)
+            if not np.any(wsum > 0):
+                continue
+            self.nuclei.append(za)
+            rems = sorted(table)
+            self.channels.append(rems)
+            for rem in rems:
+                self._weights[(za, rem)] = np.where(
+                    wsum > 0, table[rem] / np.where(wsum > 0, wsum, 1.0), 0.0)
+
+    def cross_section(self, eps, Z, A, nloss=None, rem=None):
+        eps = np.asarray(eps, dtype=float)
+        if (Z, A) not in self.totals:
+            return np.zeros_like(eps)
+        tot = np.interp(eps, self.eps, self.totals[(Z, A)],
+                        left=0.0, right=0.0)
+        window = (self.erange[0] <= eps) & (eps < self.erange[1])
+        if rem is None and nloss is None:
+            return np.where(window, tot, 0.0)
+        csec = np.zeros_like(eps)
+        for r, w in self._weights.items():
+            if r[0] != (Z, A):
+                continue
+            if (rem is not None and tuple(rem) == r[1]) or \
+                    (nloss is not None and A - r[1][1] == nloss):
+                csec = csec + tot * np.interp(eps, self.eps, w,
+                                              left=0.0, right=0.0)
+        return np.where(window, csec, 0.0)
+
+
+
 class CRPropa_model(Cross_Section_Model):
     """Loads the cross sections provided with CRPropa-data
        Source: https://iopscience.iop.org/article/10.1088/1475-7516/2017/11/009
