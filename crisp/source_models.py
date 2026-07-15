@@ -251,13 +251,66 @@ class UHECRSourceModel(ABC):
     def _compute_magnetic_field(self) -> Tuple[pint.Quantity, sp.Expr, Dict[sp.Symbol, pint.Quantity]]:
         pass
 
-    @abstractmethod
-    def _compute_synchrotron_loss_timescale(self) -> Tuple[pint.Quantity, sp.Expr, Dict[sp.Symbol, pint.Quantity]]:
-        pass
-        
-    @abstractmethod
+    def _compute_synchrotron_loss_timescale(self, species=(1, 1), E=None
+                                            ) -> Tuple[pint.Quantity, sp.Expr, Dict[sp.Symbol, pint.Quantity]]:
+        """Generalized nuclear synchrotron cooling timescale in the
+        source's magnetic field, for any species (Z, A):
+
+            t_syn = 3 m_A^3 / (4 sigma_T m_e^2 Z^4 c U_B gamma),
+        """Advective escape over one shell crossing, t_esc = w'/c — for
+        spherical-blob models whose shell_width is the radius this is
+        identically R/c."""
+        w_val = self.get_parameter('shell_width')
+        t_s = (w_val.to(ureg.meter) / c_SI).to(ureg.second)
+        return t_s, self.w / self.c_sym, {self.w: w_val, self.c_sym: c_SI}
+
+        i.e. E/(dE/dt) with the Thomson-scaled nuclear cross section
+        sigma_eff = sigma_T Z^4 (m_e/m_A)^2 — the exact reciprocal of
+        loss_rates' 'synchrotron' entry at the same species and energy.
+        Defaults (no arguments, the schema/report path): a proton at
+        1 EeV. E may be a pint energy or a number in GeV.
+        """
+        from scipy.constants import physical_constants, c, e
+        from .data.nucleardecays import nuclear_mass_GeV
+
+        Z, A = int(species[0]), int(species[1])
+        if E is None:
+            E_GeV = (1 * ureg.EeV).to(ureg.GeV).m
+        elif isinstance(E, pint.Quantity):
+            E_GeV = E.to(ureg.GeV).m
+        else:
+            E_GeV = float(E)
+
+        sigma_T_cm2 = physical_constants['Thomson cross section'][0] * 1e4
+        m_e = physical_constants[
+            'electron mass energy equivalent in MeV'][0] * 1e-3   # GeV
+        m_A = nuclear_mass_GeV(Z, A)                              # GeV
+        gamma = E_GeV / m_A
+        B_G = self.get_parameter('magnetic_field').to(ureg.gauss).m
+        u_B = B_G**2 / (8 * float(pi.evalf()))                    # erg/cm^3
+        rate = (4.0 / 3.0) * sigma_T_cm2 * Z**4 * (m_e / m_A)**2 \
+            * (c * 1e2) * u_B * gamma / (m_A * e * 1e16)          # 1/s
+        t_s = (1.0 / rate) * ureg.second
+
+        m_A_sym, m_e_sym = symbols('m_A m_e')
+        expr = 3 * m_A_sym / (4 * self.sigma_T_sym * self.Z_sym**4
+                              * (m_e_sym / m_A_sym)**2 * self.c_sym
+                              * self.U_B_sym * self.gamma_p_sym)
+        return t_s, expr, {
+            m_A_sym: m_A * ureg.GeV, m_e_sym: m_e * ureg.GeV,
+            self.sigma_T_sym: sigma_T_SI, self.c_sym: c_SI,
+            self.Z_sym: Z * ureg.dimensionless,
+            self.U_B_sym: u_B * ureg.erg / ureg.cm**3,
+            self.gamma_p_sym: gamma * ureg.dimensionless,
+        }
+
     def _compute_escape_timescale(self) -> Tuple[pint.Quantity, sp.Expr, Dict[sp.Symbol, pint.Quantity]]:
-        pass
+        """Advective escape over one shell crossing, t_esc = w'/c — for
+        spherical-blob models whose shell_width is the radius this is
+        identically R/c."""
+        w_val = self.get_parameter('shell_width')
+        t_s = (w_val.to(ureg.meter) / c_SI).to(ureg.second)
+        return t_s, self.w / self.c_sym, {self.w: w_val, self.c_sym: c_SI}
         
     def _compute_all_properties(self) -> None:
 
