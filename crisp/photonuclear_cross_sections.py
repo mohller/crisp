@@ -832,6 +832,79 @@ class Photomeson(Cross_Section_Model):
 
         return np.where(np.logical_and(self.erange[0] <= eps, eps < self.erange[1]), csec, np.zeros_like(eps))
 
+    def fragment_yields(self, Z, A):
+        """Per-event light-fragment content of a photomeson interaction on
+        (Z, A), in the core's light-species order [He4, He3, t, d, p, n],
+        plus the wide (struck-nucleon) charge split.
+
+        The mix comes from the wrapped model's own inclusive fragment data
+        (multiplicity[(mother, fragment)], i.e. sigma_incl/sigma_nonel per
+        species); the per-mother totals are rescaled so that the fragments
+        carry EXACTLY the <Delta A> and <Delta Z> implied by the (residual)
+        channel table — the ~5% tail deficit of the raw tables is absorbed
+        as a normalization (A via a global scale, Z via a p <-> n
+        transfer). One nucleon per event is the struck one (wide recoil
+        spectrum); its charge follows the free-nucleon mix, and the
+        remainder is boost-preserving. Returns None when the model carries
+        no usable fragment data for this mother (light mothers A < 12,
+        where the residual/fragment factorization is ill-defined) — the
+        caller falls back to the Delta Z / Delta N inference.
+
+        Returns:
+        --------
+        dict with 'narrow' (6 floats, per-event boost-preserving yields),
+        'wide_p', 'wide_n' (struck-nucleon charge split, wide_p + wide_n
+        = 1) — or None.
+        """
+        nucid = A * 100 + Z
+        mult = getattr(self.pmm, 'multiplicity', None)
+        if mult is None or A < 12:
+            return None
+        FRAGS = [(2, 4), (2, 3), (1, 3), (1, 2), (1, 1), (0, 1)]
+        frag = np.array([float(np.asarray(mult.get((nucid, a * 100 + z), 0.0)))
+                         for z, a in FRAGS])
+        if frag.sum() <= 0:
+            return None
+        A_L = np.array([4., 3., 3., 2., 1., 1.])
+        Z_L = np.array([2., 2., 1., 1., 1., 0.])
+        # <Delta A>, <Delta Z> implied by the channel (residual) table
+        res = [(k, float(np.asarray(mult[k]))) for k in self.pmm.incl_idcs
+               if k[0] == nucid]
+        if not res:
+            return None
+        dA = sum((A - k[1] // 100) * w for k, w in res)
+        dZ = sum((Z - k[1] % 100) * w for k, w in res)
+        # rescale the mix to carry dA exactly; repair the charge by a
+        # p <-> n transfer (keeps A fixed)
+        frag = frag * (dA / (A_L @ frag))
+        shift = dZ - Z_L @ frag
+        frag[4] = frag[4] + shift
+        frag[5] = frag[5] - shift
+        if frag[4] < 0 or frag[5] < 0:      # pathological cell: give up
+            return None
+        # the struck nucleon (wide): one per event, free-nucleon charge mix
+        n_free = frag[4] + frag[5]
+        if n_free < 1.0:
+            return None
+        wp = frag[4] / n_free
+        narrow = frag.copy()
+        narrow[4] -= wp
+        narrow[5] -= (1.0 - wp)
+        return {'narrow': narrow, 'wide_p': wp, 'wide_n': 1.0 - wp}
+
+    def inclusive_cross_section(self, eps, Z, A, product):
+        """Inclusive cross section [mb] for a light secondary of the wrapped
+        photomeson model, on eps [MeV]: product in {2: pi+, 3: pi-, 4: pi0}
+        (neucosma ids). Valid for any nucleus the model knows and for the
+        free nucleons (1, 1)/(0, 1); same grid, unit and erange conventions
+        as cross_section. This is the accessor the interaction core's
+        photomeson_scaling='inclusive' factors are built from."""
+        nucid = A * 100 + Z
+        csec = 1e-3 * np.interp(1e-3 * np.asarray(eps, dtype=float),
+                                *self.pmm.cs_incl(nucid, product))
+        return np.where(np.logical_and(self.erange[0] <= eps, eps < self.erange[1]),
+                        np.clip(csec, 0.0, None), 0.0)
+
 
 class Photomeson_Superposition(Cross_Section_Model):
     """Superposition photomeson model: every nucleon interacts independently,
