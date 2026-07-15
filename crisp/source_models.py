@@ -3,7 +3,7 @@ import numpy as np
 import sympy as sp
 import textwrap
 from abc import ABC, abstractmethod
-from typing import Dict, Any, List, Tuple, ClassVar
+from typing import Dict, Any, List, Tuple, ClassVar, Optional
 from dataclasses import dataclass
 from sympy import symbols, Eq, pi, Rational
 from scipy.signal import convolve
@@ -68,12 +68,21 @@ def format_quantity(qty: pint.Quantity) -> str:
 # Parameter class Definition
 @dataclass(frozen=False)
 class ParameterSchema:
-    """Schema definition with symbolic variable and physical unit"""
+    """Schema definition with symbolic variable and physical unit.
+
+    kind / native_frame declare how the quantity transforms between the
+    one-zone reference frames ('comoving' = jet/shock rest, primed;
+    'engine' = central-engine/source rest, tilde; 'observer' = Earth,
+    includes redshift): kind 'time' | 'rate' | 'energy' transform with the
+    standard factors, 'invariant' does not transform, and None (default)
+    means no rule is declared — get_parameter(frame=) raises for those."""
     name: str
     unit: pint.Unit
     description: str
     category: str
     symbol: sp.Symbol
+    kind: Optional[str] = None
+    native_frame: str = 'comoving'
 
 
 # Base class for source models
@@ -92,33 +101,33 @@ class UHECRSourceModel(ABC):
 
     SCHEMA: ClassVar[List[ParameterSchema]] = [
         # Inputs (astrophysical units for user convenience)
-        ParameterSchema("redshift", ureg.dimensionless, "Redshift of the source", "input", z),
-        ParameterSchema("variability_timescale", ureg.second, "Observed variability timescale", "input", t_var),
-        ParameterSchema("bulk_lorentz_factor", ureg.dimensionless, "Bulk Lorentz factor of relativistic outflow", "input", Gamma),
+        ParameterSchema("redshift", ureg.dimensionless, "Redshift of the source", "input", z, kind='invariant'),
+        ParameterSchema("variability_timescale", ureg.second, "Observed variability timescale", "input", t_var, kind='time', native_frame='observer'),
+        ParameterSchema("bulk_lorentz_factor", ureg.dimensionless, "Bulk Lorentz factor of relativistic outflow", "input", Gamma, kind='invariant'),
         ParameterSchema("photon_luminosity", ureg.erg/ureg.second, "Photon luminosity", "input", L_gamma),
         ParameterSchema("distance", ureg.centimeter, "Distance from central engine", "input", d),
         ParameterSchema("shell_width", ureg.centimeter, "Radial width of interacting shells", "input", w),
-        ParameterSchema("baryonic_loading", ureg.dimensionless, r"Baryon-to-photon energy density ratio", "input", eta),
+        ParameterSchema("baryonic_loading", ureg.dimensionless, r"Baryon-to-photon energy density ratio", "input", eta, kind='invariant'),
         ParameterSchema("volume", ureg.centimeter**3, "Volume of radiating region", "input", V_iso),
         ParameterSchema("em_density", ureg.erg/ureg.centimeter**3, "Electro-magnetic energy density, assuming equipartition.", "input", u_em),
         ParameterSchema("magnetic_field", ureg.gauss, "Magnetic field strength", "input", B),
 
-        ParameterSchema("photon_energy_min", ureg.GeV, "Target photon minimal energy", "input", eph_min),
-        ParameterSchema("photon_energy_max", ureg.GeV, "Target photon maximal energy", "input", eph_max),
-        ParameterSchema("photon_energy_brk", ureg.GeV, "Target photon break energy", "input", eph_brk),
+        ParameterSchema("photon_energy_min", ureg.GeV, "Target photon minimal energy", "input", eph_min, kind='energy'),
+        ParameterSchema("photon_energy_max", ureg.GeV, "Target photon maximal energy", "input", eph_max, kind='energy'),
+        ParameterSchema("photon_energy_brk", ureg.GeV, "Target photon break energy", "input", eph_brk, kind='energy'),
         
         ParameterSchema("photon_density", 1/ureg.centimeter**3, "Target photon number density", "input", n_gamma),
         ParameterSchema("proton_density", 1/ureg.centimeter**3, "Proton number density", "input", n_p),
         ParameterSchema("radius", ureg.centimeter, "Characteristic size of emission region", "input", R),
-        ParameterSchema("photon_energy", ureg.eV, "Characteristic target photon energy", "input", epsilon_gamma),
-        ParameterSchema("expansion_timescale", ureg.second, "Dynamical/expansion timescale", "input", t_dyn),
+        ParameterSchema("photon_energy", ureg.eV, "Characteristic target photon energy", "input", epsilon_gamma, kind='energy'),
+        ParameterSchema("expansion_timescale", ureg.second, "Dynamical/expansion timescale", "input", t_dyn, kind='time'),
 
         # Derived Properties
         ParameterSchema("proton_larmor_radius", ureg.centimeter, "Larmor radius: r_L = E_p/(eB)", "input", r_L),
-        ParameterSchema("proton_energy_max", ureg.eV, "Maximum proton energy (Hillas criterion)", "input", E_p_max),
-        ParameterSchema("photopion_loss_timescale", ureg.second, "Photopion interaction timescale", "input", t_pgamma),
-        ParameterSchema("synchrotron_loss_timescale", ureg.second, "Proton synchrotron loss timescale", "input", t_syn),
-        ParameterSchema("escape_timescale", ureg.second, "Particle escape timescale", "input", t_esc),
+        ParameterSchema("proton_energy_max", ureg.eV, "Maximum proton energy (Hillas criterion)", "input", E_p_max, kind='energy'),
+        ParameterSchema("photopion_loss_timescale", ureg.second, "Photopion interaction timescale", "input", t_pgamma, kind='time'),
+        ParameterSchema("synchrotron_loss_timescale", ureg.second, "Proton synchrotron loss timescale", "input", t_syn, kind='time'),
+        ParameterSchema("escape_timescale", ureg.second, "Particle escape timescale", "input", t_esc, kind='time'),
         ParameterSchema("neutrino_luminosity", ureg.erg/ureg.second, "Neutrino luminosity from photopion interactions", "input", L_nu),  # NOW DEFINED
         ParameterSchema("cosmic_ray_luminosity", ureg.erg/ureg.second, "Total cosmic ray luminosity", "input", L_CR),  # NOW DEFINED
     ]
@@ -126,6 +135,7 @@ class UHECRSourceModel(ABC):
     _SCHEMA_MAP: ClassVar[Dict[str, ParameterSchema]] = {p.name: p for p in SCHEMA}
 
     def __init__(self, **inputs: Any):
+        input_frames = inputs.pop('frames', None) or {}
         self._inputs: Dict[str, pint.Quantity] = {}
         for key, value in inputs.items():
             if key not in self._SCHEMA_MAP:
@@ -147,8 +157,43 @@ class UHECRSourceModel(ABC):
     def parameters(self) -> List[str]:
         return list(self._inputs.keys()) + list(self._computed_properties.keys())
 
-    def get_parameter(self, name: str) -> pint.Quantity:
-        """Access function for parameter values
+    FRAMES = ('comoving', 'engine', 'observer')
+
+    def _frame_factor(self, kind, frm, to, name=''):
+        """Multiplicative factor taking a quantity of the given kind from
+        frame `frm` to frame `to` in the standard one-zone bookkeeping: an
+        engine-frame interval t~ appears comoving as t' = Gamma t~ and
+        observed as t_obs = (1 + z) t~; energies transform inversely
+        (E_obs = Gamma E' / (1 + z)); rates inversely to times."""
+        for f in (frm, to):
+            if f not in self.FRAMES:
+                raise ValueError(f"unknown frame '{f}' (use one of "
+                                 f"{self.FRAMES})")
+        if frm == to or kind == 'invariant':
+            return 1.0
+        if kind not in ('time', 'rate', 'energy'):
+            raise ValueError(
+                f"no frame rule declared for parameter '{name}' "
+                f"(kind={kind!r}); its value is defined in its native "
+                "frame only")
+        Gam = float(self._inputs['bulk_lorentz_factor'].m)
+        zz = float(self._inputs['redshift'].m)
+        # factors that bring a value of this kind TO the engine frame
+        if kind == 'time':
+            to_engine = {'engine': 1.0, 'comoving': 1.0 / Gam,
+                         'observer': 1.0 / (1.0 + zz)}
+        else:                             # 'rate' and 'energy' scale alike
+            to_engine = {'engine': 1.0, 'comoving': Gam,
+                         'observer': 1.0 + zz}
+        return to_engine[frm] / to_engine[to]
+
+    def get_parameter(self, name: str, frame: Optional[str] = None) -> pint.Quantity:
+        """Access function for parameter values.
+
+        frame=None returns the value in its native frame (the historical
+        behavior, bit-exact); frame='comoving' | 'engine' | 'observer'
+        converts quantities whose schema declares a kind ('time', 'rate',
+        'energy' or 'invariant') and raises for those without a rule.
         """
         if name in self._SCHEMA_MAP:
             symbol_key = name
@@ -161,11 +206,18 @@ class UHECRSourceModel(ABC):
             raise AttributeError(f"'{self.__class__.__name__}' object has no attribute '{name}'")
 
         if symbol_key in self._inputs:
-            return self._inputs[symbol_key]
+            value = self._inputs[symbol_key]
         elif symbol_key in self._computed_properties:
-            return self._computed_properties[symbol_key]
+            value = self._computed_properties[symbol_key]
         else:
             print('not found in any of the paramewters')
+            return None
+
+        if frame is None:
+            return value
+        schema = self._SCHEMA_MAP[symbol_key]
+        return value * self._frame_factor(schema.kind, schema.native_frame,
+                                          frame, name=symbol_key)
 
     @abstractmethod
     def _compute_radius(self) -> Tuple[pint.Quantity, sp.Expr, Dict[sp.Symbol, pint.Quantity]]:
@@ -344,9 +396,19 @@ class UHECRSourceModel(ABC):
         self.convolved = convolved
 
 
-# Example: GRB photospheric
-class PhotosphericModel(UHECRSourceModel):
-    """Photospheric emission from colliding shells"""
+class OneZoneISModel(UHECRSourceModel):
+    """One-zone internal-shock (colliding-shells) GRB prompt-emission model,
+    parametrized by observed quantities (photon_luminosity, Gamma, t_var, z,
+    band): collision radius R = 2 c Gamma^2 t_var / (1+z), comoving shell
+    width c Gamma t_var / (1+z), photon density u'_gamma = L / (4 pi R^2
+    Gamma^2 c) and equipartition B' = sqrt(8 pi u'_gamma) — the classic
+    NeuCosmA-style one-zone setup (Huemmer et al. 2012; the per-collision
+    physics of Bustamante et al. 2017 reduced to a single zone). See
+    InternalShockModel for the energy-budget (epsilon-fraction)
+    parametrization of De Lia & Tamborra 2024.
+
+    (Renamed from PhotosphericModel, which this class never was: no
+    Thomson photosphere enters anywhere.)"""
 
     def __init__(self, **inputs: Any):
       
