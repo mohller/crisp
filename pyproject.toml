@@ -37,9 +37,7 @@ dev = [
     "flake8>=4.0",
 ]
 docs = [
-    "sphinx>=4.0",
-    "sphinx-rtd-theme>=1.0",
-    "nbsphinx>=0.8",
+    "pdoc>=14.0",
 ]
 
 [project.scripts]
