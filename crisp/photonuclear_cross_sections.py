@@ -56,6 +56,16 @@ def get_particle_numbers(channel):
 daughters = [(2, 4), (2, 3), (1, 3), (1, 2), (1, 1), (0, 1)]
 
 class Cross_Section_Model():
+    """Abstract base for photonuclear cross-section models.
+
+    Defines the interface InteractionCore and Model_Rack build on: a
+    per-nuclide cross_section(eps, Z, A, ...) callable, a self.nuclei
+    list of tracked (Z, A) tuples, a self.channels list of daughter
+    remnants per nuclide (index-aligned with self.nuclei), and the
+    erange (MeV) over which the model is valid. Subclasses set these and
+    implement cross_section; the table / energy-weighted helpers below
+    are generic once that contract is met.
+    """
     # kind of interaction the model describes; photomeson models override this
     # so Model_Rack and InteractionCore can tell the groups apart
     interaction_type = 'photodisintegration'
@@ -1203,6 +1213,14 @@ def load_astrophomes(model='SingleParticleModel', path=None, auto_download=True,
 
 
 class Photomeson(Cross_Section_Model):
+    """Wraps an AstroPhoMes photomeson model as a Cross_Section_Model.
+
+    Adapts a pmm (photomeson model instance from the AstroPhoMes package,
+    exposing cs_nonel/nonel_idcs/incl_idcs) to the cross_section /
+    cross_section_table / channels_table interface the rest of the
+    package expects, exposing inclusive photomeson cross sections and
+    their daughter channels for the tracked nuclei.
+    """
     interaction_type = 'photomeson'
 
     def __init__(self, *args, pmm=None, **kwargs):
