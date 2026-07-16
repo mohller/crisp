@@ -705,6 +705,70 @@ def test_species_kernels_and_helicity_chain():
 
 
 def test_pgamma_components_decomposition():
+    """pgamma_components (the Rachen parametrization split into resonances /
+    direct / multi-pion) sums to pgamma exactly, with the pieces peaking
+    where the physics says."""
+    from crisp.photonuclear_cross_sections import pgamma, pgamma_components
+    e = np.logspace(-1, 4, 1500)
+    c = pgamma_components(e)
+    assert np.array_equal(c['resonances'] + c['direct'] + c['multipion'], pgamma(e))
+    e_res = e[c['resonances'].argmax()]
+    print(f'  resonance peak at eps_r = {e_res:.2f} GeV; multipion/resonances '
+          f'at 100 GeV = {c["multipion"][e > 100][0] / c["resonances"][e > 100][0]:.1f}')
+    assert 0.3 < e_res < 0.4                            # Delta(1232) region
+    assert c['multipion'][-1] > c['resonances'][-1]     # continuum wins at high E
+
+
+def test_photomeson_only_core():
+    """A photomeson-only core (no photodisintegration) constructs, conserves,
+    and the rack decomposes additively: full == pdis-only + photomeson-only."""
+    from crisp.photonuclear_cross_sections import Model_Rack, Photomeson_Superposition
+
+    pdis_model = psb_xsec()
+    pm_model = Photomeson_Superposition(pdis_model.nuclei)
+
+    # default eps tops out below the 145 MeV photomeson threshold -> wide grid
+    pm_only = InteractionCore(xsec_model=pm_model, eps=np.logspace(-4, 4, 650))
+    a, z = static_imbalance(pm_only)
+    print(f'  photomeson-only core: conservation A {a:.1e}, Z {z:.1e}')
+    assert a < CONSERVE and z < CONSERVE
+
+    # photomeson nucleons are budgeted as wide-spectrum ejecta, one per event:
+    # the budget equals the total rate, and the narrow light yields carry none
+    ej = pm_only.photomeson_ejecta
+    d_ej = rel_diff(ej['p'] + ej['n'], pm_only.all_rates)
+    print(f'  ejecta identity (p+n budget == all_rates, 1 nucleon/event): {d_ej:.2e}')
+    assert d_ej < 1e-12
+    ly = np.abs(pm_only.light_prod_tensor[4:]).max()   # p, n narrow yields
+    resolved = np.abs(pm_only.light_prod_tensor).max() # decay-resolution lights remain
+    print(f'  narrow p/n yields from photomeson channels: {ly:.2e} '
+          f'(resolution lights {resolved:.2e})')
+
+    pdis_only = InteractionCore(xsec_model=pdis_model, eps=pm_only.eps)
+    full = InteractionCore(xsec_model=Model_Rack(models=(pdis_model, pm_model)),
+                           eps=pm_only.eps)
+    i_f = full.nuclei.index((26, 56))
+    i_p = pdis_only.nuclei.index((26, 56))
+    i_m = pm_only.nuclei.index((26, 56))
+    add = np.abs(full.all_rates[i_f] - pdis_only.all_rates[i_p]
+                 - pm_only.all_rates[i_m]).max() / full.all_rates[i_f].max()
+    print(f'  rack additivity (full == pdis + photomeson): {add:.2e}')
+    assert add < 1e-10
+
+    # the decomposition utility recovers the same split from the full core
+    dec = full.rates_by_interaction()
+    d_sum = np.abs(sum(dec.values()) - full.all_rates).max() / full.all_rates.max()
+    i_dm = full.nuclei.index((26, 56))
+    d_pm = rel_diff(dec['photomeson'][i_dm], pm_only.all_rates[i_m])
+    d_pd = rel_diff(dec['photodisintegration'][i_dm], pdis_only.all_rates[i_p])
+    print(f'  rates_by_interaction: sum == all_rates {d_sum:.2e}, '
+          f'pm == pm-only core {d_pm:.2e}, pdis == pdis-only core {d_pd:.2e}')
+    assert d_sum < 1e-8 and d_pm < 1e-10 and d_pd < 1e-10
+    single = full.rates_by_interaction(nucleus=(26, 56))
+    assert np.array_equal(single['photomeson'], dec['photomeson'][i_dm])
+
+
+def test_source_model_physics_methods():
 
 
 def test_pion_kernel_nubase_mass_delta():
