@@ -14,6 +14,15 @@ _DATA_DIR = os.path.join(os.path.dirname(__file__), 'data')
 theta_plus = lambda z, eps : np.heaviside(eps - z, 1)
 theta_minus = lambda z, eps : theta_plus(-z, -eps)
 
+def energy_weight_sigma(sigma, eps):
+    """Energy-weighted cumulative cross section g(y) = (2/y^2) int_0^y y'
+    sigma(y') dy' — the transform interaction_rates.compute_rates' isotropic-
+    field log-space convolution consumes in place of the raw cross section.
+    sigma : one or more cross-section rows sampled on eps (same units in/out).
+    eps   : the sampling grid (any consistent energy unit; MeV by convention).
+    Returns an array of the same shape as np.atleast_2d(sigma)."""
+    return 2 / eps**2 * cumulative_trapezoid(np.atleast_2d(sigma) * eps, eps, initial=0)
+
 def get_particle_numbers(channel):
     """Extracts the info from the channel number in CRPropa's branching files
     The channel number is a number between 1 and 1000000 where the digits
@@ -148,8 +157,8 @@ class Cross_Section_Model():
             eps = kwargs['eps']
 
         cs_table = self.cross_section_table(*args, **kwargs)
-        
-        return 2 / eps**2 * cumulative_trapezoid(cs_table * eps, eps, initial=0)
+
+        return energy_weight_sigma(cs_table, eps)
 
     def energy_weighted_channels_table(self, *args, **kwargs):
         """Returns an array with energy weighted cross sections of the species 
@@ -161,8 +170,8 @@ class Cross_Section_Model():
             eps = kwargs['eps']
 
         ch_table = self.channels_table(*args, **kwargs)
-        
-        return 2 / eps**2 * cumulative_trapezoid(ch_table * eps, eps, initial=0)
+
+        return energy_weight_sigma(ch_table, eps)
 
 
 class GDR_atlas(Cross_Section_Model):
