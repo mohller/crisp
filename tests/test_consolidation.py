@@ -646,7 +646,13 @@ def test_pion_kernel_absolute_normalization():
     rate = K_pi[0].sum(axis=1)[int(np.argmin(np.abs(boosts - 1e11)))]
     print(f'  pion rate at Gamma=1e11 on the CMB: {rate:.3e} /Mpc (lit. rise 0.02-0.1)')
     assert 0.02 < rate < 0.15
-    mult = np.divide(K_pi[0].sum(axis=1)[mask], row[mask]).max()
+    # near threshold both kernels sit at their FFT/interpolation noise floor
+    # (~14 orders of magnitude below the peak); a ratio of two noise-floor
+    # values is meaningless and environment-dependent, so restrict the
+    # multiplicity check to rows with a physically significant rate (same
+    # 1e-3-of-max significance cut used in test_sophia_spectrum_kernels)
+    sig = row > 1e-3 * row.max()
+    mult = np.divide(K_pi[0].sum(axis=1)[sig], row[sig]).max()
     print(f'  max pion multiplicity per interaction on this grid: {mult:.2f}')
     assert 1.0 <= mult < 3.01
 
@@ -1183,6 +1189,236 @@ def test_sophia_spectrum_kernels():
     n_nu = N_nu['nu_mu'][:, -1].sum() + N_nu['nu_e'][:, -1].sum()
     print(f'  nu per charged pion (SOPHIA kernels): {n_nu / n_pi:.3f}')
     assert abs(n_nu / n_pi - 3.0) < 0.05
+
+
+def test_kaon_component():
+    """K+/K- from the SOPHIA tables — the last Huemmer et al. (2010)
+    inventory item: the kernels carry the strangeness channel with the
+    right threshold ordering and charge asymmetry, the K -> mu nu_mu chain
+    (BR 0.6356) adds exactly 3*BR neutrinos per decayed kaon with the
+    (1-rK) mK/mpi energy placement, defaults stay bit-exact, and the kaon
+    component evades the synchrotron cooling that suppresses the pions —
+    their reason for tracking kaons at all."""
+    from crisp.data_download import get_astrophomes_path
+    from crisp.photonuclear_cross_sections import (Photomeson_Superposition,
+                                                   load_astrophomes)
+    from crisp.background_photon_models import cmb_photon_density_GeVcm3
+
+    try:
+        get_astrophomes_path(auto_download=False, verbose=False)
+    except FileNotFoundError as exc:
+        raise unittest.SkipTest(str(exc))
+
+    pmm = load_astrophomes(auto_download=False)
+    core = InteractionCore(
+        xsec_model=Photomeson_Superposition([(2, 4), (2, 3), (1, 2)]),
+        target_photons=cmb_photon_density_GeVcm3, photomeson='kernels',
+        photomeson_spectra=pmm,
+        boosts=np.logspace(0, 12, 131), eps=np.logspace(-2, 6, 300))
+
+    # kernels: thresholds (K+ ~1 GeV associated production, K- ~1.5 GeV
+    # pair production, both far above the pion turn-on) and K+ >= K-
+    b = core.boosts
+    RK_p = core.photomeson_kernels['K+'][0].sum(axis=1)
+    RK_m = core.photomeson_kernels['K-'][0].sum(axis=1)
+    Rpi = core.pion_prod_tensor[0].sum(axis=1)
+    ipi = np.argmax(Rpi > 1e-6 * Rpi.max())
+    ikp = np.argmax(RK_p > 1e-6 * RK_p.max())
+    ikm = np.argmax(RK_m > 1e-6 * RK_m.max())
+    print(f'  first active boost: pi {b[ipi]:.2e}, K+ {b[ikp]:.2e}, '
+          f'K- {b[ikm]:.2e}')
+    assert b[ikp] > 3 * b[ipi] and b[ikm] > b[ikp]
+    assert (RK_p - RK_m).min() > -1e-12 * RK_p.max()
+
+    # tables: near-threshold K+ dominance, high-energy K+/K- convergence
+    xw = np.asarray(pmm.xwidths, dtype=float)
+    e_grid = np.asarray(pmm.egrid, dtype=float)
+    mult = {pid: (np.asarray(pmm.redist_proton[pid], dtype=float)
+                  * xw).sum(axis=1) for pid in (50, 51)}
+    i2 = int(np.argmin(np.abs(e_grid - 2.0)))
+    i4 = int(np.argmin(np.abs(e_grid - 1e4)))
+    print(f'  K-/K+ multiplicity: {mult[51][i2] / mult[50][i2]:.3f} at 2 GeV, '
+          f'{mult[51][i4] / mult[50][i4]:.3f} at 1e4 GeV')
+    assert mult[51][i2] < 0.3 * mult[50][i2]
+    assert 0.8 < mult[51][i4] / mult[50][i4] < 1.2
+
+    # chain: count normalization and energy placement on the shared grid
+    CK = core._kaon_decay_chain()
+    C = core._pion_decay_chain()
+    assert abs(CK['box'][60].sum() - 1) < 1e-6        # one nu per decay
+    dl = np.log(b[1]) - np.log(b[0])
+    off = np.log((1 - CK['rK']) * CK['mK'] / C['mpi']) / dl
+    jmax = int(np.max(np.nonzero(CK['box'][60])[0]))
+    print(f'  kaon box endpoint offset: {jmax - 60} bins (expect ~{off:.1f})')
+    assert abs(jmax - 60 - off) <= 1.0                # (1-rK) mK/mpi endpoint
+    assert jmax > np.max(np.nonzero(C['box'][60])[0])  # harder than pion box
+
+    # counting: 3*BR extra nu per decayed kaon; defaults bit-exact
+    L = np.array([0.0, 1.0])
+    i_p = core.species.index((1, 1))
+    w = np.zeros(len(b))
+    w[124] = 1.0                                      # boost 2.9e11, K-active
+    fk = dict(alpha=None, mass_range=[i_p], boost_range=b, true_range=[i_p],
+              P=np.ones((len(b), len(L), 1)), weights=w)
+    _, N0 = core.neutrino_production(L, **fk)
+    _, N1 = core.neutrino_production(L, **fk, kaons=True)
+    _, N2 = core.neutrino_production(L, **fk, kaons=False)
+    assert all(np.array_equal(N0['detail'][k], N2['detail'][k])
+               for k in N0['detail'])
+    tot0 = sum(N0['detail'][k][:, -1].sum() for k in N0['detail'])
+    tot1 = sum(N1['detail'][k][:, -1].sum() for k in N1['detail'])
+    nK = sum(core._photomeson_fold(core.photomeson_kernels[s], L,
+                                   scaling_group=s, **fk)[:, -1].sum()
+             for s in ('K+', 'K-'))
+    per_K = (tot1 - tot0) / nK
+    print(f'  extra nu per decayed kaon: {per_K:.3f} (3*BR = {3 * 0.6356:.3f})')
+    assert abs(per_K / (3 * 0.6356) - 1) < 0.05
+
+    # cooling: kaons evade the suppression that crushes the pions
+    f_pi = core.decay_before_cooling(0.13957039 * b, 0.13957039, 2.6033e-8, 1e6)
+    f_K = core.decay_before_cooling(CK['mK'] * b, CK['mK'], CK['tauK'], 1e6)
+    assert (f_K[80:] / f_pi[80:]).min() > 10
+    _, N0B = core.neutrino_production(L, **fk, B_gauss=1e6)
+    _, N1B = core.neutrino_production(L, **fk, B_gauss=1e6, kaons=True)
+    hi = b > 1e10                                     # the extreme end
+
+    def kaon_share(Nk, Nn):
+        t_k = sum(Nk['detail'][k][hi, -1].sum() for k in Nk['detail'])
+        t_n = sum(Nn['detail'][k][hi, -1].sum() for k in Nn['detail'])
+        return (t_k - t_n) / t_k
+    s_unc, s_coo = kaon_share(N1, N0), kaon_share(N1B, N0B)
+    print(f'  kaon share above E = 1e10 m_pi: uncooled {s_unc:.4f}, '
+          f'B = 1e6 G {s_coo:.4f} (x{s_coo / s_unc:.0f})')
+    assert s_coo > 30 * s_unc and s_coo > 0.02
+
+    # kaons='K+' (Huemmer/NeuCosmA scope): the K- side is dropped — the
+    # extra nu over kaons=False is 3*BR per decayed K+ only, the K- part
+    # of the kaons=True output is 3*BR per K-, and the dropped content is
+    # dominated by the direct nubar_mu box (the antineutrino shoulder)
+    _, Nkp = core.neutrino_production(L, **fk, kaons='K+')
+    tot_kp = sum(Nkp['detail'][k][:, -1].sum() for k in Nkp['detail'])
+    nKp = core._photomeson_fold(core.photomeson_kernels['K+'], L,
+                                scaling_group='K+', **fk)[:, -1].sum()
+    nKm = nK - nKp
+    per_Kp = (tot_kp - tot0) / nKp
+    per_Km = (tot1 - tot_kp) / nKm
+    print(f"  kaons='K+': extra nu per K+ {per_Kp:.3f}, "
+          f"K- difference per K- {per_Km:.3f} (both ~ 3*BR)")
+    assert abs(per_Kp / (3 * 0.6356) - 1) < 0.05
+    assert abs(per_Km / (3 * 0.6356) - 1) < 0.05
+    d_nbm = (N1['detail']['nubar_mu'] - Nkp['detail']['nubar_mu'])[:, -1].sum()
+    assert d_nbm > 0.5 * 0.6356 * nKm          # K- box lives in nubar_mu
+    try:
+        core.neutrino_production(L, **fk, kaons='K-')
+        raise AssertionError("kaons='K-' must raise")
+    except ValueError:
+        pass
+
+    # error path: kaons=True needs the strangeness kernels
+    Kp = core.photomeson_kernels.pop('K+')
+    try:
+        core.neutrino_production(L, **fk, kaons=True)
+        raise AssertionError('kaons=True without K+ kernels must raise')
+    except ValueError as exc:
+        assert 'photomeson_spectra' in str(exc)
+    finally:
+        core.photomeson_kernels['K+'] = Kp
+
+
+def test_secondary_cooling_migration():
+    """cooling='migrate': the exact cooled-decay transport replacing the
+    no-migration drop treatment. The closed form F(E|E0) =
+    exp(-E_c^2 (1/E^2 - 1/E0^2)) is row-stochastic (cooling migrates
+    energy, never number): far above the break the secondaries pile up at
+    E_br/sqrt(3) instead of vanishing, and the end-to-end nu count per
+    charged pion stays exactly the uncooled 3 while the drop treatment
+    deletes everything."""
+    from crisp.data_download import get_astrophomes_path
+    from crisp.photonuclear_cross_sections import (Photomeson_Superposition,
+                                                   load_astrophomes)
+    from crisp.background_photon_models import cmb_photon_density_GeVcm3
+
+    try:
+        get_astrophomes_path(auto_download=False, verbose=False)
+    except FileNotFoundError as exc:
+        raise unittest.SkipTest(str(exc))
+
+    pmm = load_astrophomes(auto_download=False)
+    core = InteractionCore(
+        xsec_model=Photomeson_Superposition([(2, 4), (2, 3), (1, 2)]),
+        target_photons=cmb_photon_density_GeVcm3, photomeson='kernels',
+        photomeson_spectra=pmm,
+        boosts=np.logspace(0, 12, 131), eps=np.logspace(-2, 6, 300))
+
+    b = core.boosts
+    mpi, tau_pi, Bg = 0.13957039, 2.6033e-8, 1e6
+    E = mpi * b
+    S = core.cooled_decay_matrix(E, mpi, tau_pi, Bg)
+
+    # row-stochastic (decays on-grid here: the break is mid-grid)
+    f = core.decay_before_cooling(E, mpi, tau_pi, Bg)
+    E_br = E[int(np.argmin(np.abs(f - 0.5)))]
+    assert np.abs(S.sum(axis=1) - 1).max() < 1e-12
+
+    # pile-up at E_br / sqrt(3) for injection far above the break
+    i_hi = int(np.argmin(np.abs(E - 1e4 * E_br)))
+    jpk = int(np.argmax(S[i_hi]))
+    print(f'  pile-up: {E[i_hi]:.1e} GeV -> {E[jpk]:.2e} '
+          f'(E_br/sqrt3 = {E_br / np.sqrt(3):.2e})')
+    assert abs(np.log(E[jpk] / (E_br / np.sqrt(3)))) < 2 * np.log(b[1] / b[0])
+
+    # identity limit far below the break
+    assert S[20, 20] > 1 - 2 * (E[20] / E_br) ** 2
+
+    # closed form vs direct quadrature of p(E|E0), one hard row
+    f0 = float(core.decay_before_cooling(E[-1], mpi, tau_pi, Bg))
+    E_c2 = E[-1] ** 2 * f0 / (1 - f0) / 2
+    E0 = E[i_hi]
+    Eq = np.logspace(np.log10(E[0] * 0.9), np.log10(E0), 400000)
+    Eq = Eq[Eq <= E0]
+    p = (2 * E_c2 / Eq ** 3) * np.exp(-E_c2 * (1 / Eq ** 2 - 1 / E0 ** 2))
+    edges = np.concatenate([[E[0] ** 2 / E[1]], np.sqrt(E[:-1] * E[1:]),
+                            [E[-1] ** 2 / E[-2]]])
+    for j in np.nonzero(S[i_hi] > 1e-3)[0]:
+        m_ = (Eq >= edges[j]) & (Eq < min(edges[j + 1], E0))
+        q = np.trapezoid(p[m_], Eq[m_])
+        assert abs(S[i_hi, j] - q) < 1e-3 * S[i_hi].max()
+
+    # end-to-end: number conserved, energy migrated (deep above the break)
+    L = np.array([0.0, 1.0])
+    i_p = core.species.index((1, 1))
+    br = b[95:105]
+    fk = dict(alpha=np.ones(1), mass_range=[i_p], true_range=[i_p],
+              boost_range=br, P=np.ones((len(br), 2, 1)))
+    n_pi = (core.photomeson_production('pi+', L, **fk)[:, -1].sum()
+            + core.photomeson_production('pi-', L, **fk)[:, -1].sum())
+    res = {}
+    for lab, kw in [('uncooled', {}), ('drop', dict(B_gauss=Bg)),
+                    ('migrate', dict(B_gauss=Bg, cooling='migrate'))]:
+        _, N = core.neutrino_production(L, **fk, **kw)
+        n_nu = N['nu_mu'][:, -1].sum() + N['nu_e'][:, -1].sum()
+        tot = sum(N['detail'][k][:, -1] for k in N['detail'])
+        res[lab] = (n_nu / n_pi,
+                    np.exp((tot * np.log(E)).sum() / max(tot.sum(), 1e-300)))
+    print(f"  nu per charged pion at B=1e6 G: uncooled {res['uncooled'][0]:.4f}"
+          f", drop {res['drop'][0]:.4f}, migrate {res['migrate'][0]:.4f}; "
+          f"mean E_nu {res['uncooled'][1]:.1e} -> {res['migrate'][1]:.1e} GeV")
+    assert abs(res['migrate'][0] / res['uncooled'][0] - 1) < 1e-5
+    assert abs(res['migrate'][0] - 3) < 0.05
+    assert res['drop'][0] < 1.0
+    assert res['migrate'][1] < 0.1 * res['uncooled'][1]
+
+    # defaults bit-exact, error paths
+    _, N0 = core.neutrino_production(L, **fk, B_gauss=Bg)
+    _, N1 = core.neutrino_production(L, **fk, B_gauss=Bg, cooling='drop')
+    assert all(np.array_equal(N0['detail'][k], N1['detail'][k])
+               for k in N0['detail'])
+    for kw in (dict(cooling='migrate'), dict(cooling='bogus')):
+        try:
+            core.neutrino_production(L, **fk, **kw)
+            raise AssertionError(f'{kw} must raise')
+        except ValueError:
+            pass
 
 
 
