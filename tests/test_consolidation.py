@@ -920,6 +920,172 @@ def test_frame_conversions():
         >= oz.max_energy((26, 56), core)
 
 
+def test_nucleon_reprocessing():
+    """Multi-generation photomeson transport of free nucleons
+    (nucleon_transport_matrix / reprocessed_nucleons / cascade_nucleon_source):
+    exact number conservation by construction, the recoil-kernel block
+    identities, the optically-thin one-generation limit, spectral degradation
+    and the thick-field sub-threshold pile-up, the Duhamel source integral,
+    and the cumulative=False fold pin."""
+    from scipy.linalg import expm
+    from scipy.integrate import cumulative_trapezoid
+    from crisp.core import deposit_log_cic
+
+    _, core = source_pair()                      # cached CMB kernels core
+    n_b = len(core.boosts)
+    i_p, i_n = core.species.index((1, 1)), core.species.index((0, 1))
+    Kp, Kn = core.photomeson_kernels['p'], core.photomeson_kernels['n']
+    R = (Kp[0] + Kn[0]).sum(axis=1)              # exact proton rate [1/Mpc]
+    rmax = R.max()
+
+    # 1. generator: rows sum to zero; blocks are exactly the fold's kernels
+    # (the n -> p block additionally carries the beta-decay diagonal)
+    from crisp.core import c_in_Mpc_sec, get_nucid
+    M = core.nucleon_transport_matrix()
+    assert np.abs(M.sum(axis=1)).max() < 1e-12 * np.abs(M).max()
+    assert np.array_equal(M[:n_b, n_b:], Kn[0])
+    G = M[n_b:, :n_b]
+    assert np.array_equal(G - np.diag(np.diag(G)),
+                          Kp[1] - np.diag(np.diag(Kp[1])))
+    tau_n = core.decays[get_nucid((0, 1))]['decay_time']
+    lam = 1.0 / (core.boosts * tau_n * c_in_Mpc_sec)
+    assert np.allclose(np.diag(G) - np.diag(Kp[1]), lam, rtol=1e-12)
+    offdiag = M[:n_b, :n_b] - np.diag(np.diag(M[:n_b, :n_b]))
+    assert np.array_equal(offdiag, Kp[0] - np.diag(np.diag(Kp[0])))
+
+    # neutron decay closed form: pure-n injection below the photopion
+    # threshold follows exp(-L/L_dec), protons the complement, exactly
+    ilow = int(np.argmin(np.abs(core.boosts - 1e6)))
+    assert R[ilow] < 1e-3 * lam[ilow]
+    L_dec = 1.0 / lam[ilow]
+    n0n = np.zeros((n_b, 2))
+    n0n[ilow, 1] = 1.0
+    Ld = np.linspace(0.0, 2 * L_dec, 6)
+    nd = core.reprocessed_nucleons(Ld, injection=n0n)
+    assert np.allclose(nd[ilow, :, 1], np.exp(-Ld / L_dec), rtol=1e-9)
+    assert np.allclose(nd[ilow, :, 0], 1 - np.exp(-Ld / L_dec), atol=1e-9)
+    print(f'  neutron decay: tau_n = {tau_n:.1f} s (nubase), closed form to 1e-9')
+
+    # cooling drift (energy_loss=): conservative upwind advection — the mean
+    # ln(gamma) drifts at exactly -b while number is conserved (pure-drift
+    # check with protons below the photomeson threshold)
+    dln = np.log(core.boosts[1] / core.boosts[0])
+    n0d = np.zeros((n_b, 2))
+    n0d[ilow, 0] = 1.0
+    b0 = 10 * dln                                # 10 bins over unit path
+    Lb = np.linspace(0.0, 1.0, 5)
+    ncool = core.reprocessed_nucleons(Lb, injection=n0d,
+                                      energy_loss=np.full((n_b, 2), b0))
+    tot = ncool.sum(axis=(0, 2))
+    assert np.abs(tot - 1).max() < 1e-12
+    lngb = np.log(core.boosts)
+    mbar = (ncool.sum(axis=2) * lngb[:, None]).sum(axis=0) / tot
+    assert np.allclose(mbar, lngb[ilow] - b0 * Lb, atol=1e-9)
+    print(f'  cooling drift: <ln gamma> follows -b L exactly '
+          f'({(mbar[0] - mbar[-1]) / dln:.1f} bins), number conserved')
+
+    # 2. number conservation of the transport at several optical depths
+    # (the solver caps the stiff decay pair per interval — exact to e^-60 —
+    # so conservation stays at machine precision despite lam ~ 1e11/Mpc
+    # at the grid floor)
+    i0 = int(np.argmin(np.abs(core.boosts - 1e11)))
+    n0 = np.zeros((n_b, 2))
+    n0[i0, 0] = 1.0
+    for tau in (0.01, 1.0):
+        nt = core.reprocessed_nucleons(np.linspace(0.0, tau / rmax, 4),
+                                       injection=n0)
+        assert np.abs(nt.sum(axis=(0, 2)) - 1).max() < 1e-12
+
+    # 3. + 5. delta injection: chained == single-interval, degradation,
+    # no upward flow
+    L = np.linspace(0.0, 5.0 / rmax, 9)
+    n = core.reprocessed_nucleons(L, injection=n0)
+    assert np.abs(n.sum(axis=(0, 2)) - 1).max() < 1e-12
+    fresh = core.reprocessed_nucleons(np.array([L[0], L[-1]]),
+                                      injection=n0)[:, -1, :]
+    assert np.abs(fresh - n[:, -1, :]).max() < 1e-10 * fresh.max()
+    lng = np.log(core.boosts)
+    mbar = (n.sum(axis=2) * lng[:, None]).sum(axis=0) / n.sum(axis=(0, 2))
+    assert np.all(np.diff(mbar) <= 1e-12)
+    assert n[i0 + 1:, :, :].max() == 0.0
+    print(f'  transport at tau=5: total conserved, <ln Gamma> {mbar[0]:.2f} -> {mbar[-1]:.2f}')
+
+    # 6. thick field: sub-threshold occupation grows monotonically
+    ith = int(np.argmax(R > 0.01 * rmax))
+    below = n[:ith].sum(axis=(0, 2))
+    assert np.all(np.diff(below) >= -1e-15)
+
+    # 4. optically-thin limit: transport nu == one-generation fold + O(tau^2)
+    tau = 1e-2
+    Lt = np.linspace(0.0, tau / rmax, 6)
+    P_tr = core.reprocessed_nucleons(Lt, injection=n0)
+    _, N1 = core.neutrino_production(Lt, mass_range=[i_p, i_n],
+                                     true_range=[i_p, i_n],
+                                     boost_range=core.boosts, P=P_tr)
+    P_1g = np.zeros((n_b, len(Lt), 1))
+    P_1g[i0, :, 0] = np.exp(-R[i0] * Lt)
+    _, N0 = core.neutrino_production(Lt, mass_range=[i_p], true_range=[i_p],
+                                     boost_range=core.boosts, P=P_1g)
+    t1, t0 = N1['nu_mu'][:, -1].sum(), N0['nu_mu'][:, -1].sum()
+    print(f'  thin limit: transport/one-generation nu_mu = {t1 / t0:.6f}')
+    assert abs(t1 / t0 - 1) < 5 * tau**2 and t1 >= t0 - 1e-15
+
+    # 7. Duhamel: source-only total equals the trapezoid source integral
+    rng = np.random.default_rng(7)
+    q = rng.random((n_b, len(L), 2)) \
+        * np.exp(-0.5 * ((lng[:, None, None] - 23) / 2)**2)
+    ns = core.reprocessed_nucleons(L, source=q)
+    tot = np.trapezoid(q.sum(axis=(0, 2)), L)
+    assert abs(ns[:, -1, :].sum() - tot) < 1e-12 * tot
+
+    # 8. cumulative=False pin + deposit conservation
+    P_one = np.zeros((n_b, len(L), 1))
+    P_one[i0, :, 0] = 1.0
+    kwf = dict(mass_range=[i_p], true_range=[i_p], boost_range=core.boosts,
+               P=P_one)
+    rate = core.photomeson_production('p', L, cumulative=False, **kwf)
+    cum = core.photomeson_production('p', L, **kwf)
+    d = np.abs(cumulative_trapezoid(rate, L, axis=-1, initial=0.0) - cum).max()
+    assert d < 1e-10 * max(cum.max(), 1e-300)
+    w = rng.random(20)
+    g = np.exp(rng.uniform(np.log(core.boosts[0]), np.log(core.boosts[-1]), 20))
+    dep = deposit_log_cic(core.boosts, g, w)
+    assert abs(dep.sum() - w.sum()) < 1e-12 * w.sum()
+
+    # neutron-decay antineutrinos: one nubar_e per neutron with the boosted
+    # beta spectrum — count conserved, mean fraction <E_nu>/E_n ~ 5.1e-4,
+    # endpoint below 2 Q / m_n
+    n_in = np.zeros(n_b)
+    ihi = int(np.argmin(np.abs(core.boosts - 1e8)))
+    n_in[ihi] = 1.0
+    nd = core.neutron_decay_neutrinos(n_in)
+    assert abs(nd.sum() - 1.0) < 1e-9
+    E_g = 0.13957039 * core.boosts
+    E_n = 0.93957 * core.boosts[ihi]
+    fbar = (nd * E_g).sum() / E_n
+    print(f'  neutron-decay nubar_e: count {nd.sum():.6f}, '
+          f'<E>/E_n = {fbar:.2e} (expect ~5.1e-4)')
+    assert 4.0e-4 < fbar < 6.5e-4
+    assert E_g[nd > 0].max() < 2 * 0.782e-3 / 0.93957 * E_n * 1.1
+
+    # cascade_nucleon_source: nonnegative, and its transport closes on the
+    # source integral (three-term assembly is rate-consistent)
+    alpha, mr, tr, _ = core.get_distribution_parameters(
+        mass_lims=(56, 0), injection_type=('only species', (26, 56)),
+        absorption_type=('only mass', [1]))
+    br = np.logspace(9.5, 11.5, 8)
+    Lc = np.linspace(0.0, 3.0, 6)
+    EV = core.species_evolution_boost_range(Lc, alpha=alpha, mass_range=mr,
+                                            boost_range=br, true_range=tr)
+    qs = core.cascade_nucleon_source(Lc, alpha=alpha, mass_range=mr,
+                                     boost_range=br, true_range=tr, P=EV,
+                                     weights=np.full(len(br), 0.1))
+    assert qs.shape == (n_b, len(Lc), 2) and (qs >= 0).all()
+    nf = core.reprocessed_nucleons(Lc, source=qs)
+    tot = np.trapezoid(qs.sum(axis=(0, 2)), Lc)
+    print(f'  cascade source: {tot:.3e} nucleons/inj integrated, transport closes '
+          f'{abs(nf[:, -1, :].sum() / tot - 1):.1e}')
+    assert abs(nf[:, -1, :].sum() - tot) < 1e-12 * tot
 
 
 def test_pion_kernel_nubase_mass_delta():
