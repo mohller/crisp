@@ -64,12 +64,12 @@ def static_imbalance(core):
     A_sp = np.array([s[1] for s in core.species], float)
     Z_sp = np.array([s[0] for s in core.species], float)
     scale = np.abs(core.tensor).max()
+    imbA = (np.einsum('j,ijb->ib', A_sp, core.tensor)
+            + np.einsum('l,lijb->ib', A_LIGHT, core.light_prod_tensor))
+    imbZ = (np.einsum('j,ijb->ib', Z_sp, core.tensor)
+            + np.einsum('l,lijb->ib', Z_LIGHT, core.light_prod_tensor))
     ej = getattr(core, 'photomeson_ejecta', None)
     if ej is not None:
-        for ni, nuc in enumerate(core.nuclei):
-            si = core.species.index(tuple(nuc))
-            imbA[si] += ej['p'][ni] + ej['n'][ni]
-            imbZ[si] += ej['p'][ni]
     imbA = (np.einsum('j,ijb->ib', A_sp, core.tensor)
             + np.einsum('l,lijb->ib', A_LIGHT, core.light_prod_tensor))
     imbZ = (np.einsum('j,ijb->ib', Z_sp, core.tensor)
@@ -193,6 +193,33 @@ def test_source_production_methods():
                     new.light_secondaries_production(L, **kw))
     print(f'  P= reuse: pion {d_p1:.2e}, recoil {d_p2:.2e}, light {d_p3:.2e}')
     assert d_p1 < MACHINE and d_p2 < MACHINE and d_p3 < MACHINE
+
+    # weights= is the weighted ladder total: identical to summing per-slice folds
+    w = 1.0 / br
+    ref = sum(w[i] * new.pion_production(L, alpha=alpha, mass_range=mr,
+                                         boost_range=br[i:i + 1], true_range=tr,
+                                         P=Pev[i:i + 1])
+              for i in range(len(br)))
+    d_w = rel_diff(new.pion_production(L, P=Pev, weights=w, **kw), ref)
+    print(f'  weights= vs per-slice sum: {d_w:.2e}')
+    assert d_w < 1e-12
+
+    # photomeson_ejecta_production == the manual fold of the ejecta budget
+    ej = new.photomeson_ejecta
+    rows = np.zeros((len(tr), len(new.boosts)))
+    for k, t in enumerate(tr):
+        za = tuple(new.species[t])
+        if za in new.nuclei:
+            ni = new.nuclei.index(za)
+            rows[k] = ej['p'][ni] + ej['n'][ni]
+    from scipy.interpolate import interp1d as i1d
+    ej_b = i1d(new.boosts, rows, kind='previous', bounds_error=False,
+               fill_value=0.0)(br)
+    ref_w = np.einsum('bmi,ib->bm', np.asarray(Pev)[:, :, :len(tr)], ej_b)
+    got = new.photomeson_ejecta_production(L, P=Pev, **kw).sum(axis=0)
+    d_e = rel_diff(got, ref_w)
+    print(f'  photomeson_ejecta_production vs manual fold: {d_e:.2e}')
+    assert d_e < MACHINE
 
 
 # ------------------------------------------------------------------ mass claims
