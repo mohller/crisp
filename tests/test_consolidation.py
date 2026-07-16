@@ -769,6 +769,157 @@ def test_photomeson_only_core():
 
 
 def test_source_model_physics_methods():
+    """The source-model physics lives in the library, not in notebooks:
+    acceleration/loss balance -> E'_max, the Appendix-D injection spectrum
+    (energy closure to the baryon budget), frame conversion, the core's
+    conservation diagnostic, and cumulative= on the production folds."""
+    from scipy.constants import c
+    from scipy.integrate import cumulative_trapezoid
+    from crisp.source_models import OneZoneISModel
+
+    ph = OneZoneISModel(photon_energy_min=1e-7, photon_energy_max=3e-4,
+                           photon_energy_brk=1e-6, variability_timescale=.01,
+                           bulk_lorentz_factor=300, photon_luminosity=1e53,
+                           baryonic_loading=10, photon_energy=100, redshift=2)
+    core = InteractionCore(xsec_model=psb_xsec(), target_photons=ph.target_photons,
+                           photomeson='kernels', boosts=np.logspace(0, 12, 131),
+                           eps=np.logspace(-4, 4, 650))
+
+    a, z = core.conservation_imbalance()
+    a2, z2 = static_imbalance(core)
+    print(f'  conservation_imbalance: A {a:.2e}, Z {z:.2e} (== suite helper)')
+    assert np.isclose(a, a2, rtol=1e-9) and np.isclose(z, z2, rtol=1e-9)
+    assert a < CONSERVE
+
+    Emax = ph.max_energy((26, 56), core)
+    rates = ph.loss_rates((26, 56), core)
+    acc_at = ph.acceleration_rate((26, 56), Emax)
+    tot_at = np.exp(np.interp(np.log(Emax), np.log(rates['E']),
+                              np.log(rates['total'])))
+    print(f"  E'_max(Fe-56) = {Emax:.3e} GeV; acc/loss there = {acc_at / tot_at:.3f}")
+    assert 1e7 < Emax < 1e9 and abs(acc_at / tot_at - 1) < 0.05
+
+    q, info = ph.injection_spectrum((26, 56), interaction_core=core)
+    g = np.logspace(1, 8, 4000)
+    E = core.energy_of_boost((26, 56), g)
+    t_cross = ph.get_parameter('shell_width').to('m').m / c
+    u_inj = np.trapezoid(q(g) * E, np.log(g)) * t_cross
+    u_target = 10 * ph.get_parameter('em_density').m
+    print(f"  injection closure: {u_inj / u_target:.5f} x eta u_gamma  (C' = {info['C']:.3e})")
+    assert abs(u_inj / u_target - 1) < 1e-3
+    assert np.isclose(ph.observed_energy(1.0), 100.0)
+
+    alpha, mr, tr, _ = core.get_distribution_parameters(
+        mass_lims=(56, 0), injection_type=('only species', (26, 56)),
+        absorption_type=('only mass', [1]))
+    L = np.logspace(-19, -16, 12)
+    br2 = np.array([1e3, 1e4])
+    P = core.species_evolution_boost_range(L, alpha, mr, br2, tr)
+    kw = dict(alpha=alpha, mass_range=mr, boost_range=br2, true_range=tr, P=P)
+    r = np.asarray(core.light_secondaries_production(L, **kw))
+    d1 = rel_diff(core.light_secondaries_production(L, cumulative=True, **kw),
+                  cumulative_trapezoid(r, L, axis=-1, initial=0))
+    e = core.photomeson_ejecta_production(L, **kw)
+    d2 = rel_diff(core.photomeson_ejecta_production(L, cumulative=True, **kw),
+                  cumulative_trapezoid(e, L, axis=-1, initial=0))
+    print(f'  cumulative= identities: light {d1:.2e}, ejecta {d2:.2e}')
+    assert d1 < MACHINE and d2 < MACHINE
+
+
+def test_frame_conversions():
+    """The frame-aware parameter API: schema-declared kinds/native frames,
+    get_parameter(frame=), the frames= input declaration, and the comoving
+    adiabatic rate Gamma c / R (De Lia & Tamborra Eq. 3.3)."""
+    from crisp.source_models import InternalShockModel, OneZoneISModel, ureg
+
+    T = dict(redshift=2.0, bulk_lorentz_factor=300.0,
+             iso_energy=4.5e54 * ureg.erg, duration=30.0 * ureg.second,
+             eps_d=0.2, eps_e=0.01, eps_A=0.1, eps_B=0.1, k_index=2.2)
+    m_eng = InternalShockModel(variability_timescale=0.5 / 3.0, **T)
+    m_obs = InternalShockModel(variability_timescale=0.5,
+                               frames={'variability_timescale': 'observer'},
+                               **T)
+
+    # frames= input declaration == explicit engine-frame value
+    for par in ('radius', 'shell_width', 'magnetic_field', 'em_density'):
+        a = m_eng.get_parameter(par).m
+        b = m_obs.get_parameter(par).m
+        assert abs(a / b - 1) < 1e-12, par
+
+    # output conversions: t~ (engine, native) x(1+z) observed, xGamma comoving
+    t_nat = m_obs.get_parameter('variability_timescale').m
+    assert abs(t_nat - 0.5 / 3.0) < 1e-12
+    assert abs(m_obs.get_parameter('variability_timescale',
+                                   frame='observer').m - 0.5) < 1e-12
+    assert abs(m_obs.get_parameter('variability_timescale',
+                                   frame='comoving').m - 300 * 0.5 / 3) < 1e-9
+    # energies: comoving native -> observer = x Gamma/(1+z)
+    e_nat = m_obs.get_parameter('photon_energy_brk').m
+    e_ob = m_obs.get_parameter('photon_energy_brk', frame='observer').m
+    assert abs(e_ob / e_nat - 300 / 3.0) < 1e-9
+
+    # error paths: unknown frame; no rule declared; frames= without value
+    for bad in (lambda: m_obs.get_parameter('radius', frame='observer'),
+                lambda: m_obs.get_parameter('variability_timescale',
+                                            frame='lab')):
+        try:
+            bad()
+            raise AssertionError('must raise')
+        except ValueError:
+            pass
+    try:
+        InternalShockModel(variability_timescale=0.5,
+                           frames={'nonexistent_par': 'observer'}, **T)
+        raise AssertionError('frames= for a missing parameter must raise')
+    except ValueError:
+        pass
+
+    # adiabatic rate is the comoving Gamma c / R (both GRB model families)
+    oz = OneZoneISModel(photon_energy_min=1e-7, photon_energy_max=3e-4,
+                        photon_energy_brk=1e-6, variability_timescale=.01,
+                        bulk_lorentz_factor=300, photon_luminosity=1e53,
+                        baryonic_loading=10, photon_energy=100, redshift=2)
+    core = InteractionCore(xsec_model=psb_xsec(), target_photons=oz.target_photons,
+                           photomeson='kernels', boosts=np.logspace(0, 12, 61),
+                           eps=np.logspace(-4, 4, 300))
+    lr = oz.loss_rates((1, 1), core, include_ic=True)
+    R_cm = oz.get_parameter('radius').to('cm').m
+    expect = 300 * 2.99792458e10 / R_cm
+    print(f"  adiabatic rate: {lr['adiabatic'][0]:.4e} /s == Gamma c/R "
+          f"{expect:.4e}")
+    assert abs(lr['adiabatic'][0] / expect - 1) < 1e-6
+
+    # inverse Compton: at exact equipartition (B' = sqrt(8 pi u_gamma)) the
+    # Thomson-regime IC rate equals synchrotron; deep Klein-Nishina kills it
+    b = core.boosts
+    r_ic, r_sy = lr['inverse_compton'], lr['synchrotron']
+    i_lo = int(np.argmin(np.abs(b - 1e2)))       # b_KN = 4 g eps/m << 1
+    i_hi = int(np.argmin(np.abs(b - 1e10)))
+    print(f'  IC/synchrotron: {r_ic[i_lo] / r_sy[i_lo]:.3f} (Thomson), '
+          f'{r_ic[i_hi] / r_sy[i_hi]:.2e} (deep KN)')
+    assert 0.8 < r_ic[i_lo] / r_sy[i_lo] < 1.05
+    assert r_ic[i_hi] / r_sy[i_hi] < 1e-3
+    assert 'inverse_compton' not in oz.loss_rates((1, 1), core)  # default off
+    d_tot = lr['total'] - oz.loss_rates((1, 1), core)['total'] - r_ic
+    assert np.abs(d_tot).max() < 1e-12 * lr['total'].max()
+
+    # kappa=True: photonuclear entries become energy-loss (cooling) rates
+    lr_k = oz.loss_rates((1, 1), core, kappa=True)
+    act = lr['photomeson'] > 1e-3 * lr['photomeson'].max()
+    kap_p = lr_k['photomeson'][act] / lr['photomeson'][act]
+    kap_p = kap_p[kap_p > 0]       # top-of-grid CIC clamp rows clip to 0
+    print(f'  proton photomeson kappa: {kap_p.min():.2f}..{kap_p.max():.2f}')
+    assert 0.1 < kap_p.min() and kap_p.max() < 0.7
+    lrFe = oz.loss_rates((26, 56), core)
+    lrFe_k = oz.loss_rates((26, 56), core, kappa=True)
+    actF = lrFe['photonuclear'] > 1e-3 * lrFe['photonuclear'].max()
+    kap_F = lrFe_k['photonuclear'][actF] / lrFe['photonuclear'][actF]
+    print(f'  Fe-56 photonuclear kappa: {kap_F.min():.3f}..{kap_F.max():.3f}')
+    assert 0.005 < kap_F.min() and kap_F.max() < 0.30
+    assert oz.max_energy((26, 56), core, kappa=True) \
+        >= oz.max_energy((26, 56), core)
+
+
 
 
 def test_pion_kernel_nubase_mass_delta():
