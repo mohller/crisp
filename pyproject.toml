@@ -45,6 +45,7 @@ crisp-fetch-data = "crisp.data_download:fetch_crpropa_tables"
 
 [project.urls]
 Homepage = "https://github.com/mohller/crisp"
+Documentation = "https://leonel-morejon.org/crisp/crisp.html"
 "Bug Tracker" = "https://github.com/mohller/crisp/issues"
 
 [tool.setuptools.packages.find]

@@ -3,6 +3,8 @@
 
 A convenience package to compute quantities related to the propagation of ultrahigh-energy based on closed form probability distribution functions. Applicable for both in-source and extragalactic propagation scenarios.
 
+[API documentation](https://leonel-morejon.org/crisp/crisp.html)
+
 ## Usage
 
 Try the examples directly in your browser — no installation needed:
