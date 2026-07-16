@@ -323,21 +323,235 @@ def test_neutrino_production_counts_and_energies():
 
 
 def test_neutrino_production_via_pion_production():
-    """The pion-path entry point runs end to end on a kernels-enabled core."""
+    """The pion-path entry point runs end to end on a kernels-enabled core.
+
+    The parent boosts must sit in the physical photopion regime of the CMB
+    (Gamma >~ 1e10): below it the kernel rows are Planck-tail suppressed to
+    the underflow level and the test would assert on numerical dust."""
     _, core = source_pair()
     alpha, mr, tr, _ = core.get_distribution_parameters(
         mass_lims=(56, 0), injection_type=('only species', (26, 56)),
         absorption_type=('only mass', [1]))
-    br = core.boosts[100:106]
+    br = core.boosts[110:116]
     L = np.linspace(0.0, 50.0, 4)
     E_nu, N_nu = core.neutrino_production(L, alpha=alpha, mass_range=mr,
                                           boost_range=br, true_range=tr)
     N_pi = core.pion_production(L, alpha=alpha, mass_range=mr,
                                 boost_range=br, true_range=tr)
     total_nu = N_nu['nu_mu'][:, -1].sum() + N_nu['nu_e'][:, -1].sum()
+    ratio = total_nu / N_pi[:, -1].sum()
     print(f'  total nu per injected Fe at L=50 Mpc: {total_nu:.3e} '
-          f'(= {total_nu / max(N_pi[:, -1].sum(), 1e-300):.3f} per lumped pion; expect ~1)')
+          f'(= {ratio:.3f} per lumped pion; 3 x charged fraction)')
     assert np.isfinite(total_nu) and total_nu > 0
+    # 3 x physical charged fraction of the interaction-type mix: between the
+    # pure-Delta 1.0 and the all-charged 3.0
+    assert 1.0 < ratio < 2.5
+
+
+def test_model_rack_channel_union():
+    """Model_Rack keeps every model's channels (union per nucleus, dedup) and
+    distinguishes the interaction groups."""
+    from crisp.photonuclear_cross_sections import Model_Rack, Photomeson_Superposition
+    pdis = psb_xsec()
+    pm = Photomeson_Superposition(pdis.nuclei)
+    rack = Model_Rack(models=(pdis, pm))
+
+    assert rack.photodisintegration_models == [pdis]
+    assert rack.photomeson_models == [pm]
+    assert sorted(rack.nuclei) == sorted(set(pdis.nuclei))   # pm nuclei are a subset
+
+    for nuc in [(26, 56), (6, 12), (2, 4)]:
+        i, j, k = rack.nuclei.index(nuc), pdis.nuclei.index(nuc), pm.nuclei.index(nuc)
+        union = set(rack.channels[i])
+        assert set(map(tuple, pdis.channels[j])) <= union, f'{nuc}: pdis channel lost'
+        assert set(map(tuple, pm.channels[k])) <= union, f'{nuc}: photomeson channel lost'
+    print('  rack union keeps all channels of both groups')
+
+
+def test_photomeson_rates_in_cascade():
+    """photomeson='kernels' adds the superposition A -> A-1 rates to the
+    cascade: the per-nucleus rate increment equals the rate of the
+    superposition sigma row exactly; conservation holds; the p/n hook is set
+    and shifts the light-matrix diagonals; a rack that already contains a
+    photomeson model is not wrapped again."""
+    from crisp.photonuclear_cross_sections import Model_Rack, Photomeson_Superposition
+
+    kern = cached('psb_photomeson', lambda: InteractionCore(
+        xsec_model=PSB_model(), photomeson='kernels'))
+    none = InteractionCore(xsec_model=PSB_model(), eps=kern.eps)
+
+    i, j = kern.nuclei.index((26, 56)), none.nuclei.index((26, 56))
+    inc = kern.all_rates[i] - none.all_rates[j]
+    pm = kern._collect_photomeson_models(kern.xsec_model)
+    assert len(pm) == 1 and type(pm[0]).__name__ == 'Photomeson_Superposition'
+    r_pm = kern._rates_of_sigma_rows(pm[0].cross_section(kern.eps * 1e3, 26, 56))[0]
+    mask = r_pm > 1e-8 * r_pm.max()
+    d = np.abs(inc[mask] - r_pm[mask]).max() / r_pm.max()
+    b = int(np.argmin(np.abs(kern.boosts - 1e11)))
+    print(f'  Fe56 photomeson rate at Gamma=1e11: {inc[b]:.3f} /Mpc '
+          f'({inc[b]/56:.4f} per nucleon); increment==row identity {d:.2e}')
+    assert d < MACHINE
+
+    a, z = static_imbalance(kern)
+    assert a < CONSERVE and z < CONSERVE
+
+    assert hasattr(kern, 'photomeson_rates_pn') and kern.photomeson_rates_pn[b] > 0
+    M = kern._build_light_interaction_matrix(kern.boosts[[b]])
+    M0 = none._build_light_interaction_matrix(none.boosts[[b]])
+    shift = (M0[4, 4, 0] - M[4, 4, 0])
+    print(f'  p/n light-matrix absorption: {shift:.4f} /Mpc == hook {kern.photomeson_rates_pn[b]:.4f}')
+    assert np.isclose(shift, kern.photomeson_rates_pn[b], rtol=1e-12)
+
+    # pre-composed rack: no double counting
+    pdis = PSB_model()
+    rack = Model_Rack(models=(pdis, Photomeson_Superposition(pdis.nuclei)))
+    manual = InteractionCore(xsec_model=rack, photomeson='kernels', eps=kern.eps,
+                             boosts=kern.boosts)
+    k = manual.nuclei.index((26, 56))
+    assert np.abs(manual.all_rates[k] - kern.all_rates[i]).max() < 1e-12 * kern.all_rates[i].max()
+    print('  pre-composed rack identical to auto-wrap (no double counting)')
+
+
+def test_photomeson_model_astrophomes():
+    """A richer photomeson model (AstroPhoMes) joins the cascade through the
+    rack: its channels survive the union and contribute nonzero rates.
+
+    The repository is resolved via crisp.data_download.get_astrophomes_path
+    (ASTROPHOMES_PATH env var / local cache); no download is attempted here."""
+    from crisp.data_download import get_astrophomes_path
+    from crisp.photonuclear_cross_sections import Model_Rack, Photomeson, load_astrophomes
+
+    try:
+        get_astrophomes_path(auto_download=False, verbose=False)
+    except FileNotFoundError as exc:
+        raise unittest.SkipTest(str(exc))
+
+    pdis = psb_xsec()
+    xspm = Photomeson(pmm=load_astrophomes(auto_download=False),
+                      filter_nuclei=lambda nuc: nuc in pdis.nuclei)
+    rack = Model_Rack(models=(pdis, xspm))
+
+    i = rack.nuclei.index((26, 56))
+    pm_only = set(map(tuple, xspm.channels[xspm.nuclei.index((26, 56))]))
+    assert pm_only <= set(rack.channels[i]), 'AstroPhoMes channels lost in the rack'
+
+    # channels list every inclusive daughter (untracked ones are resolved by
+    # the core), and cross_section answers only for listed remnants
+    e_pm = np.logspace(2.2, 6, 40)  # MeV
+    for nuc in [(26, 56), (4, 9), (1, 2)]:
+        chans = xspm.channels[xspm.nuclei.index(nuc)]
+        assert chans, f'{nuc}: no photomeson channels listed'
+        per_ch = np.array([xspm.cross_section(e_pm, *nuc, rem=ch).max() for ch in chans])
+        assert per_ch.max() > 0, f'{nuc}: listed channels answer zero sigma'
+        assert xspm.cross_section(e_pm, *nuc, rem=(9, 39)).max() == 0, \
+            f'{nuc}: sigma leaks into unlisted channels'
+    assert xspm.channels[xspm.nuclei.index((1, 2))] == [(1, 1)]  # nonel-only deuteron
+
+    core = InteractionCore(xsec_model=rack, photomeson='kernels',
+                           eps=np.logspace(-4, 4, 650))
+    assert core._collect_photomeson_models(core.xsec_model) == [xspm]  # no auto-wrap
+    a, z = static_imbalance(core)
+    print(f'  AstroPhoMes rack: conservation A {a:.1e}, Z {z:.1e}')
+    assert a < CONSERVE
+    none = InteractionCore(xsec_model=psb_xsec(), eps=core.eps)
+    k, j = core.nuclei.index((26, 56)), none.nuclei.index((26, 56))
+    b = int(np.argmin(np.abs(core.boosts - 1e12)))
+    print(f'  Fe56 AstroPhoMes photomeson rate at 1e12: {core.all_rates[k][b] - none.all_rates[j][b]:.3f} /Mpc')
+    assert core.all_rates[k][b] > none.all_rates[j][b]
+
+
+def test_photomeson_inclusive_scaling():
+    """The empirical photomeson mass scalings (AstroPhoMes EmpiricalModel,
+    Morejon+19) through the hybrid loader and photomeson_scaling='inclusive':
+    the genuine model's restored multiplicity table, the hybrid's exclusive
+    A-1 channels with improved cross sections, the sigma-level A^alpha_pi
+    scaling, the fold factors, and default-path invariance."""
+    from crisp.data_download import get_astrophomes_path
+    from crisp.photonuclear_cross_sections import Model_Rack, Photomeson, load_astrophomes
+
+    try:
+        get_astrophomes_path(auto_download=False, verbose=False)
+    except FileNotFoundError as exc:
+        raise unittest.SkipTest(str(exc))
+
+    # genuine fixed model: non-empty channel table (guards the upstream
+    # isinstance(k, str) regression that silently emptied it on py3)
+    emp = load_astrophomes(model='EmpiricalModel', auto_download=False)
+    assert len(emp.multiplicity) > 0 and (5626, 100) in emp.multiplicity
+    fe_mult = sum(v for (m, d), v in emp.multiplicity.items() if m == 5626)
+    print(f'  genuine EmpiricalModel: {len(emp.multiplicity)} entries, '
+          f'Fe-56 total multiplicity {fe_mult:.2f} (inclusive table)')
+
+    # hybrid: SPM exclusive channel structure + EmpiricalModel cross sections
+    hyb = load_astrophomes(model='EmpiricalModel', channels='superposition',
+                           auto_download=False)
+    spm = load_astrophomes(auto_download=False)
+    assert sorted(k for k in hyb.multiplicity if k[0] == 5626) == \
+           sorted(k for k in spm.multiplicity if k[0] == 5626)
+    assert (hyb.cs_nonel(5626)[1] >= 0).all()          # threshold clip
+
+    pdis = psb_xsec()
+    xspm = Photomeson(pmm=hyb, filter_nuclei=lambda nuc: nuc in pdis.nuclei)
+    eps = np.logspace(2.2, 6, 80)                      # MeV
+    assert xspm.cross_section(eps, 26, 56, rem=(26, 55)).max() > 0
+
+    # sigma level: A^(alpha_pi - 1) suppression at low energies, charge-blind
+    r = {}
+    for c in (2, 3, 4):
+        num = xspm.inclusive_cross_section(eps, 26, 56, c)
+        den = (26 * xspm.inclusive_cross_section(eps, 1, 1, c)
+               + 30 * xspm.inclusive_cross_section(eps, 0, 1, c))
+        m = den > 0
+        r[c] = num[m] / den[m]
+    lowE = r[2][:6].mean()
+    print(f'  sigma-level Fe pion factor at threshold: {lowE:.3f} '
+          f'(56^(alpha_pi-1) ~ 0.26 with the fade)')
+    assert 0.20 < lowE < 0.40
+    # charge-blind at sigma level (1e-15 on the native pmm grid; the residual
+    # here is np.interp resampling of differently-shaped sigma onto eps)
+    assert np.abs(r[2] - r[4]).max() < 0.01
+    spm_w = Photomeson(pmm=spm, filter_nuclei=lambda nuc: nuc in pdis.nuclei)
+    num = spm_w.inclusive_cross_section(eps, 26, 56, 2)
+    den = (26 * spm_w.inclusive_cross_section(eps, 1, 1, 2)
+           + 30 * spm_w.inclusive_cross_section(eps, 0, 1, 2))
+    m = den > 0
+    assert np.allclose(num[m] / den[m], 1.0, atol=1e-9)
+
+    # core factors + fold identity on the GRB-like Band field
+    from crisp.background_photon_models import band_photon_spectrum
+    tp = band_photon_spectrum(2.5e-7, normal=((1e-9, 1e-2), 7.6e5))
+    rack = Model_Rack(models=(pdis, xspm))
+    kw = dict(xsec_model=rack, target_photons=tp, photomeson='kernels',
+              boosts=np.logspace(0, 12, 131), eps=np.logspace(-2, 6, 300))
+    core = InteractionCore(photomeson_scaling='inclusive', **kw)
+    twin = InteractionCore(**kw)
+    assert not hasattr(twin, 'photomeson_fold_scaling')
+
+    F = core.photomeson_fold_scaling
+    i_fe = core._pm_scaling_index[(26, 56)]
+    bgrid = core.boosts
+    f_lo = np.interp(3e4, bgrid, F['pion'][i_fe])      # threshold-regime boosts
+    f_hi = np.interp(1e10, bgrid, F['pion'][i_fe])
+    print(f'  Fe fold factor: {f_lo:.3f} at 3e4, {f_hi:.3f} at 1e10 '
+          f'(alpha_pi -> 1 at high energies)')
+    assert 0.2 < f_lo < 0.6 and 0.9 < f_hi <= 1.001
+    sig = F['pion'][i_fe] != 1.0
+    assert np.abs(F['pi+'][i_fe] - F['pi-'][i_fe])[sig].max() < 0.05
+    assert 0.5 < np.interp(3e8, bgrid, F['N'][i_fe]) < 1.2
+
+    i_sp = core.species.index((26, 56))
+    fold_kw = dict(alpha=np.ones(1), mass_range=[i_sp], boost_range=np.array([3e8]),
+                   true_range=[i_sp], P=np.ones((1, 2, 1)))
+    L = np.array([0.0, 1e-9])
+    y1 = core.photomeson_production('pi+', L, **fold_kw)[:, -1]
+    y0 = twin.photomeson_production('pi+', L, **fold_kw)[:, -1]
+    m = y0 > 0
+    f_exp = np.interp(3e8, bgrid, F['pi+'][i_fe])
+    d = np.abs(y1[m] / y0[m] - f_exp).max()
+    print(f'  fold ratio == stored factor at boost 3e8: {f_exp:.4f} (delta {d:.1e})')
+    assert d < 1e-12
+
+
 def test_fft_rates_match_brute_force_reference():
     """compute_rates (the default rate_method='fft') against a dense direct
     quadrature of the exact isotropic-field integral, on identical sigma
