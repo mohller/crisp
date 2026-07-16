@@ -203,3 +203,47 @@ def compute_rates(pdensity, pgrid, eweighted_xsec, egrid, boostgrid=None,
                             fill_value=0, bounds_error=False)
 
     return interp_rates(-np.log(2*boostgrid))
+
+
+def exact_rates_for_sigma(boosts, target_photons, eps_GeV, sigma_rows_mb):
+    """Batched exact isotropic-field interaction rates of cross-section rows.
+
+    Wraps compute_rates with an internal grid sized from the photon-field
+    support and the boost range (so the analytic 1/y^2 tail of the
+    energy-weighted cross section is captured up to 2 Gamma_max
+    eps_field_max). Rates are clipped at zero (cubic interpolation of the
+    convolution can leave tiny negatives).
+
+    Arguments:
+    ----------
+    boosts        : Lorentz-factor grid
+    target_photons: photon field n_gamma(eps) in GeV^-1 cm^-3, eps in GeV
+    eps_GeV       : photon-energy grid where the cross sections are sampled
+    sigma_rows_mb : array (n_rows, len(eps_GeV)) of cross sections in mb
+
+    Returns:
+    --------
+    rates : ndarray (n_rows, len(boosts)) in Mpc^-1
+    """
+    eps_GeV = np.asarray(eps_GeV)
+    eps_MeV = eps_GeV * 1e3
+    eweighted = energy_weight_sigma(sigma_rows_mb, eps_MeV)
+
+    # photon-field support (eV), probed on a wide grid
+    probe = np.logspace(-9, 15, 200)
+    n_probe = np.asarray(target_photons(probe * 1e-9))
+    support = probe[n_probe > 0]
+    field_lo = support[0] if support.size else 1e-9
+    field_hi = support[-1] if support.size else 1e9
+
+    lo = min(-9.0, np.log10(field_lo))
+    hi = max(9.0, np.log10(eps_GeV[-1] * 1e9),
+             np.log10(2 * boosts[-1] * field_hi))
+    n_points = int((hi - lo) * 167) + 1
+
+    pgrid = np.logspace(lo, hi, n_points)
+    pdensity_eV = lambda e: np.asarray(target_photons(np.asarray(e) * 1e-9)) * 1e-9
+
+    rates = compute_rates(pdensity_eV, pgrid, eweighted, eps_MeV,
+                          boostgrid=boosts, common_bounds=(lo, hi), N=n_points)
+    return np.clip(rates, 0.0, None)
