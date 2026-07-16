@@ -30,7 +30,13 @@ jobs:
           pip install -e ".[docs]"
 
       - name: Build API reference
-        run: python -m pdoc -o site crisp crisp.UHECR_statistics --docformat google
+        run: |
+          LOGO_DATA_URI="data:image/svg+xml;base64,$(base64 -w0 doc/crisp_logo_dark.svg)"
+          python -m pdoc -o site crisp crisp.UHECR_statistics \
+            --docformat google \
+            --logo "$LOGO_DATA_URI" \
+            --logo-link "https://github.com/mohller/crisp" \
+            --favicon "$LOGO_DATA_URI"
 
       - uses: actions/upload-pages-artifact@v3
         with:
