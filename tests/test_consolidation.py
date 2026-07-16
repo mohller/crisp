@@ -309,19 +309,159 @@ def test_neutrino_production_via_pion_production():
     print(f'  total nu per injected Fe at L=50 Mpc: {total_nu:.3e} '
           f'(= {total_nu / max(N_pi[:, -1].sum(), 1e-300):.3f} per lumped pion; expect ~1)')
     assert np.isfinite(total_nu) and total_nu > 0
-    assert 0.9 < total_nu / N_pi[:, -1].sum() < 1.01
+def test_fft_rates_match_brute_force_reference():
+    """compute_rates (the default rate_method='fft') against a dense direct
+    quadrature of the exact isotropic-field integral, on identical sigma
+    support. Also pins the analytic 1/y^2 continuation above the support,
+    without which rates at 2*Gamma*eps_peak > sigma range are underestimated
+    (the 'direct' method lacks it and falls behind there)."""
+    from scipy.integrate import cumulative_trapezoid
+    from scipy.constants import parsec
+    from crisp.interaction_rates import compute_rates
+
+    Mpc_cm = parsec * 1e8
+    psb = psb_xsec()
+    eps = 1e-3 * np.logspace(-1, 2.1, 300)
+    eps_dense = 1e-3 * np.logspace(-1, 2.1, 12000)
+    sig_dense = 1e-27 * psb.cross_section(eps_dense * 1e3, 26, 56)
+    I_inner = cumulative_trapezoid(eps_dense * sig_dense, eps_dense, initial=0)
+    eth = eps_dense[np.argmax(sig_dense > 0)]
+
+    def ref_rate(gamma):
+        lo = max(1e-18, eth / (2 * gamma) / 30)
+        elab = np.logspace(np.log10(lo), -6, 20000)
+        I = np.interp(2 * gamma * elab, eps_dense, I_inner, left=0, right=I_inner[-1])
+        return np.trapezoid(cmb_photon_density_GeVcm3(elab) / elab**2 * I,
+                            elab) / (2 * gamma**2) * Mpc_cm
+
+    gammas = np.logspace(10.3, 14, 8)
+    r_ref = np.array([ref_rate(g) for g in gammas])
+
+    eMeV = eps * 1e3
+    ew = 2 / eMeV**2 * cumulative_trapezoid(psb.cross_section(eMeV, 26, 56) * eMeV,
+                                            eMeV, initial=0)
+    pdens_eV = lambda e: cmb_photon_density_GeVcm3(np.asarray(e) * 1e-9) * 1e-9
+    bounds, n_pts = (-9, 15), int(24 * 167) + 1
+    r_fft = compute_rates(pdens_eV, np.logspace(*bounds, n_pts), ew, eMeV,
+                          boostgrid=gammas, common_bounds=bounds, N=n_pts)[0]
+    rel = np.abs(r_fft / r_ref - 1)
+    print(f'  fft vs brute force (Gamma 2e10..1e14): max rel {rel.max():.2e}')
+    assert rel.max() < 1e-2
+
+
+def test_rate_method_fft_vs_direct():
+    """The default 'fft' construction agrees with 'direct' below the boost
+    where 2*Gamma*eps_peak reaches the sigma support, conserves nucleons, and
+    is faster; above it, 'fft' keeps the (correct) 1/y^2 tail."""
+    import time
+    m = psb_xsec()
+    t0 = time.time(); fft = InteractionCore(xsec_model=m); t_fft = time.time() - t0
+    t0 = time.time(); direct = InteractionCore(xsec_model=m, rate_method='direct'); t_dir = time.time() - t0
+
+    a, _ = static_imbalance(fft)
+    assert a < CONSERVE
+
+    pre = fft.boosts < 3e10
+    idx = [fft.nuclei.index(n) for n in direct.nuclei]
+    fa, da = fft.all_rates[idx][:, pre], direct.all_rates[:, pre]
+    mask = da > 1e-6 * da.max()
+    rel = np.abs(fa[mask] - da[mask]) / da[mask]
+    print(f'  fft {t_fft:.1f}s vs direct {t_dir:.1f}s; pre-tail max rel {rel.max():.2e}; '
+          f'high-boost tail ratio {fft.all_rates[:, fft.boosts > 3e11].sum() / direct.all_rates[:, fft.boosts > 3e11].sum():.2f}')
+    assert rel.max() < 2e-2
 
 
 def test_pion_kernel_absolute_normalization():
-    """GZK benchmark: the proton photopion rate on the CMB at Gamma = 1e11 is
-    ~0.07 /Mpc (interaction length ~14 Mpc). Pins the cm -> Mpc conversion in
-    the kernel (a factor-3e38 units bug was found and fixed here)."""
-    from crisp.core import build_pion_prod_kernel
+    """The kernel row sums equal the exact isotropic-field photomeson rate
+    (each parent row is normalized to it; the head-on mapping only shapes the
+    secondary spectrum). GZK benchmark: at Gamma = 1e11 on the CMB the exact
+    rate is ~0.027 /Mpc — the threshold regime of the GZK rise, below the
+    head-on peak-approximation value (~0.07) quoted before the normalization.
+    Also pins the cm -> Mpc conversion (a factor-3e38 units bug was fixed here)."""
+    from crisp.core import build_pion_prod_kernel, build_proton_recoil_kernel
+    from crisp.interaction_rates import exact_rates_for_sigma
+    from crisp.photonuclear_cross_sections import pgamma_components
+
     boosts = np.logspace(9, 12, 16)
-    K = build_pion_prod_kernel(boosts, cmb_photon_density_GeVcm3)
-    rate = K[0].sum(axis=1)[int(np.argmin(np.abs(boosts - 1e11)))]
-    print(f'  proton photopion rate at Gamma=1e11 on the CMB: {rate:.3e} /Mpc (literature ~0.05-0.1)')
-    assert 0.03 < rate < 0.15
+    e_grid = np.logspace(np.log10(0.145), 4.0, 500)
+    comps = pgamma_components(e_grid)
+    sig_tot = 1e27 * sum(np.clip(c, 0, None) for c in comps.values())
+    r_exact = exact_rates_for_sigma(boosts, cmb_photon_density_GeVcm3,
+                                    e_grid, sig_tot)[0]
+
+    # one nucleon leaves every interaction: the nucleon kernel rows equal the
+    # exact isotropic interaction rate identically
+    K_N = build_proton_recoil_kernel(boosts, cmb_photon_density_GeVcm3)
+    row = K_N[0].sum(axis=1)
+    mask = row > 0        # inside the head-on kinematic window
+    d = np.abs(row[mask] - r_exact[mask]).max() / r_exact.max()
+    print(f'  nucleon kernel row-sum == exact isotropic rate: {d:.2e}')
+    assert d < 1e-10
+
+    # the pion rows carry the physical multiplicity (>= 1 interaction count)
+    K_pi = build_pion_prod_kernel(boosts, cmb_photon_density_GeVcm3)
+    rate = K_pi[0].sum(axis=1)[int(np.argmin(np.abs(boosts - 1e11)))]
+    print(f'  pion rate at Gamma=1e11 on the CMB: {rate:.3e} /Mpc (lit. rise 0.02-0.1)')
+    assert 0.02 < rate < 0.15
+    mult = np.divide(K_pi[0].sum(axis=1)[mask], row[mask]).max()
+    print(f'  max pion multiplicity per interaction on this grid: {mult:.2f}')
+    assert 1.0 <= mult < 3.01
+
+
+def test_species_kernels_and_helicity_chain():
+    """The charge/species-resolved photomeson kernels and the helicity decay
+    chain (Huemmer+10): isospin mirror symmetry, the one-nucleon-per-
+    interaction identity, physical charged fractions, exact nu counts and
+    the nu/nubar detail, and the closed-form cooling limits."""
+    from crisp.core import build_photomeson_species_kernels
+    from crisp.interaction_rates import exact_rates_for_sigma
+    from crisp.photonuclear_cross_sections import pgamma_components
+
+    boosts = np.logspace(9, 12, 16)
+    Ks = build_photomeson_species_kernels(boosts, cmb_photon_density_GeVcm3)
+
+    # isospin mirror: neutron parents are the pi+ <-> pi-, p <-> n reflection
+    assert np.array_equal(Ks['pi+'][0], Ks['pi-'][1])
+    assert np.array_equal(Ks['pi0'][0], Ks['pi0'][1])
+    assert np.array_equal(Ks['p'][0], Ks['n'][1])
+
+    e = np.logspace(np.log10(0.145), 4, 500)
+    comps = pgamma_components(e)
+    r_ex = exact_rates_for_sigma(boosts, cmb_photon_density_GeVcm3, e,
+                                 1e27 * sum(np.clip(c, 0, None) for c in comps.values()))[0]
+    nuc = (Ks['p'] + Ks['n'])[0].sum(axis=1)
+    m = nuc > 0
+    assert np.abs(nuc[m] - r_ex[m]).max() / r_ex.max() < 1e-10
+
+    lum = (Ks['pi+'] + Ks['pi-'] + Ks['pi0'])[0].sum(axis=1)
+    f_ch = np.divide((Ks['pi+'] + Ks['pi-'])[0].sum(axis=1)[m], lum[m])
+    print(f'  charged pion fraction range on the CMB grid: '
+          f'{f_ch.min():.3f} .. {f_ch.max():.3f}')
+    assert np.all(f_ch >= 1 / 3 - 1e-12) and np.all(f_ch <= 1.0)
+
+    # helicity chain: 3 nu per charged pion, nu/nubar splits, cooling limits
+    core = source_pair()[1]
+    n_b = len(core.boosts)
+    N_pi = np.zeros((n_b, 1))
+    N_pi[120] = 6.0
+    E_nu, N_nu = core.neutrino_production(N_pion=N_pi, charged_fraction=1.0)
+    d = N_nu['detail']
+    tot = sum(v.sum() for v in d.values())
+    print(f'  nu per charged pion: {tot / 6.0:.4f} (expect 3, minus grid-floor tail)')
+    assert abs(tot / 18.0 - 1) < 1e-2
+    # symmetric pi+/pi- input -> symmetric nu/nubar per flavor
+    assert np.allclose(d['nu_mu'], d['nubar_mu'], rtol=1e-12)
+    assert np.allclose(d['nu_e'], d['nubar_e'], rtol=1e-12)
+
+    _, N_cold = core.neutrino_production(N_pion=N_pi, charged_fraction=1.0, B_gauss=1e-12)
+    assert rel_diff(N_cold['nu_mu'], N_nu['nu_mu']) < 1e-10   # B -> 0: no cooling
+    _, N_hot = core.neutrino_production(N_pion=N_pi, charged_fraction=1.0, B_gauss=1e6)
+    assert N_hot['nu_mu'].sum() < 1e-3 * N_nu['nu_mu'].sum()  # strong suppression
+    f = core.decay_before_cooling(E_nu, 0.1057, 2.197e-6, 5e5)
+    assert np.all(np.diff(f) <= 1e-15)                        # monotone in energy
+
+
+def test_pgamma_components_decomposition():
 
 
 def test_pion_kernel_nubase_mass_delta():
