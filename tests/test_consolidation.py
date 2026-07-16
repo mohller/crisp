@@ -1118,14 +1118,73 @@ def test_psb_model_c12_channel_completion():
 
 # ------------------------------------------------------------------- known gaps
 
-def test_gdra_placeholder():
-    """The GDRA core class was removed in phase 5 (pre-existing species explosion).
+def test_sophia_spectrum_kernels():
+    """photomeson_spectra=<AstroPhoMes model>: kernels built from the full
+    SOPHIA x-distributions — same exact-rate normalization as the Rachen
+    kernels, but with the complete secondary energy spread and real
+    neutron-parent tables."""
+    from crisp.data_download import get_astrophomes_path
+    from crisp.interaction_rates import exact_rates_for_sigma
+    from crisp.photonuclear_cross_sections import (Photomeson_Superposition,
+                                                   load_astrophomes)
+    from crisp.background_photon_models import cmb_photon_density_GeVcm3
 
-    The GDR_atlas cross-section model remains available; using it through
-    InteractionCore(xsec_model=GDR_atlas(...)) needs a species filter
-    (e.g. restricting to A <= 56 ground states) and a channel-table pass first.
-    """
-    raise unittest.SkipTest('GDRA core removed; GDR_atlas model needs a species filter to be usable')
+    try:
+        get_astrophomes_path(auto_download=False, verbose=False)
+    except FileNotFoundError as exc:
+        raise unittest.SkipTest(str(exc))
+
+    pmm = load_astrophomes(auto_download=False)
+    kw = dict(xsec_model=Photomeson_Superposition([(2, 4), (2, 3), (1, 2)]),
+              target_photons=cmb_photon_density_GeVcm3, photomeson='kernels',
+              boosts=np.logspace(0, 12, 131), eps=np.logspace(-2, 6, 300))
+    core = InteractionCore(photomeson_spectra=pmm, **kw)
+    ref = InteractionCore(**kw)
+
+    i11 = int(np.argmin(np.abs(core.boosts - 1e11)))
+    R_s = (core.photomeson_kernels['p'][0]
+           + core.photomeson_kernels['n'][0]).sum(axis=1)
+    R_r = (ref.photomeson_kernels['p'][0]
+           + ref.photomeson_kernels['n'][0]).sum(axis=1)
+    print(f'  GZK proton rate at 1e11: SOPHIA {R_s[i11]:.4f} vs '
+          f'Rachen {R_r[i11]:.4f} /Mpc')
+    assert abs(R_s[i11] / R_r[i11] - 1) < 0.15
+
+    # nucleon multiplicity per interaction ~ 1 (tables), <= 1.35 everywhere
+    sig = R_r > 1e-3 * R_r.max()
+    r_ex = exact_rates_for_sigma(core.boosts, cmb_photon_density_GeVcm3,
+                                 np.asarray(pmm.egrid, dtype=float),
+                                 np.vstack([pmm.cs_proton_grid,
+                                            pmm.cs_neutron_grid]) * 1e-3)
+    mult_N = R_s[sig] / r_ex[0][sig]
+    assert 0.9 < mult_N.min() and mult_N.max() < 1.35
+
+    # the point of the feature: the secondary spectra are genuinely BROAD
+    lg = np.log10(core.boosts)
+    widths = {}
+    for lab, c in [('SOPHIA', core), ('Rachen', ref)]:
+        row = c.pion_prod_tensor[0][i11]
+        cum = np.cumsum(row) / row.sum()
+        widths[lab] = np.interp(0.75, cum, lg) - np.interp(0.25, cum, lg)
+    print(f"  pion secondary IQR at 1e11: SOPHIA {widths['SOPHIA']:.2f} vs "
+          f"Rachen {widths['Rachen']:.2f} decades")
+    assert widths['SOPHIA'] > 3 * widths['Rachen']
+
+    # the decay chain is untouched: still 3 nu per charged pion
+    br = core.boosts[110:116]
+    P1 = np.ones((len(br), 2, 1))
+    i_p = core.species.index((1, 1))
+    fold_kw = dict(alpha=np.ones(1), mass_range=[i_p], true_range=[i_p],
+                   boost_range=br, P=P1)
+    L = np.array([0.0, 1.0])
+    n_pi = (core.photomeson_production('pi+', L, **fold_kw)[:, -1].sum()
+            + core.photomeson_production('pi-', L, **fold_kw)[:, -1].sum())
+    _, N_nu = core.neutrino_production(L, **fold_kw)
+    n_nu = N_nu['nu_mu'][:, -1].sum() + N_nu['nu_e'][:, -1].sum()
+    print(f'  nu per charged pion (SOPHIA kernels): {n_nu / n_pi:.3f}')
+    assert abs(n_nu / n_pi - 3.0) < 0.05
+
+
 
 
 def test_crpropa_removed():
