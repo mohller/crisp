@@ -1421,6 +1421,369 @@ def test_secondary_cooling_migration():
             pass
 
 
+def test_empirical_channels():
+    """channels='empirical': the Morejon et al. (2019) fragment physics as
+    exclusive residual channels — one heavy survivor per event, weights
+    renormalized to exactly one event, light fragments through the ejecta
+    budget. Carries <Delta A> ~ 5.7 for Fe-56 instead of the superposition
+    skeleton's 1."""
+    from crisp.data_download import get_astrophomes_path
+    from crisp.photonuclear_cross_sections import load_astrophomes
+
+    try:
+        get_astrophomes_path(auto_download=False, verbose=False)
+    except FileNotFoundError as exc:
+        raise unittest.SkipTest(str(exc))
+
+    pm = load_astrophomes(model='EmpiricalModel', channels='empirical',
+                          auto_download=False)
+    fe = [k for k in pm.incl_idcs if k[0] == 5626]
+    w = np.array([float(np.asarray(pm.multiplicity[k])) for k in fe])
+    dA = np.array([56 - k[1] // 100 for k in fe], float)
+    print(f'  Fe-56: {len(fe)} residual channels, weight sum {w.sum():.6f}, '
+          f'<Delta A> = {w @ dA:.2f}')
+    assert abs(w.sum() - 1) < 1e-12                 # exactly one event
+    assert 5.0 < w @ dA < 6.5                       # the Morejon mass loss
+    assert all(k[1] // 100 >= 28 for k in fe)       # no fragment channels
+    assert w.min() >= 1e-3 / 1.2                    # trimmed tail
+
+    # every kept mother is a one-event mixture; light mothers keep
+    # physical residuals (Li-6 -> He/t/d, not bare nucleons)
+    mothers = sorted({k[0] for k in pm.incl_idcs})
+    for m in mothers[::40]:
+        wm = sum(float(np.asarray(pm.multiplicity[k]))
+                 for k in pm.incl_idcs if k[0] == m)
+        assert abs(wm - 1) < 1e-12, m
+    li6 = [(k[1] // 100, k[1] % 100) for k in pm.incl_idcs if k[0] == 603]
+    assert li6 and min(a for a, z in li6) >= 3
+
+    try:
+        load_astrophomes(model='EmpiricalModel', channels='bogus',
+                         auto_download=False)
+        raise AssertionError('bad channels= must raise')
+    except ValueError:
+        pass
+
+    # fragment_yields: the model's own inclusive fragment mix, rescaled to
+    # close A and Z exactly against the channel table; one struck nucleon
+    # per event goes to the wide budget
+    from crisp.photonuclear_cross_sections import Photomeson
+    xspm = Photomeson(pmm=pm, filter_nuclei=lambda n: n == (26, 56))
+    fy = xspm.fragment_yields(26, 56)
+    A_L = np.array([4., 3., 3., 2., 1., 1.])
+    Z_L = np.array([2., 2., 1., 1., 1., 0.])
+    dA = w @ np.array([56 - k[1] // 100 for k in fe], float)
+    dZ = w @ np.array([26 - k[1] % 100 for k in fe], float)
+    assert abs(A_L @ fy['narrow'] + 1.0 - dA) < 1e-9
+    assert abs(Z_L @ fy['narrow'] + fy['wide_p'] - dZ) < 1e-9
+    assert fy['narrow'].min() >= 0 and 0 < fy['wide_p'] < 1
+    assert abs(fy['wide_p'] + fy['wide_n'] - 1) < 1e-12
+    print(f"  Fe-56 narrow yields [He4,He3,t,d,p,n]: "
+          + np.array2string(fy['narrow'], precision=3)
+          + f"; struck p-fraction {fy['wide_p']:.3f}")
+
+    # the superposition hybrid has no fragment data -> None (bit-exact path)
+    pm_sup = load_astrophomes(model='EmpiricalModel',
+                              channels='superposition', auto_download=False)
+    xs_sup = Photomeson(pmm=pm_sup, filter_nuclei=lambda n: n == (26, 56))
+    assert xs_sup.fragment_yields(26, 56) is None
+
+
+def test_nuclear_decay_rates():
+    """nuclear_decay_On=True: spontaneous decays of TRACKED species enter
+    the main tensor as boost-diluted jump rates 1/(gamma tau c) per
+    branching (Be-7 EC -> Li-7 pinned against nubase), reported under
+    rates_by_interaction()['decay']; default off stays bit-identical and
+    conservation stays machine-exact (EC preserves A)."""
+    import tempfile
+    from crisp.photonuclear_cross_sections import Inclusive_model
+    from crisp.background_photon_models import cmb_photon_density_GeVcm3
+    from crisp.core import c_in_Mpc_sec
+    from crisp.data.nucleardecays import NuclearDataTable
+
+    eps = np.linspace(2, 150, 30)
+    sig = 40.0 * np.exp(-0.5 * ((eps - 25) / 8.0) ** 2) + 1.0
+    tmp = tempfile.mkdtemp()
+    np.savetxt(f'{tmp}/grid.txt', eps)
+    # identity-exact chain: Be-7 -> Li-6 + p, Li-7 -> Li-6 + n,
+    # Li-6 -> He4 + d, He-4 -> 2 d, d -> p + n; Be-7 decays by electron
+    # capture to Li-7 (nubase: t1/2 = 53.22 d, BR 1), both tracked
+    with open(f'{tmp}/nonel.txt', 'w') as f:
+        for nucid, fac in ((704, 1.0), (703, 0.9), (603, 0.8),
+                           (402, 0.5), (201, 0.3)):
+            f.write(f'{nucid} ' + ' '.join(f'{fac * s:.5f}' for s in sig) + '\n')
+    with open(f'{tmp}/incl.txt', 'w') as f:
+        for mo, prod, mult, fac in ((704, 603, 1.0, 1.0), (704, 101, 1.0, 1.0),
+                                    (703, 603, 1.0, 0.9), (703, 100, 1.0, 0.9),
+                                    (603, 402, 1.0, 0.8), (603, 201, 1.0, 0.8),
+                                    (402, 201, 2.0, 0.5),
+                                    (201, 101, 1.0, 0.3), (201, 100, 1.0, 0.3)):
+            f.write(f'{mo} {prod} '
+                    + ' '.join(f'{mult * fac * s:.5f}' for s in sig) + '\n')
+
+    decays = NuclearDataTable().prepare_decay_table()
+    kw = dict(target_photons=cmb_photon_density_GeVcm3, photomeson='kernels',
+              boosts=np.logspace(0, 12, 25), eps=np.logspace(-4, 2, 120))
+    m = Inclusive_model(egrid=f'{tmp}/grid.txt', nonel=f'{tmp}/nonel.txt',
+                        incl=f'{tmp}/incl.txt', max_mass=16, cache=False)
+    core_on = InteractionCore(xsec_model=m, decays=decays,
+                              nuclear_decay_On=True, **kw)
+    core_off = InteractionCore(xsec_model=m, decays=decays, **kw)
+
+    i_be = core_on.species.index((4, 7))
+    i_li = core_on.species.index((3, 7))
+    tau = decays[704]['decay_time']                  # mean life, seconds
+    lam = 1.0 / (core_on.boosts * tau * c_in_Mpc_sec)
+    jump = core_on.tensor[i_be, i_li] - core_off.tensor[i_be, i_li]
+    assert np.allclose(jump, lam, rtol=1e-6)         # the EC jump rate
+    print(f'  Be-7 EC jump at gamma=1e6: {jump[12]:.3e} /Mpc '
+          f'(= 1/(gamma tau c), tau {tau/86400:.1f} d)')
+
+    dec = core_on.rates_by_interaction((4, 7))['decay']
+    assert np.allclose(dec, lam, rtol=1e-12)
+    assert 'decay' not in core_off.rates_by_interaction((4, 7))
+    assert np.array_equal(core_off.tensor,
+                          InteractionCore(xsec_model=m, decays=decays, **kw).tensor)
+
+    a_on, _ = core_on.conservation_imbalance()
+    a_off, _ = core_off.conservation_imbalance()
+    print(f'  conservation A: on {a_on:.1e} / off {a_off:.1e}')
+    assert a_on < CONSERVE and a_off < CONSERVE
+
+
+def test_inclusive_model():
+    """Inclusive_model: user tables (egrid/nonel/incl, nucid = 100A + Z)
+    satisfying the mass-closure identity sum_d A_d sigma_d = A sigma_nonel;
+    heavy survivors as verbatim channels, deficit events routed to light
+    species (capacity-capped), light yields = the inclusive multiplicity
+    excess, inert-species treatment of stable-but-untracked remnants —
+    conservation machine-exact through a full core build."""
+    import tempfile
+    from crisp.photonuclear_cross_sections import Inclusive_model
+    from crisp.background_photon_models import cmb_photon_density_GeVcm3
+
+    eps = np.linspace(2, 150, 30)
+    sig = 40.0 * np.exp(-0.5 * ((eps - 25) / 8.0) ** 2) + 1.0
+    tmp = tempfile.mkdtemp()
+    np.savetxt(f'{tmp}/grid.txt', eps)
+    # identity-exact chain: every mother's products close A and Z.
+    # C-12: 75% -> B-11 + p, 25% -> Be-9 + He3 (Be-9 = the inert case);
+    # B-11 -> Be-10 + p; Be-10 -> 2 He4 + 2 n (deficit routing: one He4
+    # becomes the channel, one the yield); He-4 -> 2 d (routing to a light
+    # mother); d -> p + n (routing to the proton species itself)
+    with open(f'{tmp}/nonel.txt', 'w') as f:
+        for nucid, fac in ((1206, 1.0), (1105, 0.9), (1004, 0.8),
+                           (402, 0.4), (201, 0.2)):
+            f.write(f'{nucid} ' + ' '.join(f'{fac * s:.5f}' for s in sig) + '\n')
+    with open(f'{tmp}/incl.txt', 'w') as f:
+        def row(mo, prod, mult, fac):
+            f.write(f'{mo} {prod} '
+                    + ' '.join(f'{mult * fac * s:.5f}' for s in sig) + '\n')
+        row(1206, 1105, 0.75, 1.0)
+        row(1206, 904, 0.25, 1.0)
+        row(1206, 101, 0.75, 1.0)
+        row(1206, 302, 0.25, 1.0)
+        row(1105, 1004, 1.0, 0.9)
+        row(1105, 101, 1.0, 0.9)
+        row(1004, 402, 2.0, 0.8)
+        row(1004, 100, 2.0, 0.8)
+        row(402, 201, 2.0, 0.4)
+        row(201, 101, 1.0, 0.2)
+        row(201, 100, 1.0, 0.2)
+
+    m = Inclusive_model(egrid=f'{tmp}/grid.txt', nonel=f'{tmp}/nonel.txt',
+                        incl=f'{tmp}/incl.txt', max_mass=16, cache=False)
+    assert m.nuclei == [(1, 2), (2, 4), (4, 10), (5, 11), (6, 12)]
+    e_t = np.array([10.0, 30.0, 80.0])
+    ch = (m.cross_section(e_t, 6, 12, rem=(5, 11))
+          + m.cross_section(e_t, 6, 12, rem=(4, 9)))
+    assert np.allclose(ch, m.cross_section(e_t, 6, 12), rtol=1e-4)
+    r = m.cross_section(e_t, 6, 12, rem=(5, 11)) \
+        / m.cross_section(e_t, 6, 12, rem=(4, 9))
+    assert np.allclose(r, 3.0, rtol=1e-4)          # per-energy branching
+
+    mult = m.light_inclusive_multiplicity(6, 12)
+    assert mult is not None
+    # sigma_incl/sigma_nonel: p = 0.75, He3 = 0.25
+    ii = int(np.argmin(np.abs(m.eps - 30.0)))
+    print(f'  C-12 light multiplicities at 30 MeV [He4, He3, .., p, n]: '
+          f'{np.round(mult[:, ii], 3)}')
+    assert abs(mult[4, ii] - 0.75) < 1e-4 and abs(mult[1, ii] - 0.25) < 1e-4
+
+    # light yields = inclusive content minus the one-per-event channel
+    # allocation: Be-10 keeps ONE He4 (of multiplicity 2) and both n;
+    # He-4 keeps one d; d's own p is fully consumed by its (1, 1) channel
+    e_pk = np.array([25.0])
+    tot10 = m.cross_section(e_pk, 4, 10)[0]
+    ly10 = m.light_yield_sigma(e_pk, 4, 10)
+    assert abs(ly10[0, 0] / tot10 - 1.0) < 1e-4    # He4 yield
+    assert abs(ly10[5, 0] / tot10 - 2.0) < 1e-4    # both neutrons
+    assert abs(m.cross_section(e_pk, 4, 10, rem=(2, 4))[0] / tot10
+               - 1.0) < 1e-4                       # the He4 channel
+    ly4 = m.light_yield_sigma(e_pk, 2, 4)
+    assert abs(ly4[3, 0] / m.cross_section(e_pk, 2, 4)[0] - 1.0) < 1e-4
+    lyd = m.light_yield_sigma(e_pk, 1, 2)
+    assert abs(lyd[4, 0]) < 1e-6                   # p went to the channel
+    assert abs(lyd[5, 0] / m.cross_section(e_pk, 1, 2)[0] - 1.0) < 1e-4
+
+    core = InteractionCore(xsec_model=m,
+                           target_photons=cmb_photon_density_GeVcm3,
+                           photomeson='kernels',
+                           boosts=np.logspace(0, 12, 61),
+                           eps=np.logspace(-4, 2, 200))
+    a, z = core.conservation_imbalance()
+    print(f'  core conservation: A {a:.1e}, Z {z:.1e}; '
+          f'Be-9 inert-tracked: {(4, 9) in core.species}')
+    assert (4, 9) in core.species                  # stable untracked -> inert
+    assert a < CONSERVE
+
+
+def test_tabulated_disintegration():
+    """TabulatedDisintegration: user-supplied totals + multiplicities as
+    exclusive residual channels — per-energy renormalization (exactly one
+    residual per interaction), scalar AND energy-dependent weights, and
+    machine-exact conservation through a full core build (a connected
+    A = 9..2 chain, with Be-8 exercising the decay resolution)."""
+    import io as _io
+    from crisp.photonuclear_cross_sections import TabulatedDisintegration
+    from crisp.background_photon_models import cmb_photon_density_GeVcm3
+
+    eps = np.linspace(5, 200, 40)
+    sig = 60.0 * np.exp(-0.5 * ((eps - 20) / 6.0) ** 2) + 1.5
+    tot = 'eps_MeV ' + ' '.join(f'{e:.3f}' for e in eps) + '\n'
+    for (Z, A), fac in [((4, 9), 1.0), ((3, 7), 0.8), ((3, 6), 0.7),
+                        ((2, 4), 0.5)]:
+        tot += f'{Z} {A} ' + ' '.join(f'{fac * s:.5f}' for s in sig) + '\n'
+    w_ed = 1.0 + (eps > 40) * 3.0                 # per-energy weights
+    mult = ('4 9 4 8 3.0\n'
+            '4 9 3 7 ' + ' '.join(f'{w:.3f}' for w in w_ed) + '\n'
+            '3 7 3 6 1.0\n'
+            '3 6 2 4 1.0\n'
+            '2 4 1 3 0.7\n2 4 1 2 0.3\n')
+
+    m = TabulatedDisintegration(totals=_io.StringIO(tot),
+                                multiplicities=_io.StringIO(mult))
+    assert m.nuclei == [(2, 4), (3, 6), (3, 7), (4, 9)]
+    e_test = np.array([10.0, 30.0, 60.0, 150.0])
+    ch_sum = (m.cross_section(e_test, 4, 9, rem=(4, 8))
+              + m.cross_section(e_test, 4, 9, rem=(3, 7)))
+    assert np.allclose(ch_sum, m.cross_section(e_test, 4, 9), rtol=1e-12)
+    r_lo = m.cross_section(np.array([20.0]), 4, 9, rem=(4, 8)) \
+        / m.cross_section(np.array([20.0]), 4, 9, rem=(3, 7))
+    r_hi = m.cross_section(np.array([100.0]), 4, 9, rem=(4, 8)) \
+        / m.cross_section(np.array([100.0]), 4, 9, rem=(3, 7))
+    print(f'  branching ratios: {r_lo[0]:.3f} below / {r_hi[0]:.3f} above '
+          f'the 40 MeV step (expect 3.000 / 0.750)')
+    assert abs(r_lo[0] - 3.0) < 1e-9 and abs(r_hi[0] - 0.75) < 1e-9
+    assert np.allclose(m.cross_section(e_test, 4, 9, nloss=2),
+                       m.cross_section(e_test, 4, 9, rem=(3, 7)))
+
+    core = InteractionCore(xsec_model=m,
+                           target_photons=cmb_photon_density_GeVcm3,
+                           photomeson='kernels',
+                           boosts=np.logspace(0, 12, 61),
+                           eps=np.logspace(-4, 2, 200))
+    a, z = core.conservation_imbalance()
+    print(f'  core conservation: A {a:.1e}, Z {z:.1e}; '
+          f'tensor max {np.abs(core.tensor).max():.3e}')
+    assert np.abs(core.tensor).max() > 0
+    assert a < CONSERVE
+
+    for bad in ('4 9 5 10 1.0\n', '4 9 4 8 1 2 3\n'):
+        try:
+            TabulatedDisintegration(totals=_io.StringIO(tot),
+                                    multiplicities=_io.StringIO(bad))
+            raise AssertionError('must raise: ' + bad.strip())
+        except ValueError:
+            pass
+
+
+def test_gdr_atlas_quasi_deuteron():
+    """The Levinger quasi-deuteron term of the GDR atlas: the Chadwick+91
+    formula for all nuclei, routed through its physical n + p channel
+    (Z-1, A-2) instead of the GDR neutron-loss branchings, with the channel
+    sum reproducing the total identically."""
+    from crisp.photonuclear_cross_sections import GDR_atlas
+
+    m = GDR_atlas()
+    eps = np.linspace(10.5, 139.5, 400)
+
+    # formula: L (NZ/A) sigma_d f, L = 6.5 (397.8 = 6.5 x 61.2)
+    qd80 = float(m.quasi_deuteron_cross_section(np.array([80.0]), 26, 56)[0])
+    hand = (397.8 * 26 * 30 / 56
+            * np.polyval([9.3537e-9, -3.4762e-6, 4.1222e-4, -9.8343e-3, 8.3714e-2], 80.0)
+            * (80.0 - 2.224)**1.5 / 80.0**3)
+    assert np.isclose(qd80, hand, rtol=1e-12)
+
+    # Pauli-blocking factor continuous at both joints (24.2 rounding at 140)
+    lo = m.quasi_deuteron_cross_section(np.array([19.999, 20.001]), 26, 56)
+    hi = m.quasi_deuteron_cross_section(np.array([139.99, 140.01]), 26, 56)
+    assert abs(lo[1] / lo[0] - 1) < 1e-3 and abs(hi[1] / hi[0] - 1) < 1e-2
+
+    # channel structure: QD remnant present; sum rule to machine precision
+    i = m.nuclei.index((26, 56))
+    assert (25, 54) in m.channels[i]
+    tot = m.total_cross_section(eps, 26, 56)
+    csum = sum(np.asarray(m.cross_section(eps, 26, 56, rem=tuple(r)))
+               for r in m.channels[i])
+    assert np.abs(csum - tot).max() < 1e-12 * tot.max()
+    d_qd = np.abs(np.asarray(m.cross_section(eps, 26, 56, rem=(25, 54)))
+                  - m.quasi_deuteron_cross_section(eps, 26, 56)).max()
+    assert d_qd < 1e-12 * tot.max()
+    print(f'  QD at 80 MeV (Fe-56): {qd80:.3f} mb; channel sum == total, '
+          f'n+p channel (25, 54) present')
+
+    # PSB-style energy regions: exclusive 1n/2n at the GDR proper, the
+    # multiplicity table above 30 MeV — pinned via the channel-sigma-weighted
+    # mean mass loss per interaction
+    def mean_dA(e0, e1):
+        eg = np.linspace(e0, e1, 200)
+        sig = np.array([np.trapezoid(m.cross_section(eg, 26, 56, rem=tuple(r)), eg)
+                        for r in m.channels[i]])
+        dA = np.array([56 - r[1] for r in m.channels[i]])
+        return (sig * dA).sum() / sig.sum()
+
+    dA_gdr, dA_hi = mean_dA(12., 25.), mean_dA(35., 60.)
+    print(f'  mean Delta A per interaction: {dA_gdr:.2f} at the GDR peak '
+          f'(TALYS ~1.14), {dA_hi:.2f} at 35-60 MeV')
+    assert 1.1 < dA_gdr < 1.35
+    assert 2.5 < dA_hi < 4.5
+
+
+def test_gdra_construction():
+    """The unified core on the (filtered) IAEA GDR atlas — the phase-5 gap is
+    closed: filter_nuclei bounds the species set (the raw atlas spans 8980
+    nuclides up to A = 339 and must NEVER be used unfiltered) and the decay
+    ladder resolves the atlas's proton-rich neutron-loss remnants. Also pins
+    the quasi-deuteron n + p channel emitting direct protons, and the Fe-56
+    CMB rate against PSB."""
+    from crisp.photonuclear_cross_sections import GDR_atlas
+
+    gdra = GDR_atlas(filter_nuclei=lambda n: n[1] <= 56 and n[0] >= 1)
+    core = InteractionCore(xsec_model=gdra, decays=decay_table(),
+                           boosts=np.logspace(6, 14, 201))
+    a, z = core.conservation_imbalance()
+    print(f'  GDRA A<=56 core: {len(core.species)} species, '
+          f'conservation A {a:.1e}, Z {z:.2f} (beta+ of the n-loss remnants)')
+    # inert species (stable untracked remnants) now tracked: was < 600
+    assert 500 < len(core.species) < 700
+    assert a < CONSERVE
+
+    # the quasi-deuteron channel emits one proton AND one neutron
+    # (boost-preserving light yields): the atlas has a direct-p channel
+    p_direct = core.light_prod_tensor[4].max()
+    n_direct = core.light_prod_tensor[5].max()
+    print(f'  direct yields: p {p_direct:.3e}, n {n_direct:.3e} /Mpc (QD gives p > 0)')
+    assert p_direct > 0 and n_direct > p_direct
+
+    # physics anchor: Fe-56 total rate on the CMB at the GDR overlap vs PSB
+    psb = InteractionCore(xsec_model=psb_xsec(), boosts=core.boosts)
+    b = int(np.argmin(np.abs(core.boosts - 1.4e10)))
+    r_g = core.all_rates[core.nuclei.index((26, 56))][b]
+    r_p = psb.all_rates[psb.nuclei.index((26, 56))][b]
+    print(f'  Fe-56 CMB rate at 1.4e10: GDRA {r_g:.2f} vs PSB {r_p:.2f} /Mpc '
+          f'(ratio {r_g / r_p:.2f})')
+    assert 0.5 < r_g / r_p < 1.5
 
 
 def test_crpropa_removed():
