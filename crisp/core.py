@@ -7,7 +7,8 @@ import numpy as np
 from math import factorial
 from scipy.linalg import expm
 from scipy.interpolate import interp1d
-from .interaction_rates import cs_photomeson, interaction_rate_from_cross_section
+from .interaction_rates import (cs_photomeson, interaction_rate_from_cross_section,
+                                exact_rates_for_sigma)
 from .UHECR_statistics import prepare_species_list
 from astropy import units as u
 from astropy.constants import c, m_p, m_n
@@ -381,34 +382,51 @@ def generate_photomeson_tables_from_cross_sections(nuclei, xsp, xsn, target_phot
     return df_rates_pmes, pmes_branchings, merged_yields
 
 
-def build_pion_prod_kernel(boosts, target_photons, inelasticity=None):
-    """Compute the pion production kernel for proton and neutron parents.
+def build_photomeson_species_kernels(boosts, target_photons, inelasticity=None,
+                                     mp_GeV=0.939, K_multipion=0.6):
+    """Charge- and species-resolved photomeson production kernels, built as a
+    sum over the interaction types of the Rachen parametrization
+    (pgamma_components: resonances, direct, multi-pion) in the spirit of the
+    simplified SOPHIA models of Huemmer et al. (2010, ApJ 721, 630).
 
-    K[s, i, j] is the rate [Mpc⁻¹] at which a proton (s=0) or neutron (s=1) at
-    Lorentz factor boosts[i] produces a pion at Lorentz factor boosts[j].
+    K[b][s, i, j] is the rate [Mpc⁻¹] at which a proton (s=0) or neutron
+    (s=1) parent at boosts[i] produces secondary b at boosts[j], for
+    b in {'pi+', 'pi-', 'pi0', 'p', 'n'}. For a nucleus (Z, A):
+    Z * K[b][0] + (A-Z) * K[b][1].
 
-    The spread across pion boost bins arises from the energy-dependent mean
-    inelasticity κ̄(ε'): photons at different rest-frame energies map to
-    different pion boost bins even for a fixed parent boost.
+    Per interaction type (multiplicities for proton parents; neutron parents
+    are the isospin mirror pi+ <-> pi-, p <-> n):
 
-    For a nucleus (Z, A) at boost boosts[i] the pion rate into boost bin j is:
-        Z * K[0, i, j] + (A-Z) * K[1, i, j]
+      resonances : Delta isospin — pi0 2/3 (nucleon stays p), pi+ 1/3
+                   (nucleon -> n); pion at kappa(eps') of the parent energy,
+                   nucleon at 1 - kappa(eps')
+      direct     : t-channel gamma p -> n pi+ — pi+ 1 (nucleon -> n)
+      multi-pion : charge democracy — one pion of each charge at
+                   x = K_multipion / 3 each; nucleon p/n 1/2 each at
+                   1 - K_multipion
 
-    Uses the parametric photomeson cross section (Rachen model, A=1).
-    Proton and neutron are treated as equal at this level of approximation;
-    supply separate callables via `inelasticity` to override.
+    Each interaction type is normalized per parent row to the exact
+    isotropic-field rate of its component cross section
+    (exact_rates_for_sigma), so the total nucleon output equals the total
+    interaction rate exactly, while the pion count exceeds it where
+    multi-pion production dominates — the multiplicity effect of
+    Huemmer et al. The head-on mapping eps' = 2 Gamma eps only shapes the
+    secondary spectra.
 
     Arguments:
     ----------
     boosts         : 1-D array of Lorentz factors (parent boost grid)
     target_photons : callable, n_γ(ε) in GeV⁻¹ cm⁻³ with ε in GeV
-    inelasticity   : None → default parametric κ̄(ε'), or callable κ̄(ε') with ε' in GeV
+    inelasticity   : None → parametric κ̄(ε') (SOPHIA-motivated), or callable
+    mp_GeV         : nucleon mass [GeV] used in the pion-boost mapping
+    K_multipion    : total inelasticity of the multi-pion interaction type
 
     Returns:
     --------
-    K : ndarray, shape (2, n_boost, n_boost)
+    dict of ndarrays, shape (2, n_boost, n_boost) each
     """
-    mp_GeV  = 0.939   # proton mass in GeV
+    from .photonuclear_cross_sections import pgamma_components
+
     mpi_GeV = 0.140   # pion mass in GeV
     eps_th  = 0.145   # pion production threshold in nucleon rest frame (GeV)
 
@@ -419,101 +437,192 @@ def build_pion_prod_kernel(boosts, target_photons, inelasticity=None):
     else:
         kappa = inelasticity
 
-    e_grid    = np.logspace(np.log10(eps_th), 4.0, 500)  # rest-frame photon energies (GeV)
-    de        = np.gradient(e_grid)
-    cs_vals   = cs_photomeson(e_grid, A=1)                # cm², proton ≈ neutron
-    kappa_arr = kappa(e_grid)
+    from scipy.constants import parsec
+    Mpc_in_cm = parsec * 1e8   # cm per Mpc
+
+    e_grid = np.logspace(np.log10(eps_th), 4.0, 500)   # rest-frame photon energies (GeV)
+    de     = np.gradient(e_grid)
+    comps  = pgamma_components(e_grid)                 # cm2 per interaction type
+    kap    = kappa(e_grid)
+    x_mp   = K_multipion / 3.0                         # per-pion fraction, multi-pion
+
+    # per interaction type: sigma, pion fraction chi_pi(eps'), nucleon
+    # fraction chi_N(eps'), multiplicities per species for a PROTON parent
+    ones = np.ones_like(e_grid)
+    ITS = {
+        'res': (np.clip(comps['resonances'], 0, None), kap, 1.0 - kap,
+                {'pi0': 2 / 3, 'pi+': 1 / 3, 'p': 2 / 3, 'n': 1 / 3}),
+        'dir': (np.clip(comps['direct'], 0, None), kap, 1.0 - kap,
+                {'pi+': 1.0, 'n': 1.0}),
+        'mp':  (np.clip(comps['multipion'], 0, None), x_mp * ones,
+                (1.0 - K_multipion) * ones,
+                {'pi+': 1.0, 'pi-': 1.0, 'pi0': 1.0, 'p': 1 / 2, 'n': 1 / 2}),
+    }
+    MIRROR = {'pi+': 'pi-', 'pi-': 'pi+', 'pi0': 'pi0', 'p': 'n', 'n': 'p'}
+
+    # exact per-IT interaction rates (one batched call)
+    names = list(ITS)
+    r_IT = exact_rates_for_sigma(boosts, target_photons, e_grid,
+                                 np.vstack([1e27 * ITS[k][0] for k in names]))
 
     n_b = len(boosts)
-    K   = np.zeros((2, n_b, n_b))
+    K = {b: np.zeros((2, n_b, n_b)) for b in MIRROR}
+    logb = np.log(boosts)
+
+    def deposit(row, gamma_sec, w):
+        x = np.interp(np.log(gamma_sec), logb, np.arange(n_b),
+                      left=-1.0, right=float(n_b - 1))
+        valid = (x >= 0) & (w > 0)
+        j0 = np.floor(x[valid]).astype(int)
+        f = x[valid] - j0
+        j1 = np.minimum(j0 + 1, n_b - 1)
+        np.add.at(row, j0, (1.0 - f) * w[valid])
+        np.add.at(row, j1, f * w[valid])
 
     for i, gamma in enumerate(boosts):
-        eps_lab = e_grid / (2.0 * gamma)               # lab-frame photon energies (GeV)
-        ng      = target_photons(eps_lab)               # GeV⁻¹ cm⁻³
+        eps_lab = e_grid / (2.0 * gamma)               # head-on mapping
+        ng = target_photons(eps_lab)
+        pref = (Mpc_in_cm / (2.0 * gamma)) * ng * de   # Mpc^-1 per sigma
 
-        # differential rate contribution per rest-frame energy bin
-        dR = (c_in_Mpc_sec / (2.0 * gamma)) * ng * cs_vals * de  # Mpc⁻¹
+        for k_IT, (sig, chi_pi, chi_N, mult) in zip(names, ITS.values()):
+            dR = pref * sig
+            total = dR[dR > 0].sum()
+            if total <= 0.0:
+                continue
+            # interaction-count normalization to the exact isotropic rate
+            scale = r_IT[names.index(k_IT), i] / total
 
-        # pion Lorentz factor produced at each rest-frame photon energy
-        gamma_pi = kappa_arr * gamma * (mp_GeV / mpi_GeV)
+            # one interaction-weighted deposit per placement, then distribute
+            # into species by multiplicity (mirror for neutron parents)
+            pion_row = np.zeros(n_b)
+            nuc_row = np.zeros(n_b)
+            deposit(pion_row, chi_pi * gamma * (mp_GeV / mpi_GeV), dR * scale)
+            deposit(nuc_row, np.maximum(chi_N, 1e-12) * gamma, dR * scale)
 
-        j_arr = np.searchsorted(boosts, gamma_pi) - 1
-        valid = (j_arr >= 0) & (j_arr < n_b) & (dR > 0)
-
-        np.add.at(K[0, i], j_arr[valid], dR[valid])
-        np.add.at(K[1, i], j_arr[valid], dR[valid])   # proton ≈ neutron
+            for b, M in mult.items():
+                base = pion_row if b.startswith('pi') else nuc_row
+                K[b][0, i] += M * base
+                K[MIRROR[b]][1, i] += M * base
 
     return K
 
 
-def build_proton_recoil_kernel(boosts, target_photons, inelasticity=None,
-                                branching_pp=2/3, branching_np=2/3):
-    """Build the secondary-proton production kernel for photomeson interactions.
+def build_photomeson_species_kernels_sophia(boosts, target_photons, pmm,
+                                            mp_GeV=0.939):
+    """Charge- and species-resolved photomeson kernels with the full SOPHIA
+    x-distributions of an AstroPhoMes photomeson model (its redist_proton /
+    redist_neutron tables): secondaries are spread over their complete
+    energy-fraction distributions instead of the per-interaction-type mean
+    placements of build_photomeson_species_kernels, and the neutron parent
+    uses its own tables (no isospin-mirror assumption).
+
+    Same output structure and rate convention: K[b][s, i, j] is the rate
+    [Mpc^-1] at which parent species s (0 = p, 1 = n) at boosts[i] produces
+    secondary b at boosts[j]; the total interaction count per parent row is
+    normalized to the exact isotropic rate of the SOPHIA total cross
+    section. Secondary multiplicities are the tables' own (nucleons: exactly
+    one per interaction at the Delta, up to ~1.3 at very high eps_r from
+    NNbar production; pions: the full multipion multiplicities). Also
+    carries the strangeness channel absent from the interaction-type
+    builder: 'K+' (table id 50, associated production, threshold
+    eps_r ~ 1 GeV) and 'K-' (id 51, pair production, ~1.5 GeV).
+    """
+    from scipy.constants import parsec
+    Mpc_in_cm = parsec * 1e8
+
+    e_grid = np.asarray(pmm.egrid, dtype=float)        # eps_r [GeV]
+    de = np.gradient(e_grid)
+    xc = np.asarray(pmm.xcenters, dtype=float)
+    xw = np.asarray(pmm.xwidths, dtype=float)
+
+    mpi_GeV = 0.13957039
+    mK_GeV = 0.493677
+    PROD = {'pi+': 2, 'pi-': 3, 'pi0': 4, 'p': 101, 'n': 100,
+            'K+': 50, 'K-': 51}
+    m_sec = {'pi+': mpi_GeV, 'pi-': mpi_GeV, 'pi0': 0.1349768,
+             'p': mp_GeV, 'n': mp_GeV, 'K+': mK_GeV, 'K-': mK_GeV}
+    redists = (pmm.redist_proton, pmm.redist_neutron)
+    sig_cm2 = (np.asarray(pmm.cs_proton_grid, dtype=float) * 1e-30,   # µb→cm²
+               np.asarray(pmm.cs_neutron_grid, dtype=float) * 1e-30)
+
+    # exact isotropic interaction rates per parent charge (µb → mb)
+    r_ex = exact_rates_for_sigma(
+        boosts, target_photons, e_grid,
+        np.vstack([pmm.cs_proton_grid, pmm.cs_neutron_grid]) * 1e-3)
+
+    # dN/dx dx per interaction, (n_e, n_x), per (parent charge, product)
+    W = {(c, b): np.asarray(redists[c][PROD[b]], dtype=float) * xw[None, :]
+         for c in (0, 1) for b in PROD}
+
+    n_b = len(boosts)
+    K = {b: np.zeros((2, n_b, n_b)) for b in PROD}
+
+    for i, gamma in enumerate(boosts):
+        eps_lab = e_grid / (2.0 * gamma)               # head-on mapping
+        ng = target_photons(eps_lab)
+        pref = (Mpc_in_cm / (2.0 * gamma)) * ng * de   # Mpc^-1 per sigma
+
+        for c in (0, 1):
+            dR = pref * sig_cm2[c]
+            total = dR[dR > 0].sum()
+            if total <= 0.0:
+                continue
+            dRs = dR * (r_ex[c, i] / total)            # exact-rate normalized
+            for b in PROD:
+                # collapse over eps_r first: the placement x-grid is shared
+                wx = dRs @ W[(c, b)]                   # (n_x,) rate weights
+                K[b][c, i] += deposit_log_cic(
+                    boosts, xc * gamma * (mp_GeV / m_sec[b]), wx)
+
+    return K
+
+
+def build_pion_prod_kernel(boosts, target_photons, inelasticity=None, mp_GeV=0.939):
+    """Charge-summed pion production kernel (pi+ + pi- + pi0), kept for
+    backward compatibility — see build_photomeson_species_kernels for the
+    charge- and species-resolved version and the interaction-type physics.
 
     K[s, i, j] is the rate [Mpc⁻¹] at which a proton (s=0) or neutron (s=1)
-    at Lorentz factor boosts[i] produces a secondary proton at boosts[j].
-
-    The secondary proton carries fraction (1−κ̄) of the parent energy:
-        γ_p = (1 − κ̄(ε')) × Γ_parent
-
-    so it always appears below the parent boost, spread across 1–4 bins by the
-    energy-dependent inelasticity.
-
-    Default branching fractions come from Δ(1232) isospin decomposition:
-    - Δ⁺ (from p+γ) → p + π⁰ with probability 2/3  → branching_pp = 2/3
-    - Δ⁰ (from n+γ) → p + π⁻ with probability 2/3  → branching_np = 2/3
-
-    For a nucleus (Z, A) at boost boosts[i], secondary proton rate into boost j:
-        Z * K[0, i, j] + (A-Z) * K[1, i, j]
-
-    Uses the same parametric cross section and default inelasticity as
-    build_pion_prod_kernel; both should be called with the same inelasticity
-    to maintain energy conservation (pion energy + proton energy = parent energy).
-
-    Arguments:
-    ----------
-    boosts         : 1-D array of Lorentz factors (parent boost grid)
-    target_photons : callable, n_γ(ε) in GeV⁻¹ cm⁻³ with ε in GeV
-    inelasticity   : None → default parametric κ̄(ε'), or callable κ̄(ε') in GeV
-    branching_pp   : fraction of p+γ interactions yielding a secondary proton (default 2/3)
-    branching_np   : fraction of n+γ interactions yielding a secondary proton (default 2/3)
-
-    Returns:
-    --------
-    K : ndarray, shape (2, n_boost, n_boost)
+    at boosts[i] produces a pion (any charge) at boosts[j]; for a nucleus
+    (Z, A): Z * K[0] + (A-Z) * K[1]. Row sums equal the exact interaction
+    rate times the pion multiplicity of the mix (> 1 where multi-pion
+    production dominates).
     """
-    eps_th = 0.145   # pion production threshold in nucleon rest frame (GeV)
+    Ks = build_photomeson_species_kernels(boosts, target_photons,
+                                          inelasticity=inelasticity, mp_GeV=mp_GeV)
+    return Ks['pi+'] + Ks['pi-'] + Ks['pi0']
 
-    if inelasticity is None:
-        def kappa(eps_prime):
-            return np.minimum(0.2 + 0.07 * np.log10(np.maximum(eps_prime, eps_th) / eps_th), 0.5)
-    else:
-        kappa = inelasticity
 
-    e_grid    = np.logspace(np.log10(eps_th), 4.0, 500)
-    de        = np.gradient(e_grid)
-    cs_vals   = cs_photomeson(e_grid, A=1)
-    kappa_arr = kappa(e_grid)
+def build_proton_recoil_kernel(boosts, target_photons, inelasticity=None):
+    """Secondary-nucleon (p + n) production kernel, kept for backward
+    compatibility — see build_photomeson_species_kernels for the p/n-resolved
+    version. One nucleon leaves every interaction, so the row sums equal the
+    exact isotropic-field interaction rate identically.
+    """
+    Ks = build_photomeson_species_kernels(boosts, target_photons,
+                                          inelasticity=inelasticity)
+    return Ks['p'] + Ks['n']
 
+
+def deposit_log_cic(boosts, gammas, weights):
+    """Conservative cloud-in-cell deposit of weights at arbitrary boosts
+    gammas onto the bins of a log-spaced boost grid (the kernels' placement
+    scheme): weight below boosts[0] is dropped, weight above boosts[-1] goes
+    to the top bin. Returns an array of len(boosts)."""
+    boosts = np.asarray(boosts, dtype=float)
+    gammas = np.asarray(gammas, dtype=float)
+    weights = np.asarray(weights, dtype=float)
     n_b = len(boosts)
-    K   = np.zeros((2, n_b, n_b))
-
-    for i, gamma in enumerate(boosts):
-        eps_lab = e_grid / (2.0 * gamma)
-        ng      = target_photons(eps_lab)
-
-        dR = (c_in_Mpc_sec / (2.0 * gamma)) * ng * cs_vals * de   # Mpc⁻¹
-
-        # secondary proton boost: (1-κ̄) × Γ  [mass unchanged — proton rest mass]
-        gamma_p = (1.0 - kappa_arr) * gamma
-
-        j_arr = np.searchsorted(boosts, gamma_p) - 1
-        valid = (j_arr >= 0) & (j_arr < n_b) & (dR > 0)
-
-        np.add.at(K[0, i], j_arr[valid], branching_pp * dR[valid])
-        np.add.at(K[1, i], j_arr[valid], branching_np * dR[valid])
-
-    return K
+    row = np.zeros(n_b)
+    x = np.interp(np.log(gammas), np.log(boosts), np.arange(n_b),
+                  left=-1.0, right=float(n_b - 1))
+    valid = (x >= 0) & (weights > 0)
+    j0 = np.floor(x[valid]).astype(int)
+    f = x[valid] - j0
+    j1 = np.minimum(j0 + 1, n_b - 1)
+    np.add.at(row, j0, (1.0 - f) * weights[valid])
+    np.add.at(row, j1, f * weights[valid])
+    return row
 
 
 def fix_dead_end(product, rate):
