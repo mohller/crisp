@@ -21,8 +21,6 @@ mb_to_cm2 = u.mbarn.to('cm^2')
 # are logged at DEBUG level; enable with logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 
-
-
 def get_nucid(nuc):
     '''Utility function: returns neucos id from (Z, A) tuple
     '''
@@ -735,12 +733,20 @@ class InteractionCore():
 
     def __init__(self, nuclear_decay_On=False, ftype=np.float64, decays=None,
                  xsec_model=None, target_photons=None, photomeson=None,
-                 boosts=None, eps=None, masses='nubase'):
+                 photomeson_scaling=None, photomeson_spectra=None,
+                 boosts=None, eps=None, masses='nubase', rate_method='fft'):
         """
         Arguments:
         ----------
-        nuclear_decay_On : if True, load the nubase decay table automatically
-                 (equivalent to decays=True).
+        nuclear_decay_On : if True, spontaneous decays of the TRACKED species
+                 enter the main tensor as jump rates lambda(gamma) =
+                 1/(gamma tau c) per branching (K40 -> Ca40 for beta-, ...;
+                 emitted alpha/p/n/d/t are boost-preserving light yields,
+                 beta leptons untracked). The nubase table is auto-loaded
+                 when decays= is not given. Ultrafast particle emitters
+                 (tau < 1 ns) stay construction-time resolved. The decay
+                 component is reported as rates_by_interaction()['decay'].
+                 Default False: decays affect only untracked products.
         decays : a decay table as returned by NuclearDataTable.prepare_decay_table()
                  (see examples/Nuclear_Decays.ipynb), or True to auto-load it.
                  When given, channel products that are not tracked species are
@@ -753,9 +759,39 @@ class InteractionCore():
         target_photons : photon field n_gamma(eps) in GeV^-1 cm^-3 with eps in
                  GeV, or a list/tuple of such callables (summed, e.g.
                  [cmb, ebl]). Default: the CMB. Only used with xsec_model.
-        photomeson : None, or 'kernels' to attach the parametric photomeson
-                 kernels as pion_prod_tensor and proton_recoil_tensor.
+        photomeson : None, 'kernels' or 'superposition' (aliases). When active:
+                 (a) the parametric spectra kernels are attached
+                 (pion_prod_tensor, proton_recoil_tensor, enabling
+                 pion/recoil/neutrino production); (b) photomeson interactions
+                 enter the cascade rates — if xsec_model contains no
+                 photomeson-group model (interaction_type == 'photomeson',
+                 e.g. the AstroPhoMes Photomeson wrapper inside a Model_Rack),
+                 a Photomeson_Superposition model over the same nuclei is
+                 added automatically; (c) free p/n absorb at the photomeson
+                 rate in the light sector (photomeson_rates_pn hook).
                  Only used with xsec_model.
+        photomeson_scaling : None (default) or 'inclusive'. With 'inclusive',
+                 the photomeson folds (pion / recoil / neutrino production)
+                 rescale each nucleus row of the A = 1 kernels from the
+                 superposition Z K_p + N K_n to the rack's photomeson-model
+                 inclusive cross sections: per-parent-boost rate ratios
+                 sigma_A / (Z sigma_p + N sigma_n) per pion charge (and the
+                 nonelastic ratio for the recoil nucleons), e.g. the
+                 A^alpha_pi(E) empirical scaling of the AstroPhoMes
+                 EmpiricalModel (Morejon et al. 2019). Requires
+                 photomeson='kernels' and a Photomeson(pmm=...) member in
+                 xsec_model. The factors correct normalizations only — the
+                 A = 1 kinematic shapes of the kernels are kept, and they are
+                 not persisted by save().
+        photomeson_spectra : None (default: the Rachen interaction-type
+                 kernels with mean per-IT secondary placements) or an
+                 AstroPhoMes photomeson model instance (load_astrophomes()):
+                 the pion/nucleon kernels are then built from its full
+                 SOPHIA x-distributions
+                 (build_photomeson_species_kernels_sophia), charge-resolved
+                 without the isospin mirror, and the free-nucleon rate hook
+                 uses the SOPHIA total cross sections for consistency.
+                 Requires photomeson='kernels'.
         boosts : Lorentz-factor grid. Default: np.logspace(6, 14, 201).
         eps : photon-energy grid in GeV for the rate integrals.
                  Default: 1e-3 * np.logspace(-1, 2.1, 300).
@@ -764,6 +800,14 @@ class InteractionCore():
                  nuclear data table), 'legacy' (A * 0.939 GeV), or a callable
                  m(Z, A) in GeV. The photodisintegration tensors are computed
                  on the boost grid and do not depend on this choice.
+        rate_method : 'fft' (default) computes all channel rates with a single
+                 log-space convolution per construction (compute_rates), with
+                 the analytic 1/y^2 continuation above the cross-section
+                 support; 'direct' integrates each channel per boost
+                 (interaction_rate_from_cross_section_boosts). The two agree
+                 at the percent level below the boost where 2*Gamma*eps_peak
+                 reaches the sigma support, above which 'direct' progressively
+                 underestimates the rates. Only used with xsec_model.
         """
         self.ftype = ftype
 
@@ -771,6 +815,7 @@ class InteractionCore():
             from .data.nucleardecays import NuclearDataTable
             decays = NuclearDataTable().prepare_decay_table()
         self.decays = decays if isinstance(decays, dict) else None
+        self.nuclear_decay_On = bool(nuclear_decay_On)
 
         if masses == 'nubase':
             from .data.nucleardecays import nuclear_mass_GeV
@@ -796,15 +841,81 @@ class InteractionCore():
             self.target_photons = target_photons
 
             self.boosts = np.logspace(6, 14, 201) if boosts is None else np.asarray(boosts)
-            self.eps = 1e-3 * np.logspace(-1, 2.1, 300) if eps is None else np.asarray(eps)
+            if eps is not None:
+                self.eps = np.asarray(eps)
+            elif photomeson is not None:
+                # the grid must also cover the photomeson region (0.145 - 1e4 GeV)
+                self.eps = np.logspace(-4, 4, 650)
+            else:
+                self.eps = 1e-3 * np.logspace(-1, 2.1, 300)
+
+            if rate_method not in ('fft', 'direct'):
+                raise ValueError("rate_method must be 'fft' or 'direct'")
+            self.rate_method = rate_method
+
+            if photomeson is not None:
+                if photomeson not in ('kernels', 'superposition'):
+                    raise NotImplementedError(
+                        "photomeson must be None, 'kernels' or 'superposition'; "
+                        "richer photomeson models join the cascade as members of a "
+                        "Model_Rack passed as xsec_model.")
+
+                # secondary spectra (pion / recoil / neutrino production):
+                # charge- and species-resolved kernels — per interaction type
+                # with mean placements (Huemmer+10-style, default) or from
+                # the full SOPHIA x-distributions of an AstroPhoMes model
+                if photomeson_spectra is not None:
+                    self.photomeson_kernels = build_photomeson_species_kernels_sophia(
+                        self.boosts, self.target_photons, photomeson_spectra,
+                        mp_GeV=self._mass_fn(1, 1))
+                else:
+                    self.photomeson_kernels = build_photomeson_species_kernels(
+                        self.boosts, self.target_photons, mp_GeV=self._mass_fn(1, 1))
+                Ks = self.photomeson_kernels
+                self.pion_prod_tensor     = Ks['pi+'] + Ks['pi-'] + Ks['pi0']
+                self.proton_recoil_tensor = Ks['p'] + Ks['n']
+
+                # cascade rates: make sure a photomeson cross-section model is in
+                # the rack — if the user did not supply one, add the superposition
+                # model over the photodisintegration nuclei
+                pm_models = self._collect_photomeson_models(xsec_model)
+                if not pm_models:
+                    from .photonuclear_cross_sections import Model_Rack, Photomeson_Superposition
+                    pm = Photomeson_Superposition(xsec_model.nuclei)
+                    xsec_model = Model_Rack(models=(xsec_model, pm))
+                    self.xsec_model = xsec_model
+                    self.sim_model = xsec_model
+                    pm_models = [pm]
+
+                # free p/n interact via the light-sector hook — with SOPHIA
+                # spectra, from the same total cross sections as the kernels
+                if photomeson_spectra is not None:
+                    self.photomeson_rates_pn = exact_rates_for_sigma(
+                        self.boosts, self.target_photons,
+                        np.asarray(photomeson_spectra.egrid, dtype=float),
+                        np.vstack([photomeson_spectra.cs_proton_grid,
+                                   photomeson_spectra.cs_neutron_grid]) * 1e-3
+                    ).mean(axis=0)
+                else:
+                    self.photomeson_rates_pn = self._photomeson_rates_A1(pm_models)
+
+                if photomeson_scaling is not None:
+                    if photomeson_scaling != 'inclusive':
+                        raise ValueError("photomeson_scaling must be None or 'inclusive'")
+                    carriers = [m for m in pm_models
+                                if hasattr(m, 'inclusive_cross_section')]
+                    if not carriers:
+                        raise ValueError(
+                            "photomeson_scaling='inclusive' needs a Photomeson(pmm=...) "
+                            "member in xsec_model: the auto-added superposition model "
+                            "carries no inclusive pion cross sections")
+                    self._build_photomeson_fold_scaling(carriers[0])
+            elif photomeson_scaling is not None:
+                raise ValueError("photomeson_scaling requires photomeson='kernels'")
+            elif photomeson_spectra is not None:
+                raise ValueError("photomeson_spectra requires photomeson='kernels'")
 
             self._construct_from_xsec_model()
-
-            if photomeson == 'kernels':
-                self.pion_prod_tensor     = build_pion_prod_kernel(self.boosts, self.target_photons)
-                self.proton_recoil_tensor = build_proton_recoil_kernel(self.boosts, self.target_photons)
-            elif photomeson is not None:
-                raise NotImplementedError("photomeson must be None or 'kernels'")
         else:
             self._construct_from_files()
 
@@ -816,33 +927,204 @@ class InteractionCore():
 
         Boost-native: the rate integral only depends on the Lorentz factor,
         so no nuclear mass enters the photodisintegration tensors.
+
+        With rate_method='fft' the rates of all channels of all nuclei are
+        computed in one log-space convolution (compute_rates); with 'direct'
+        each channel is integrated per boost.
         """
         from scipy.constants import c, parsec
         from .interaction_rates import interaction_rate_from_cross_section_boosts
 
         boosts, eps = self.boosts, self.eps
 
+        # photomeson channels eject their nucleon with a broad spectrum (the
+        # recoil kernel carries the placement, cf. paper Sect. 2.4), so their
+        # multiplicities are budgeted in self.photomeson_ejecta instead of the
+        # boost-preserving light yields — the split needs each channel's
+        # photomeson part separately from the total
+        pm_models = self._collect_photomeson_models(self.xsec_model)
+
+        if getattr(self, 'rate_method', 'fft') == 'fft':
+            channel_rates = self._channel_rates_fft()
+            channel_rates_pm = self._channel_rates_fft(models=pm_models) if pm_models else None
+
         pdis_rates_all, branchings_all, mlyp, mlyn = [], [], [], []
+        mly_clusters = [[], [], [], []]        # He4, He3, t, d rows
+        ejp_all, ejn_all = [], []
+        row = 0
         for (Z, A), products in zip(self.xsec_model.nuclei, self.xsec_model.channels):
             branchings, lyp, lyn = [], [], []
+            lyc = [[], [], [], []]
+            ejp, ejn = np.zeros(len(boosts)), np.zeros(len(boosts))
 
+            # boost-preserving LIGHT yields (He4, He3, t, d, p, n) of the
+            # photodisintegration channels, from the model's inclusive
+            # cross sections verbatim (multiplicities included, minus the
+            # one-per-event channel allocation): the tables satisfy
+            # sum_d A_d sigma_d = A sigma_nonel, so no Delta Z / Delta N
+            # inference is needed — closure follows from the identity
+            rates_ly = None
+            for mdl in self._collect_pdis_models(self.xsec_model):
+                if (Z, A) in getattr(mdl, 'nuclei', []) and \
+                        hasattr(mdl, 'light_yield_sigma'):
+                    sig6 = mdl.light_yield_sigma(eps * 1e3, Z, A)
+                    if sig6 is not None:
+                        rates_ly = self._rates_of_sigma_rows(sig6)
+                    break
+
+            # per-event fragment content of the photomeson interactions on
+            # this mother, from the model's own inclusive fragment data
+            # (sigma_incl/sigma_nonel): one struck nucleon goes to the wide
+            # recoil budget, the rest is boost-preserving — clusters
+            # included. None -> Delta Z / Delta N inference per channel.
+            frag = None
+            for m in pm_models:
+                if (Z, A) in getattr(m, 'nuclei', []) and \
+                        hasattr(m, 'fragment_yields'):
+                    frag = m.fragment_yields(Z, A)
+                    break
+
+            # first pass: per-channel rates
+            chan = []
             for Zrem, Arem in products:
-                cross_section = 1e-27 * self.xsec_model.cross_section(eps * 1e3, Z, A, rem=(Zrem, Arem)) # to cm2
-                pdis_rates = interaction_rate_from_cross_section_boosts(boosts, self.target_photons, eps, cross_section)
-                pdis_rates /= c / parsec / 1e6 # ito Mpc
+                if getattr(self, 'rate_method', 'fft') == 'fft':
+                    rates_total = channel_rates[row]
+                    rates_pm = channel_rates_pm[row] if channel_rates_pm is not None else 0.0
+                    row += 1
+                else:
+                    cross_section = 1e-27 * self.xsec_model.cross_section(eps * 1e3, Z, A, rem=(Zrem, Arem)) # to cm2
+                    rates_total = interaction_rate_from_cross_section_boosts(boosts, self.target_photons, eps, cross_section)
+                    rates_total /= c / parsec / 1e6 # ito Mpc
+                    rates_pm = 0.0
+                    if pm_models:
+                        sig_pm = np.zeros_like(eps)
+                        for m in pm_models:
+                            if (Z, A) in m.nuclei:
+                                sig_pm = sig_pm + np.asarray(m.cross_section(eps * 1e3, Z, A, rem=(Zrem, Arem)))
+                        rates_pm = interaction_rate_from_cross_section_boosts(boosts, self.target_photons, eps, 1e-27 * sig_pm)
+                        rates_pm /= c / parsec / 1e6
+                rates_narrow = np.clip(rates_total - rates_pm, 0.0, None)
+                chan.append((Zrem, Arem, rates_total, rates_pm, rates_narrow))
 
-                branchings.append(np.append([Zrem, Arem], pdis_rates))
-                lyp.append(np.append([Zrem, Arem], (Z - Zrem) * pdis_rates))
-                lyn.append(np.append([Zrem, Arem], (A - Z - Arem + Zrem) * pdis_rates))
+            for Zrem, Arem, rates_total, rates_pm, rates_narrow in chan:
+                branchings.append(np.append([Zrem, Arem], rates_total))
 
-            mlyp.append(np.vstack(lyp) if lyp else np.array([]))
-            mlyn.append(np.vstack(lyn) if lyn else np.array([]))
+                p_nar = (Z - Zrem) * rates_narrow
+                n_nar = (A - Z - Arem + Zrem) * rates_narrow
 
-            pdis_rates_all.append(np.sum(np.atleast_2d(branchings), axis=0)[2:])
+                # wide (photomeson) side
+                if frag is not None:
+                    p_pm_narrow = frag['narrow'][4] * rates_pm
+                    n_pm_narrow = frag['narrow'][5] * rates_pm
+                    ejp = ejp + frag['wide_p'] * rates_pm
+                    ejn = ejn + frag['wide_n'] * rates_pm
+                    pm_clus = [frag['narrow'][ci] * rates_pm for ci in range(4)]
+                else:
+                    p_pm_narrow = np.zeros(len(boosts))
+                    n_pm_narrow = np.zeros(len(boosts))
+                    ejp = ejp + (Z - Zrem) * rates_pm
+                    ejn = ejn + (A - Z - Arem + Zrem) * rates_pm
+                    pm_clus = None
+
+                if rates_ly is None:
+                    lyp.append(np.append([Zrem, Arem], p_nar + p_pm_narrow))
+                    lyn.append(np.append([Zrem, Arem], n_nar + n_pm_narrow))
+                else:
+                    # the table carries the complete light budget at MOTHER
+                    # level (below): the per-channel rows here carry only
+                    # the photomeson part
+                    lyp.append(np.append([Zrem, Arem], p_pm_narrow))
+                    lyn.append(np.append([Zrem, Arem], n_pm_narrow))
+                for ci in range(4):
+                    y = np.zeros(len(boosts))
+                    if pm_clus is not None:
+                        y = y + pm_clus[ci]
+                    lyc[ci].append(np.append([Zrem, Arem], y))
+
+            if rates_ly is not None and chan:
+                # the six light-species yields verbatim from the model's
+                # inclusive tables (multiplicity excess over the
+                # one-per-event tensor allocation; Be-9: the second He4 +
+                # one neutron, zero protons); labeled by the largest-rate
+                # channel — the label indexes the light tensor, and a
+                # marginal channel might not survive into the species list
+                lci = int(np.argmax([np.sum(c[2]) for c in chan]))
+                label = [chan[lci][0], chan[lci][1]]
+                lyp.append(np.append(label, rates_ly[4]))
+                lyn.append(np.append(label, rates_ly[5]))
+                for ci in range(4):
+                    lyc[ci].append(np.append(label, rates_ly[ci]))
+
+            ejp_all.append(ejp)
+            ejn_all.append(ejn)
+
+            empty = np.zeros((0, 2 + len(boosts)))
+            mlyp.append(np.vstack(lyp) if lyp else empty)
+            mlyn.append(np.vstack(lyn) if lyn else empty)
+            for ci in range(4):
+                mly_clusters[ci].append(np.vstack(lyc[ci]) if lyc[ci] else empty)
+
+            if branchings:
+                pdis_rates_all.append(np.sum(np.atleast_2d(branchings), axis=0)[2:])
+            else:
+                pdis_rates_all.append(np.zeros(len(boosts)))
             branchings_all.append(branchings)
 
-        branchings_all = [np.vstack(br) for br in branchings_all]
-        marginal_light_yields = [[np.atleast_2d(np.hstack([br[:, :2], np.zeros_like(br[:, 2:])])) for br in branchings_all] for _ in range(4)]
+        # spontaneous nuclear decay of TRACKED species as jump rates
+        # (nuclear_decay_On): lambda(gamma) = 1 / (gamma tau c) per decay
+        # branching — the boost-diluted decay rate in Mpc^-1, added to the
+        # corresponding row of the main tensor (K40 -> Ca40 for beta-,
+        # ...). Emitted alpha/p/n/d/t are boost-preserving light yields;
+        # beta decays shift Z only (leptons untracked, the documented Z
+        # bookkeeping). Ultrafast particle emitters (tau < 1 ns: Be8, ...)
+        # are excluded here — they resolve instantly at construction like
+        # untracked products, and their diluted rates would dwarf every
+        # interaction rate (numerically stiff, physically instantaneous).
+        light_za6 = [(2, 4), (2, 3), (1, 3), (1, 2), (1, 1), (0, 1)]
+        light_ids6 = {402: 0, 302: 1, 301: 2, 201: 3, 101: 4, 100: 5}
+        self.nuclear_decay_rates = np.zeros(
+            (len(self.xsec_model.nuclei), len(boosts)))
+        if self.nuclear_decay_On and self.decays:
+            for k, (Z, A) in enumerate(self.xsec_model.nuclei):
+                entry = self.decays.get(A * 100 + Z)
+                if entry is None or entry['decay_time'] < 1e-9:
+                    continue
+                lam = 1.0 / (boosts * entry['decay_time'] * c_in_Mpc_sec)
+                for channel in entry['channels']:
+                    br, daughters = channel[0], channel[1:]
+                    Zr, Ar, counts = Z, A, {}
+                    for dau in daughters:
+                        if dau == -1:                     # beta-minus
+                            Zr += 1
+                        elif dau == 1:                    # beta+ / EC
+                            Zr -= 1
+                        else:
+                            Zr -= dau % 100
+                            Ar -= dau // 100
+                            if dau in light_ids6:
+                                li = light_ids6[dau]
+                                counts[li] = counts.get(li, 0) + 1
+                    if Ar == 0 and counts:                # fully emitted
+                        li = min(counts)
+                        counts[li] -= 1
+                        if counts[li] == 0:
+                            del counts[li]
+                        Zr, Ar = light_za6[li]
+                    branchings_all[k].append(np.append([Zr, Ar], br * lam))
+                    for li, cnt in counts.items():
+                        row = np.append([Zr, Ar], cnt * br * lam)
+                        if li == 4:
+                            mlyp[k] = np.vstack([mlyp[k], row])
+                        elif li == 5:
+                            mlyn[k] = np.vstack([mlyn[k], row])
+                        else:
+                            mly_clusters[li][k] = np.vstack(
+                                [mly_clusters[li][k], row])
+                    self.nuclear_decay_rates[k] += br * lam
+
+        branchings_all = [np.vstack(br) if br else np.zeros((0, 2 + len(boosts)))
+                          for br in branchings_all]
+        marginal_light_yields = list(mly_clusters)
         marginal_light_yields.append(mlyp)
         marginal_light_yields.append(mlyn)
 
@@ -850,6 +1132,1132 @@ class InteractionCore():
         self.all_rates = np.vstack(pdis_rates_all)
         self.all_branchings = branchings_all
         self.marginal_light_yields = marginal_light_yields
+        # wide-spectrum nucleon budget per parent, rows in self.nuclei order
+        # (counts only; proton_recoil_production carries the spectra)
+        self.photomeson_ejecta = {'p': np.vstack(ejp_all), 'n': np.vstack(ejn_all)}
+
+    def _collect_pdis_models(self, model):
+        """Photodisintegration-group members of a (possibly nested) model."""
+        if getattr(model, 'interaction_type', 'photodisintegration') == 'photodisintegration':
+            return [model] if not getattr(model, 'models', None) else \
+                [m for member in model.models
+                 for m in self._collect_pdis_models(member)]
+        members = getattr(model, 'models', None)
+        if members:
+            return [m for member in members
+                    for m in self._collect_pdis_models(member)]
+        return []
+
+    def _collect_photomeson_models(self, model):
+        """Photomeson-group members of a (possibly nested) cross-section model."""
+        if getattr(model, 'interaction_type', 'photodisintegration') == 'photomeson':
+            return [model]
+        collected = []
+        for member in getattr(model, 'models', None) or []:
+            collected += self._collect_photomeson_models(member)
+        return collected
+
+    def _photomeson_rates_A1(self, pm_models):
+        """Per-nucleon photomeson interaction rates on self.boosts [Mpc^-1],
+        for the light-sector p/n absorption hook: the photomeson models' A=1
+        total cross sections through the rate machinery, with the pion-kernel
+        row sums as fallback."""
+        eps_MeV = self.eps * 1e3
+        rows = []
+        for nuc in [(1, 1), (0, 1)]:
+            sigma = np.zeros_like(eps_MeV)
+            for model in pm_models:
+                try:
+                    sigma = sigma + np.asarray(model.cross_section(eps_MeV, *nuc))
+                except Exception:
+                    pass
+            rows.append(sigma)
+
+        if np.any(rows):
+            rates = self._rates_of_sigma_rows(np.vstack(rows))
+            return rates.mean(axis=0)          # p ~ n; the hook takes one array
+
+        return self.pion_prod_tensor[0].sum(axis=1)
+
+    def _build_photomeson_fold_scaling(self, pm):
+        """Per-parent-boost rate-ratio factors that rescale the A = 1
+        photomeson kernels in the folds from the superposition Z K_p + N K_n
+        to the photomeson model's inclusive cross sections:
+
+            F_c(A; Gamma) = R[sigma_c,A] / (Z R[sigma_c,p] + N R[sigma_c,n])
+
+        per pion charge c (neucosma ids 2, 3, 4), plus 'pion' (charge-summed)
+        and 'N' (nonelastic ratio — the recoil nucleon count follows the
+        interaction rate, one nucleon per event, consistently with the
+        cascade tensor and the photomeson_ejecta budget). Rates are computed
+        on self.eps with the same machinery as the channel rates; where the
+        superposition rate vanishes (sub-threshold) the factor is 1.
+
+        Sets self.photomeson_fold_scaling {group: (n_mothers, n_boosts)} and
+        self._pm_scaling_index {(Z, A): row}. Applied by _photomeson_fold
+        via scaling_group=; not persisted by save()."""
+        eps_MeV = self.eps * 1e3
+        mothers = [(Z, A) for (Z, A) in pm.nuclei if A > 1]
+        codes = (2, 3, 4)                              # pi+, pi-, pi0
+
+        rows = []
+        for Z, A in mothers:
+            rows += [pm.inclusive_cross_section(eps_MeV, Z, A, c) for c in codes]
+            rows.append(pm.cross_section(eps_MeV, Z, A))          # nonelastic
+        for nuc in ((1, 1), (0, 1)):
+            rows += [pm.inclusive_cross_section(eps_MeV, *nuc, c) for c in codes]
+            rows.append(pm.cross_section(eps_MeV, *nuc))
+        R = self._rates_of_sigma_rows(np.vstack(rows))            # (n_rows, n_b)
+
+        n_m = len(mothers)
+        R_m = R[:4 * n_m].reshape(n_m, 4, -1)
+        R_p, R_n = R[4 * n_m:4 * n_m + 4], R[4 * n_m + 4:]        # (4, n_b)
+
+        Z_m = np.array([z for (z, a) in mothers], dtype=float)
+        N_m = np.array([a - z for (z, a) in mothers], dtype=float)
+        den = Z_m[:, None, None] * R_p[None] + N_m[:, None, None] * R_n[None]
+
+        # relative floor: sub-threshold rates are FFT-level denormals whose
+        # ratios are numerical noise — keep the superposition (factor 1) there
+        ok = den > 1e-12 * den.max(axis=-1, keepdims=True)
+        with np.errstate(invalid='ignore', divide='ignore'):
+            F = np.where(ok, R_m / np.where(ok, den, 1.0), 1.0)
+            pion_den = den[:, :3].sum(axis=1)
+            ok_pi = pion_den > 1e-12 * pion_den.max(axis=-1, keepdims=True)
+            F_pion = np.where(ok_pi,
+                              R_m[:, :3].sum(axis=1)
+                              / np.where(ok_pi, pion_den, 1.0), 1.0)
+
+        self.photomeson_fold_scaling = {'pi+': F[:, 0], 'pi-': F[:, 1],
+                                        'pi0': F[:, 2], 'N': F[:, 3],
+                                        'pion': F_pion}
+        self._pm_scaling_index = {nuc: i for i, nuc in enumerate(mothers)}
+
+    def _channel_rates_fft(self, models=None):
+        """Rates of every channel of every nucleus in one batched log-space
+        convolution (see interaction_rates.compute_rates), in Mpc^-1.
+
+        models : optional list of leaf models — restrict the cross sections to
+            their contribution while keeping the rack's channel list (used to
+            split channel rates by interaction type)."""
+        eps_MeV = self.eps * 1e3
+
+        if models is None:
+            sigma_rows = np.vstack([
+                self.xsec_model.cross_section(eps_MeV, Z, A, rem=(Zrem, Arem))   # mb
+                for (Z, A), products in zip(self.xsec_model.nuclei, self.xsec_model.channels)
+                for Zrem, Arem in products
+            ])
+        else:
+            rows = []
+            for (Z, A), products in zip(self.xsec_model.nuclei, self.xsec_model.channels):
+                for rem in products:
+                    sigma = np.zeros_like(eps_MeV)
+                    for m in models:
+                        if (Z, A) in m.nuclei:
+                            sigma = sigma + np.asarray(m.cross_section(eps_MeV, Z, A, rem=tuple(rem)))
+                    rows.append(sigma)
+            sigma_rows = np.vstack(rows) if rows else np.zeros((0, len(eps_MeV)))
+        return self._rates_of_sigma_rows(sigma_rows)
+
+    def _rates_of_sigma_rows(self, sigma_rows):
+        """Batched isotropic-field rates of cross-section rows sampled on
+        self.eps (mb), on self.boosts, in Mpc^-1 (see exact_rates_for_sigma)."""
+        return exact_rates_for_sigma(self.boosts, self.target_photons, self.eps, sigma_rows)
+
+    def _collect_models_by_type(self, model):
+        """Leaf cross-section models of a (possibly nested) model, grouped by
+        their interaction_type ('photodisintegration', 'photomeson', ...)."""
+        members = getattr(model, 'models', None)
+        if members:
+            groups = {}
+            for member in members:
+                for kind, leaves in self._collect_models_by_type(member).items():
+                    groups.setdefault(kind, []).extend(leaves)
+            return groups
+        return {getattr(model, 'interaction_type', 'photodisintegration'): [model]}
+
+    def conservation_imbalance(self):
+        """Relative (A, Z) conservation imbalance of the assembled rate
+        matrices: interaction tensor + boost-preserving light yields + the
+        wide-spectrum photomeson-ejecta budget.
+
+        Machine-level (~1e-14) for a consistent construction. Beta decays of
+        resolved channel products shift the nuclear charge with the leptons
+        untracked, so the Z imbalance reflects that physics on racks with
+        proton-rich daughters while A must always balance.
+
+        Returns:
+        --------
+        (imbalance_A, imbalance_Z) : floats, relative to max|tensor|
+        """
+        A_sp = np.array([s[1] for s in self.species], float)
+        Z_sp = np.array([s[0] for s in self.species], float)
+        A_L = np.array([4., 3., 3., 2., 1., 1.])
+        Z_L = np.array([2., 2., 1., 1., 1., 0.])
+        imbA = (np.einsum('j,ijb->ib', A_sp, self.tensor)
+                + np.einsum('l,lijb->ib', A_L, self.light_prod_tensor))
+        imbZ = (np.einsum('j,ijb->ib', Z_sp, self.tensor)
+                + np.einsum('l,lijb->ib', Z_L, self.light_prod_tensor))
+        ej = getattr(self, 'photomeson_ejecta', None)
+        if ej is not None:
+            for ni, nuc in enumerate(self.nuclei):
+                si = self.species.index(tuple(nuc))
+                imbA[si] += ej['p'][ni] + ej['n'][ni]
+                imbZ[si] += ej['p'][ni]
+        scale = np.abs(self.tensor).max()
+        return np.abs(imbA).max() / scale, np.abs(imbZ).max() / scale
+
+    def rates_by_interaction(self, nucleus=None):
+        """Total interaction rates of each nucleus decomposed by interaction type.
+
+        Re-evaluates the cross sections of the photodisintegration and the
+        photomeson members of self.xsec_model separately through the same rate
+        machinery used at construction, so the returned components sum to
+        self.all_rates.  Useful to see which process drives the cascade of a
+        given species on the core's photon field (free p/n absorption in the
+        light sector is the separate self.photomeson_rates_pn attribute).
+
+        Arguments:
+        ----------
+        nucleus : optional (Z, A); restrict the output to that nucleus.
+
+        Returns:
+        --------
+        dict mapping interaction type -> rates in Mpc^-1, arrays of shape
+        (n_nuclei, n_boosts), or (n_boosts,) when nucleus= is given.  Both
+        'photodisintegration' and 'photomeson' keys are always present
+        (zeros when the model has no members of that type).
+        """
+        if getattr(self, 'xsec_model', None) is None:
+            raise ValueError('rates_by_interaction needs a core constructed '
+                             'from a cross-section model (xsec_model=)')
+
+        from scipy.constants import c, parsec
+        from .interaction_rates import interaction_rate_from_cross_section_boosts
+
+        eps_MeV = self.eps * 1e3
+        nuclei = [nucleus] if nucleus is not None else self.nuclei
+        groups = self._collect_models_by_type(self.xsec_model)
+
+        decomposed = {}
+        for kind in sorted(set(groups) | {'photodisintegration', 'photomeson'}):
+            sigma_rows = np.zeros((len(nuclei), len(eps_MeV)))
+            for i, (Z, A) in enumerate(nuclei):
+                for model in groups.get(kind, []):
+                    if (Z, A) not in model.nuclei:
+                        continue
+                    for rem in model.channels[model.nuclei.index((Z, A))]:
+                        sigma_rows[i] += model.cross_section(eps_MeV, Z, A, rem=tuple(rem))
+
+            if getattr(self, 'rate_method', 'fft') == 'fft':
+                rates = self._rates_of_sigma_rows(sigma_rows)
+            else:
+                rates = np.vstack([
+                    interaction_rate_from_cross_section_boosts(
+                        self.boosts, self.target_photons, self.eps, 1e-27 * row)
+                    / (c / parsec / 1e6)
+                    for row in sigma_rows])
+            decomposed[kind] = rates[0] if nucleus is not None else rates
+
+        # spontaneous-decay jump rates (nuclear_decay_On cores): reported
+        # separately — 'photodisintegration' + 'photomeson' sum to
+        # self.all_rates; the decay rows live in the tensor on top of that
+        dec = getattr(self, 'nuclear_decay_rates', None)
+        if dec is not None and np.any(dec):
+            if nucleus is None:
+                decomposed['decay'] = dec
+            elif tuple(nucleus) in self.nuclei:
+                # light-sector species ((1,1)/(0,1)) have no tensor row;
+                # free-neutron decay lives in neutron_decay_neutrinos
+                decomposed['decay'] = dec[self.nuclei.index(tuple(nucleus))]
+
+        return decomposed
+
+    def pion_production(self, L, alpha=None, mass_range=None, boost_range=None, true_range=None, P=None, weights=None):
+        """Cumulative pion spectrum produced by the heavy cascade at positions L.
+
+        Solves the heavy cascade ODE for each parent boost and folds the result
+        with self.pion_prod_tensor, integrating along L to give the total pion
+        count in each boost bin of self.boosts between 0 and each element of L.
+
+        Pions are treated as a single species (π+, π-, π0 lumped).  For a nucleus
+        (Z, A) the contribution to pion boost bin j from parent boost bin i is
+        Z * K[0, i, j] + (A-Z) * K[1, i, j] where K = self.pion_prod_tensor.
+
+        Requires the photomeson kernels (construct with photomeson='kernels').
+
+        Arguments:
+        ----------
+        L          : 1-D array of distances [Mpc]
+        alpha      : injection spectrum (must sum to 1), shape (n_species_full,)
+        mass_range : list of species indices (as from get_distribution_parameters)
+        boost_range: parent boost values [default: self.boosts]
+        true_range : non-absorbed subset of mass_range
+        P          : optional precomputed heavy evolution, as returned by
+                     species_evolution_boost_range with the same arguments;
+                     avoids re-solving the cascade ODE.
+        weights    : optional per-parent-boost injection weights, shape
+                     (len(boost_range),) — e.g. the injected number per slice,
+                     dQ/dlnΓ · ΔlnΓ. The parent slices are then summed as a
+                     weighted ladder total instead of unit injections.
+
+        Returns:
+        --------
+        N_pion : ndarray, shape (n_boost_pion, n_L)
+                 n_boost_pion = len(self.boosts); N_pion[j, l] is the cumulative
+                 number of pions produced in boost bin j up to distance L[l].
+        """
+        if not hasattr(self, 'pion_prod_tensor'):
+            raise AttributeError('pion_prod_tensor not available; rebuild or load from file.')
+        return self._photomeson_fold(self.pion_prod_tensor, L, alpha=alpha,
+                                     mass_range=mass_range, boost_range=boost_range,
+                                     true_range=true_range, P=P, weights=weights,
+                                     scaling_group='pion')
+
+    def photomeson_production(self, species, L, alpha=None, mass_range=None,
+                              boost_range=None, true_range=None, P=None, weights=None,
+                              cumulative=True):
+        """Cumulative production of one photomeson secondary species along L:
+        the charge/species-resolved kernel folded with the heavy cascade.
+
+        species : one of 'pi+', 'pi-', 'pi0', 'p', 'n'
+                  (self.photomeson_kernels); other arguments as in
+                  pion_production. cumulative=False returns the local
+                  production rate per unit path instead of the L-integral.
+        """
+        group = {'pi+': 'pi+', 'pi-': 'pi-', 'pi0': 'pi0', 'p': 'N', 'n': 'N'}[species]
+        return self._photomeson_fold(self.photomeson_kernels[species], L, alpha=alpha,
+                                     mass_range=mass_range, boost_range=boost_range,
+                                     true_range=true_range, P=P, weights=weights,
+                                     scaling_group=group, cumulative=cumulative)
+
+    def _photomeson_fold(self, kernel, L, alpha=None, mass_range=None,
+                         boost_range=None, true_range=None, P=None, weights=None,
+                         scaling_group=None, cumulative=True):
+        """Fold a photomeson kernel (2, n_b, n_b) with the heavy cascade and
+        integrate along L — the shared machinery of pion_production,
+        proton_recoil_production and the per-charge neutrino folds.
+
+        scaling_group : key into self.photomeson_fold_scaling ('pi+', 'pi-',
+            'pi0', 'pion', 'N') applying the per-species inclusive rescaling
+            of photomeson_scaling='inclusive'; silently a no-op on cores
+            built without it (factor 1, bit-identical superposition).
+        cumulative : True (default) integrates the production along L;
+            False returns the local production RATE per unit path
+            (n_b_sec, n_L) [same units per Mpc] — e.g. the wide-spectrum
+            nucleon source term of reprocessed_nucleons."""
+        from scipy.integrate import cumulative_trapezoid
+
+        if boost_range is None:
+            boost_range = self.boosts
+
+        n_b = len(boost_range)
+        indices = [mass_range.index(ival) for ival in true_range]
+        n_sp    = len(indices)
+        L_arr   = np.asarray(L)
+
+        if P is not None:
+            heavy = np.asarray(P)[:, :, :n_sp]             # (n_b, n_L, n_sp)
+        else:
+            # --- heavy cascade ODE (follows light_cascade_production structure) ---
+            reduced_tensor = self.interpolator(boost_range)   # (n_sp_full, n_sp_full, n_b)
+
+            if mass_range is not None:
+                reduced_tensor = reduced_tensor[np.ix_(mass_range, mass_range, range(n_b))]
+
+            reduced_tensor -= np.dstack([np.diag(np.diag(reduced_tensor[:, :, k]))
+                                         for k in range(n_b)])
+            reduced_tensor -= np.stack([np.diag(row) for row in reduced_tensor.sum(axis=1).T], axis=2)
+
+            reduced_tensor = reduced_tensor[np.ix_(indices, indices, range(n_b))]
+            heavy_abs      = reduced_tensor.sum(axis=1)        # (n_sp, n_b)
+
+            sz      = n_sp + 1
+            big_mat = np.zeros((sz, sz, n_b))
+            big_mat[:n_sp, :n_sp, :] = reduced_tensor
+            big_mat[:n_sp,  n_sp, :] = heavy_abs
+
+            alpha_aug = np.append(alpha[indices], 0.0)
+
+            # Per-boost sub-batches avoid a scipy batched-expm precision issue
+            # that appears when matrices with widely different norms share a batch.
+            expmatL = np.stack([
+                expm(L_arr[:, None, None] * big_mat[:, :, b])
+                for b in range(big_mat.shape[-1])
+            ])
+            result  = np.matmul(alpha_aug, expmatL)            # (n_b, n_L, sz)
+            heavy   = result[:, :, :n_sp]                      # (n_b, n_L, n_sp)
+
+        # --- fold with the kernel ---
+        # interpolate kernel to boost_range on the parent-boost axis
+        K = interp1d(self.boosts, kernel, axis=1, kind='linear',
+                     bounds_error=False, fill_value=0.0)(boost_range)
+        # K: (2, n_b, n_b_sec) where n_b_sec = len(self.boosts)
+
+        # species composition
+        Z_sp = np.array([self.species[true_range[k]][0] for k in range(n_sp)], dtype=float)
+        A_sp = np.array([self.species[true_range[k]][1] for k in range(n_sp)], dtype=float)
+
+        # K_sp[sp, b_parent, b_sec] = Z * K_p + (A-Z) * K_n
+        K_sp = (Z_sp[:, None, None] * K[0][None]
+                + (A_sp - Z_sp)[:, None, None] * K[1][None])  # (n_sp, n_b, n_b_sec)
+
+        table = getattr(self, 'photomeson_fold_scaling', None)
+        if scaling_group is not None and table is not None and scaling_group in table:
+            rows = np.ones((n_sp, len(self.boosts)))
+            for k in range(n_sp):
+                ri = self._pm_scaling_index.get(tuple(self.species[true_range[k]]))
+                if ri is not None:
+                    rows[k] = table[scaling_group][ri]
+            F_b = interp1d(self.boosts, rows, axis=1, kind='linear',
+                           bounds_error=False, fill_value=1.0)(boost_range)
+            K_sp = K_sp * F_b[:, :, None]
+
+        if weights is not None:
+            heavy = heavy * np.asarray(weights)[:, None, None]
+
+        # production rate at each (L, b_sec): sum over parent boost and species
+        rate = np.einsum('bls, sbj -> lj', heavy, K_sp)        # (n_L, n_b_sec)
+
+        if not cumulative:
+            return rate.T                                       # (n_b_sec, n_L)
+
+        # integrate along L
+        N_sec = cumulative_trapezoid(rate, L_arr, axis=0, initial=0.0)
+
+        return N_sec.T                                          # (n_b_sec, n_L)
+
+    def proton_recoil_production(self, L, alpha=None, mass_range=None,
+                                  boost_range=None, true_range=None, P=None, weights=None):
+        """Cumulative secondary-nucleon (p + n) spectrum from photomeson at
+        positions L.
+
+        Identical in structure to pion_production but uses
+        self.proton_recoil_tensor (the p + n sum of the species kernels):
+        secondaries are placed at γ_N = (1−κ) × Γ_parent, always below the
+        parent boost, one nucleon per interaction. The p/n split is available
+        through self.photomeson_kernels['p'] / ['n'] with _photomeson_fold.
+
+        Requires the photomeson kernels (construct with photomeson='kernels').
+        Arguments as in pion_production.
+
+        Returns:
+        --------
+        N_nucleon : ndarray, shape (n_boost, n_L) — cumulative secondary
+                    nucleon count per boost bin of self.boosts up to L[l].
+        """
+        if not hasattr(self, 'proton_recoil_tensor'):
+            raise AttributeError('proton_recoil_tensor not available; rebuild or load from file.')
+        return self._photomeson_fold(self.proton_recoil_tensor, L, alpha=alpha,
+                                     mass_range=mass_range, boost_range=boost_range,
+                                     true_range=true_range, P=P, weights=weights,
+                                     scaling_group='N')
+
+    def nucleon_transport_matrix(self):
+        """The free-nucleon transport generator M [Mpc^-1] on the doubled
+        boost grid, state = [p bins | n bins], row convention M[from, to]
+        (evolve row vectors: n @ expm(M L)).
+
+        Off-diagonal blocks are the recoil-kernel placements (struck nucleon
+        at (1-kappa)Gamma per interaction type, charge-resolved); the
+        diagonal removes the kernel row sums — which equal the exact
+        interaction rate (one nucleon per event). Neutrons additionally
+        beta-decay in flight, n -> p at the same boost (Q << E), with the
+        mean lifetime from the core's nuclear decay table (nubase;
+        fallback 880 s as in the light sector when no table was given).
+        Every row still sums to zero, so nucleon number is conserved
+        identically. Cached.
+        """
+        if not hasattr(self, 'photomeson_kernels'):
+            raise AttributeError("photomeson kernels not available; "
+                                 "construct with photomeson='kernels'")
+        if not hasattr(self, '_nucleon_transport_M'):
+            Kp, Kn = self.photomeson_kernels['p'], self.photomeson_kernels['n']
+            n_b = len(self.boosts)
+            M = np.zeros((2 * n_b, 2 * n_b))       # [p bins | n bins]
+            M[:n_b, :n_b] = Kp[0]                  # p parent -> secondary p
+            M[:n_b, n_b:] = Kn[0]                  # p parent -> secondary n
+            M[n_b:, :n_b] = Kp[1]                  # n parent -> secondary p
+            M[n_b:, n_b:] = Kn[1]                  # n parent -> secondary n
+            M -= np.diag(M.sum(axis=1))            # rows sum to zero exactly
+
+            tau_n = 880.0                          # light-sector fallback [s]
+            if isinstance(getattr(self, 'decays', None), dict):
+                entry = self.decays.get(get_nucid((0, 1)))
+                if entry is not None:
+                    tau_n = float(entry['decay_time'])
+            lam = 1.0 / (self.boosts * tau_n * c_in_Mpc_sec)   # 1/Mpc
+            idx = np.arange(n_b)
+            M[n_b + idx, n_b + idx] -= lam         # n decays away ...
+            M[n_b + idx, idx] += lam               # ... into p at the same bin
+            self._nucleon_transport_M = M
+            self._nucleon_transport_lam = lam
+            self._nucleon_transport_rate = np.maximum(
+                (Kp[0] + Kn[0]).sum(axis=1), (Kp[1] + Kn[1]).sum(axis=1))
+        return self._nucleon_transport_M
+
+    def reprocessed_nucleons(self, L, injection=None, source=None,
+                             energy_loss=None):
+        """Multi-generation photomeson transport of free nucleons along the
+        path: after every p/n + gamma -> pi + N' the struck nucleon re-enters
+        at its recoil placement and keeps interacting until it degrades below
+        the photomeson threshold (where the kernel rows vanish and the
+        occupation freezes out) — the nucleon reprocessing of De Lia &
+        Tamborra (2024) / Biehl et al. (2018), replacing the one-generation
+        exp(-tau) depletion.
+
+        Solves dn/dx = n M + q with the transport generator of
+        nucleon_transport_matrix, chained per L-interval; the source is
+        treated exactly for its interval-mean (augmented-matrix Duhamel), so
+        total nucleon number matches the trapezoid integral of the source at
+        machine precision. (A piecewise-linear source needs one extra
+        augmented row; not implemented.)
+
+        Included beyond the interactions: neutron beta decay in flight
+        (n -> p at the same boost, nubase mean lifetime — decay length
+        gamma x 8.6e-12 Mpc: irrelevant inside a shell crossing, decisive
+        over extragalactic distances), and, when energy_loss= is given,
+        continuous cooling (synchrotron / adiabatic) as a conservative
+        upwind drift in log-boost. The photomeson_scaling='inclusive'
+        factors are 1 for A = 1 parents, so scaled and unscaled cores
+        transport identically.
+
+        Arguments:
+        ----------
+        L : path positions [Mpc]; the state at L[0] is the injection.
+        injection : optional standing spectrum at L[0], shape (n_b, 2) [p, n]
+                    on self.boosts (absolute or per-unit — caller's units).
+        source : optional production-rate density along the path, shape
+                 (n_b, 2) constant or (n_b, n_L, 2), per Mpc (e.g. from
+                 cascade_nucleon_source), integrated from L[0].
+        energy_loss : optional continuous fractional energy-loss rate
+                 b(gamma) = -dln(gamma)/dx [1/Mpc] on self.boosts (uniform
+                 log grid): shape (n_b,) applied to both species, or
+                 (n_b, 2) as [p, n] — e.g. (synchrotron + adiabatic)/c for
+                 protons, adiabatic/c only for neutrons, from a source
+                 model's loss_rates. Implemented as one-bin-down hops at
+                 rate b/dln(gamma): nucleon number is conserved identically
+                 and the mean ln(gamma) drifts at exactly -b (first-order
+                 upwind, ~one-bin numerical spreading).
+
+        Returns:
+        --------
+        n : ndarray (n_b, n_L, 2) — standing [p, n] spectra at each L.
+        """
+        M = self.nucleon_transport_matrix()
+        lam = self._nucleon_transport_lam
+        rate = self._nucleon_transport_rate
+        L_arr = np.asarray(L, dtype=float)
+        n_b, n_L, n2 = len(self.boosts), len(L_arr), 2 * len(self.boosts)
+        idx = np.arange(n_b)
+
+        b_loss = None
+        dln_b = np.log(self.boosts[1] / self.boosts[0])
+        if energy_loss is not None:
+            b_loss = np.asarray(energy_loss, dtype=float)
+            if b_loss.ndim == 1:
+                b_loss = np.stack([b_loss, b_loss], axis=-1)     # (n_b, 2)
+
+        # the decay/cooling-interaction interplay must be resolved wherever
+        # both act (the charge label and energy at interaction time set the
+        # pion output): sub-step so the fast rates satisfy r * dl <= 60 at
+        # every relevant bin — for the drift only up to the highest OCCUPIED
+        # bin (drift, decay and recoil all move downward, and the untouched
+        # far-upper bins can carry enormous synchrotron rates)
+        active = rate > 1e-6 * rate.max() if rate.max() > 0 else rate > 0
+        lam_act = lam[active].max() if active.any() else 0.0
+        if b_loss is not None:
+            occ = np.zeros(n_b, dtype=bool)
+            if injection is not None:
+                occ |= np.asarray(injection).sum(axis=-1) > 0
+            if source is not None:
+                occ |= np.asarray(source).reshape(n_b, -1).sum(axis=1) > 0
+            top = int(np.nonzero(occ)[0].max()) if occ.any() else n_b - 1
+            lam_act = max(lam_act, b_loss[:top + 1].max() / dln_b)
+
+        def interval_matrix(dl):
+            # stiffness cap for the remaining (unoccupied / interaction-free)
+            # bins, where only the downward transfer matters and ordering is
+            # irrelevant: rates * dl reach ~1e13 at the grid extremes and
+            # would inflate the expm scaling until row sums drift; capping
+            # each loss+gain pair at 60/dl leaves the end state exact
+            # (e^-60 ~ 1e-26) and keeps conservation at machine precision
+            excess = np.clip(lam - 60.0 / dl, 0.0, None)
+            Mk = M.copy()
+            Mk[n_b + idx, n_b + idx] += excess
+            Mk[n_b + idx, idx] -= excess
+            if b_loss is not None:
+                for s in range(2):
+                    r = np.minimum(b_loss[:, s] / dln_b, 60.0 / dl)
+                    r[0] = 0.0                 # freeze at the grid floor
+                    o = s * n_b
+                    Mk[o + idx, o + idx] -= r
+                    Mk[o + idx[1:], o + idx[:-1]] += r[1:]
+            return Mk
+
+        y = np.zeros(n2) if injection is None \
+            else np.asarray(injection, dtype=float).T.ravel().copy()
+        out = np.empty((n_L, n2))
+        out[0] = y
+
+        if source is not None:
+            q = np.asarray(source, dtype=float)
+            if q.ndim == 2:                          # constant (n_b, 2)
+                q = np.repeat(q[:, None, :], n_L, axis=1)
+            q = np.moveaxis(q, -1, 0).reshape(n2, n_L)
+            A = np.zeros((n2 + 1, n2 + 1))
+            ya = np.append(y, 1.0)
+
+        for k in range(n_L - 1):
+            dL = L_arr[k + 1] - L_arr[k]
+            m = max(1, int(np.ceil(dL * lam_act / 60.0))) if dL > 0 else 1
+            dl = dL / m
+            if source is None:
+                E = expm(interval_matrix(dl) * dl)
+                for _ in range(m):
+                    y = y @ E
+                out[k + 1] = y
+            else:
+                A[:n2, :n2] = interval_matrix(dl)
+                A[n2, :n2] = 0.5 * (q[:, k] + q[:, k + 1])   # interval mean
+                E = expm(A * dl)
+                for _ in range(m):
+                    ya = ya @ E
+                out[k + 1] = ya[:n2]
+
+        return np.transpose(out.reshape(n_L, 2, n_b), (2, 0, 1))
+
+    def neutron_decay_neutrinos(self, neutrons):
+        """Electron antineutrinos from neutron beta decay, n -> p e- nubar_e:
+        each neutron yields exactly one nubar_e with the boosted three-body
+        decay spectrum (allowed shape, Q = 0.782 MeV; mean E_nu ~ 5.1e-4 E_n),
+        deposited on the same neutrino energy grid as neutrino_production
+        (E_nu = m_pi x self.boosts).
+
+        The caller chooses the neutron census: for a source with advective
+        escape, the standing neutron spectrum at the end of the crossing
+        (they all decay in transit long before Earth — the decay length
+        gamma x 8.6e-12 Mpc dwarfs any shell but not the way to the
+        observer), in the same units as the neutrino_production folds so the
+        output adds directly to the 'detail' nubar_e; for in-flight decays
+        along a tracked path, the lambda-weighted path integral of the
+        occupations instead.
+
+        Antineutrinos from neutrons whose decay products fall below the
+        grid floor (E_nu < m_pi, i.e. gamma_n <~ 300 at the mean fraction)
+        are dropped with the deposit convention.
+
+        Arguments:
+        ----------
+        neutrons : array whose FIRST axis is the boost grid — e.g. (n_b,)
+                   escaping counts, or any (n_b, ...) stack.
+
+        Returns:
+        --------
+        nubar_e : same shape with the boost axis mapped onto the neutrino
+                  energy grid (one antineutrino per neutron).
+        """
+        if not hasattr(self, '_neutron_decay_D'):
+            Q, m_e, m_n = 0.782e-3, 0.511e-3, 0.93957     # GeV
+            # rest-frame antineutrino spectrum (allowed beta shape)
+            e0 = np.linspace(Q * 1e-4, Q, 400)
+            E_e = Q + m_e - e0
+            f0 = e0**2 * E_e * np.sqrt(np.clip(E_e**2 - m_e**2, 0.0, None))
+            f0 /= np.trapezoid(f0, e0)
+            # boosted isotropically (ultrarelativistic): x = E_nu / E_n in
+            # (0, 2 e0max / m_n); dN/dx = int_{e0 > x m_n / 2} f0 m_n/(2 e0)
+            x = np.linspace(2 * Q / m_n * 1e-4, 2 * Q / m_n, 400)
+            dNdx = np.array([np.trapezoid(
+                np.where(e0 > xx * m_n / 2.0, f0 * m_n / (2.0 * e0), 0.0), e0)
+                for xx in x])
+            w = dNdx * np.gradient(x)
+            w /= w.sum()                                   # one nubar per decay
+
+            mpi = 0.13957039
+            E_grid = mpi * self.boosts                     # the chain's grid
+            n_b = len(self.boosts)
+            D = np.zeros((n_b, n_b))                       # (i_neutron, j_nu)
+            for i, g in enumerate(self.boosts):
+                D[i] = deposit_log_cic(E_grid, x * g * m_n, w)
+            self._neutron_decay_D = D
+
+        return np.tensordot(self._neutron_decay_D, np.asarray(neutrons),
+                            axes=(0, 0))
+
+    def cascade_nucleon_source(self, L, alpha=None, mass_range=None,
+                               boost_range=None, true_range=None, P=None,
+                               weights=None, LC=None):
+        """Free-nucleon production rate of a heavy cascade on the self.boosts
+        grid — the source term for reprocessed_nucleons. Three contributions:
+
+        1. narrow: boost-preserving photodisintegration nucleons
+           (light_secondaries_production rows p, n), deposited from the
+           parent rungs onto the grid bins (CIC in log boost);
+        2. conversion: standing light nuclei (He4, He3, H3, H2 of
+           light_cascade_production) decaying / disintegrating into p, n
+           (the light-matrix coupling), deposited like the narrow term;
+        3. wide: photomeson-ejected nucleons with their recoil-kernel
+           placement (charge-resolved folds, scaling_group='N' — consistent
+           with the photomeson_ejecta budget and the inclusive scaling).
+
+        Arguments as in pion_production; weights are the per-rung injection
+        (dQ/dlnGamma dlnGamma). LC: optional precomputed
+        light_cascade_production result (same arguments) to avoid re-solving.
+
+        Returns:
+        --------
+        q : ndarray (n_b, n_L, 2) — [p, n] production rate per Mpc.
+        """
+        if boost_range is None:
+            boost_range = self.boosts
+        L_arr = np.asarray(L, dtype=float)
+        n_b, n_L = len(self.boosts), len(L_arr)
+        w = np.ones(len(boost_range)) if weights is None \
+            else np.asarray(weights, dtype=float)
+
+        LS = self.light_secondaries_production(
+            L_arr, alpha=alpha, mass_range=mass_range,
+            boost_range=boost_range, true_range=true_range, P=P)
+
+        if LC is None:
+            LC = self.light_cascade_production(
+                L_arr, alpha=alpha, mass_range=mass_range,
+                boost_range=boost_range, true_range=true_range)
+        M_light = self._build_light_matrix(boost_range)          # (6, 6, n_r)
+        conv = np.einsum('mrl,msr->srl', np.asarray(LC)[:4],
+                         M_light[:4, 4:6, :])                    # (2, n_r, n_L)
+
+        # rung values onto the grid: each rung represents a continuum slice
+        # of width dln(rung), so interpolate per-lnGamma densities between
+        # rungs rather than depositing point deltas (which would comb a grid
+        # finer than the ladder) — for the boost-preserving terms directly,
+        # and for the wide term by folding the kernels with the
+        # continuum-interpolated heavy occupations
+        dln_r = np.gradient(np.log(np.asarray(boost_range, dtype=float)))
+        dlnb = np.gradient(np.log(self.boosts))
+        lnb, lnr = np.log(self.boosts), np.log(np.asarray(boost_range, float))
+
+        heavy = np.asarray(P)[:, :, :len(true_range)] * (w / dln_r)[:, None, None]
+        P_grid = interp1d(lnr, heavy, axis=0, kind='linear', bounds_error=False,
+                          fill_value=0.0)(lnb) * dlnb[:, None, None]
+
+        q = np.zeros((n_b, n_L, 2))
+        for s in range(2):
+            rho = (np.asarray(LS[4 + s]) + conv[s]) * (w / dln_r)[:, None]
+            for l in range(n_L):
+                q[:, l, s] = np.interp(lnb, lnr, rho[:, l],
+                                       left=0.0, right=0.0) * dlnb
+            q[:, :, s] += self._photomeson_fold(
+                self.photomeson_kernels['p' if s == 0 else 'n'], L_arr,
+                alpha=alpha, mass_range=mass_range, boost_range=self.boosts,
+                true_range=true_range, P=P_grid, weights=None,
+                scaling_group='N', cumulative=False)
+        return q
+
+    def photomeson_ejecta_production(self, L, alpha=None, mass_range=None,
+                                     boost_range=None, true_range=None, P=None,
+                                     weights=None, cumulative=False):
+        """Production rate of the wide-spectrum photomeson nucleons along the
+        cascade, per parent boost — the self.photomeson_ejecta budget folded
+        with the cascade occupation like the light yields.
+
+        Counts only (used e.g. by per-boost nucleon ledgers): the ejected
+        nucleons' spectral placement is proton_recoil_production.
+
+        Arguments as in light_secondaries_production, plus weights (see
+        pion_production) and cumulative (integrate the rate along L).
+
+        Returns:
+        --------
+        production : ndarray, shape (2, n_boosts, n_L) — [p, n] ejecta
+                     production rates per injected particle, /Mpc
+        """
+        if boost_range is None:
+            boost_range = self.boosts
+
+        n_sp = len(true_range)
+        ej = self.photomeson_ejecta
+        rows = np.zeros((2, n_sp, len(self.boosts)))
+        for k, t in enumerate(true_range):
+            za = tuple(self.species[t])
+            if za in self.nuclei:
+                ni = self.nuclei.index(za)
+                rows[0, k] = ej['p'][ni]
+                rows[1, k] = ej['n'][ni]
+        # 'previous', like interpolator/interpyields: rates must come from the
+        # same boost bin as the destruction rates for consistent bookkeeping
+        rows_b = interp1d(self.boosts, rows, kind='previous',
+                          bounds_error=False, fill_value=0.0)(boost_range)
+
+        if P is None:
+            P = self.species_evolution_boost_range(L, alpha, mass_range, boost_range, true_range)
+        heavy = np.asarray(P)[:, :, :n_sp]
+        if weights is not None:
+            heavy = heavy * np.asarray(weights)[:, None, None]
+
+        production = np.einsum('bmi, kib -> kbm', heavy, rows_b)
+        if cumulative:
+            from scipy.integrate import cumulative_trapezoid
+            production = cumulative_trapezoid(production, np.asarray(L), axis=-1, initial=0.0)
+        return production
+
+    def _fraction_matrix(self, fracs, weights):
+        """Distribution matrix D[i, j]: the fraction of secondaries from
+        energy bin i landing in bin j when the daughter carries fraction
+        fracs[k] of the parent energy with probability weights[k] — a CIC
+        deposit in the log-energy grid, shared by all decay steps."""
+        n = len(self.boosts)
+        logb = np.log(self.boosts)
+        dl = logb[1] - logb[0]
+        D = np.zeros((n, n))
+        for frac, wt in zip(fracs, weights):
+            if frac <= 0 or wt <= 0:
+                continue
+            x = np.arange(n) + np.log(frac) / dl
+            j0 = np.floor(x).astype(int)
+            f = x - j0
+            for jj, ww in ((j0, (1 - f) * wt), (j0 + 1, f * wt)):
+                valid = (jj >= 0) & (jj < n)
+                D[np.arange(n)[valid], jj[valid]] += ww[valid]
+        return D
+
+    def _pion_decay_chain(self):
+        """Cached decay matrices of the pi -> mu -> e chain with the muon
+        helicity dependence of Lipari et al. (2007) as compiled in
+        Huemmer et al. (2010), Eqs. (68)-(71).
+
+        All matrices are (n_b, n_b) distributions on the E = m_pi * boosts
+        energy grid, exactly count-normalized. Keys:
+        'box' (direct nu from pi), 'muL'/'muR' (pi -> mu by helicity), and
+        the muon-decay combinations 'P70p'/'P70m' (muon-flavor nu for
+        h = +1 / -1) and 'P71p'/'P71m' (electron flavor).
+        """
+        if hasattr(self, '_nu_chain'):
+            return self._nu_chain
+        from scipy.constants import physical_constants
+
+        mpi = 0.13957039   # charged pion mass, GeV (PDG)
+        mmu = physical_constants['muon mass energy equivalent in MeV'][0] * 1e-3
+        r = (mmu / mpi) ** 2
+
+        # direct nu_mu: exact two-body box on [0, (1 - r) E_pi]
+        E = mpi * self.boosts
+        edges = np.concatenate([[E[0] ** 2 / E[1]], np.sqrt(E[:-1] * E[1:]),
+                                [E[-1] ** 2 / E[-2]]])
+        box_top = (1.0 - r) * E
+        D_box = (np.minimum(edges[None, 1:], box_top[:, None])
+                 - np.minimum(edges[None, :-1], box_top[:, None]))
+        D_box = np.clip(D_box, 0.0, None) / box_top[:, None]
+
+        # pi -> mu with helicity (Eqs. 68-69): x = E_mu / E_pi in [r, 1]
+        x = np.linspace(r, 1.0, 400)
+        dx = np.gradient(x)
+        F_A = r * (1.0 - x) / ((1.0 - r) ** 2 * np.maximum(x, r))   # pi+ -> mu+_R
+        F_B = (x - r) / ((1.0 - r) ** 2 * np.maximum(x, r))         # pi+ -> mu+_L
+        wA, wB = F_A * dx, F_B * dx
+        tot = wA.sum() + wB.sum()                                   # exactly one muon
+        D_muR = self._fraction_matrix(x, wA / tot)
+        D_muL = self._fraction_matrix(x, wB / tot)
+
+        # mu -> nu with helicity (Eqs. 70-71): y = E_nu / E_mu in [0, 1]
+        y = np.linspace(0.0, 1.0, 400)
+        dy = np.gradient(y)
+        P70 = 5 / 3 - 3 * y ** 2 + 4 * y ** 3 / 3
+        Q70 = -1 / 3 + 3 * y ** 2 - 8 * y ** 3 / 3
+        P71 = 2 - 6 * y ** 2 + 4 * y ** 3
+        Q71 = 2 - 12 * y + 18 * y ** 2 - 8 * y ** 3
+
+        def decay_mat(F):
+            w = np.clip(F, 0.0, None) * dy
+            return self._fraction_matrix(y, w / w.sum())            # one nu per muon
+
+        self._nu_chain = {
+            'r': r, 'mpi': mpi, 'mmu': mmu, 'box': D_box,
+            'muL': D_muL, 'muR': D_muR,
+            'P70p': decay_mat(P70 + Q70), 'P70m': decay_mat(P70 - Q70),
+            'P71p': decay_mat(P71 + Q71), 'P71m': decay_mat(P71 - Q71),
+        }
+        return self._nu_chain
+
+    def _kaon_decay_chain(self):
+        """Cached decay matrices of the leading kaon mode K -> mu nu_mu
+        (BR 0.636) — the channel Huemmer et al. (2010) track for kaons, the
+        one producing the highest-energy neutrinos. Same two-body formalism
+        as _pion_decay_chain with r -> (m_mu / m_K)^2 ~ 0.046, but the
+        parent lives on E_K = m_K * boosts while all outputs land on the
+        shared reporting grid E = m_pi * boosts: the mass ratio m_K / m_pi
+        enters the energy placement explicitly, and the kaon muons are
+        deposited on the shared muon grid so the pion chain's P70/P71
+        matrices apply to them unchanged. Weight placed above the grid top
+        is dropped (the usual grid-boundary convention).
+
+        Keys: 'box' (direct nu_mu per decay), 'muL'/'muR' (K -> mu by
+        helicity, one muon per decay) and the constants 'mK', 'rK',
+        'tauK' (PDG rest-frame lifetime, s), 'BR_munu'.
+        """
+        if hasattr(self, '_nu_chain_K'):
+            return self._nu_chain_K
+        from scipy.constants import physical_constants
+
+        mK = 0.493677      # charged kaon mass, GeV (PDG)
+        mpi = 0.13957039
+        mmu = physical_constants['muon mass energy equivalent in MeV'][0] * 1e-3
+        rK = (mmu / mK) ** 2
+
+        # direct nu_mu: exact two-body box on [0, (1 - rK) E_K], integrated
+        # over the bin edges of the E = m_pi * boosts reporting grid
+        E = mpi * self.boosts
+        edges = np.concatenate([[E[0] ** 2 / E[1]], np.sqrt(E[:-1] * E[1:]),
+                                [E[-1] ** 2 / E[-2]]])
+        box_top = (1.0 - rK) * mK * self.boosts
+        D_box = (np.minimum(edges[None, 1:], box_top[:, None])
+                 - np.minimum(edges[None, :-1], box_top[:, None]))
+        D_box = np.clip(D_box, 0.0, None) / box_top[:, None]
+
+        # K -> mu with helicity (Eqs. 68-69 with r -> rK): x = E_mu / E_K
+        x = np.linspace(rK, 1.0, 400)
+        dx = np.gradient(x)
+        F_A = rK * (1.0 - x) / ((1.0 - rK) ** 2 * np.maximum(x, rK))
+        F_B = (x - rK) / ((1.0 - rK) ** 2 * np.maximum(x, rK))
+        wA, wB = F_A * dx, F_B * dx
+        tot = wA.sum() + wB.sum()                       # exactly one muon
+        # fraction x * mK/mpi places E_mu = x E_K on the m_pi * boosts grid
+        D_muR = self._fraction_matrix(x * (mK / mpi), wA / tot)
+        D_muL = self._fraction_matrix(x * (mK / mpi), wB / tot)
+
+        self._nu_chain_K = {
+            'mK': mK, 'rK': rK, 'tauK': 1.2380e-8, 'BR_munu': 0.6356,
+            'box': D_box, 'muL': D_muL, 'muR': D_muR,
+        }
+        return self._nu_chain_K
+
+    def decay_before_cooling(self, E_GeV, m_GeV, tau0_s, B_gauss):
+        """Closed-form probability that a secondary decays before synchrotron
+        cooling degrades it: t_syn / (t_syn + t_dec), with t_dec = tau0 E/m
+        and the single-particle synchrotron time in the field B. O(n) cost —
+        no transport is solved; the cooled fraction is dropped (its energy
+        goes to synchrotron photons), which is the no-migration
+        approximation of the standard pi/mu cooling breaks."""
+        from scipy.constants import c, e, physical_constants
+        gamma = np.asarray(E_GeV) / m_GeV
+        t_dec = tau0_s * gamma
+        sigma_T = physical_constants['Thomson cross section'][0] * 1e4   # cm^2
+        m_e = physical_constants['electron mass energy equivalent in MeV'][0] * 1e-3
+        GeV_erg = e * 1e16
+        u_B = B_gauss ** 2 / (8 * np.pi)                                 # erg/cm^3
+        rate_syn = (4 / 3) * sigma_T * (m_e / m_GeV) ** 2 * (c * 1e2) \
+            * u_B * gamma / (m_GeV * GeV_erg)
+        return 1.0 / (1.0 + t_dec * rate_syn)
+
+    def cooled_decay_matrix(self, E_grid, m_GeV, tau0_s, B_gauss):
+        """Exact decay-energy distribution of a synchrotron-cooling
+        secondary: S[i, j] is the probability that a particle injected in
+        energy bin i decays in bin j. For cooling Edot = -a E^2 and decay
+        rate m / (tau0 E), the fraction decaying below E has the closed
+        form
+
+            F(E | E0) = exp(-E_c^2 (1/E^2 - 1/E0^2)),   E <= E0,
+
+        with E_c^2 = m / (2 tau0 a) = E_br^2 / 2 (E_br is the f = 1/2
+        break of decay_before_cooling). F(E0 | E0) = 1 exactly, so the
+        rows are stochastic by construction — cooling migrates energy,
+        never number (the migration the drop treatment lacks: injections
+        far above the break pile up at E_br / sqrt(3) instead of
+        vanishing). Mass below the grid floor is dropped (exponentially
+        small whenever the break is on-grid)."""
+        E = np.asarray(E_grid, dtype=float)
+        # invert the drop closed form at the top bin (largest 1 - f, best
+        # conditioned): (1/f - 1) = (E/E_br)^2
+        f0 = float(self.decay_before_cooling(E[-1], m_GeV, tau0_s, B_gauss))
+        if f0 >= 1.0:               # break far above the grid: no cooling
+            return np.eye(len(E))
+        E_c2 = E[-1] ** 2 * f0 / (1.0 - f0) / 2.0
+        edges = np.concatenate([[E[0] ** 2 / E[1]], np.sqrt(E[:-1] * E[1:]),
+                                [E[-1] ** 2 / E[-2]]])
+        lo = np.minimum(edges[None, :-1], E[:, None])
+        hi = np.minimum(edges[None, 1:], E[:, None])
+        S = (np.exp(E_c2 / E[:, None] ** 2 - E_c2 / hi ** 2)
+             - np.exp(E_c2 / E[:, None] ** 2 - E_c2 / lo ** 2))
+        return np.clip(S, 0.0, None)
+
+    def neutrino_production(self, L=None, alpha=None, mass_range=None, boost_range=None,
+                            true_range=None, N_pion=None, charged_fraction=1/3, P=None,
+                            weights=None, B_gauss=None, kaons=False, cooling='drop'):
+        """Neutrino yields from the decay of the photomeson pions and their muons,
+
+            pi+ -> mu+ nu_mu,   mu+ -> e+ nu_e antinu_mu      (and c.c.)
+
+        with the full decay spectra and the muon helicity dependence of
+        Huemmer et al. (2010), Eqs. (68)-(71): the direct nu_mu is the exact
+        two-body box, the muon is produced left/right-handed with the
+        x-dependent probabilities of the pi -> mu kinematics, and the muon
+        decays with the helicity-dependent distributions — their largest
+        single correction to the neutrino spectra.
+
+        Pion inputs: when N_pion is not given and the core carries the
+        charge-resolved kernels (photomeson='kernels'), pi+ and pi- are
+        folded separately (self.photomeson_kernels), making charged_fraction
+        irrelevant; a lumped N_pion= input follows the legacy convention
+        (charged_fraction of it charged, split evenly between pi+-).
+
+        Optional synchrotron cooling before decay (B_gauss=): pions and muons
+        are suppressed per energy bin by the closed-form
+        decay_before_cooling factors — the classic pi/mu spectral breaks at
+        photospheric field strengths, at O(n_boosts) extra cost.
+
+        The default cooling treatment ('drop') deletes the cooled fraction
+        — the no-migration approximation, which discards real flux: cooled
+        secondaries do not vanish, they decay at lower energy.
+        cooling='migrate' instead applies the exact cooled-decay transport
+        (cooled_decay_matrix): every secondary decays somewhere, piling up
+        at ~E_br / sqrt(3) and filling the spectrum below the breaks — the
+        treatment that matches kinetic codes (NeuCosmA) around and below
+        the cooling breaks. Same omissions as 'drop': no escape/adiabatic
+        term in the secondary kinetics (decay times are far shorter than
+        the dynamical times at all relevant energies) and helicity labels
+        preserved through cooling.
+
+        Optional kaon component (kaons=True): K+ and K- from the SOPHIA
+        tables (requires photomeson_spectra= at construction — the
+        interaction-type kernels carry no strangeness channel), decaying
+        through the leading mode K -> mu nu_mu (BR 0.636, the Huemmer et
+        al. treatment); the kaon muons share the pion muon pipeline. Being
+        3.5x heavier and shorter-lived than pions, kaons largely evade the
+        B_gauss cooling suppression and dominate the extreme end of the
+        spectrum in strongly magnetized sources.
+
+        Arguments:
+        ----------
+        L, alpha, mass_range, boost_range, true_range, P, weights :
+                 propagation arguments forwarded to the pion folds when
+                 N_pion is not given (requires photomeson='kernels').
+        N_pion : optional lumped pion yields (n_boosts, n_L), legacy path.
+        charged_fraction : charged share of a lumped N_pion= input only.
+        B_gauss : comoving magnetic field for the cooling factors (None: off).
+        kaons : include the K -> mu nu_mu component (default off; needs the
+                SOPHIA kernels). True carries both K+ and K-; 'K+' is the
+                Huemmer et al. / NeuCosmA scope (K- dropped) — the kaon
+                shoulder then exists only in the neutrino channels, the
+                antineutrino shoulder vanishing (charge-tagged: only
+                K- -> mu- nubar_mu feeds antineutrinos directly).
+        cooling : 'drop' (default) discards the cooled secondaries;
+                'migrate' transports them to their decay energies
+                (requires B_gauss=).
+
+        Returns:
+        --------
+        E_nu : neutrino energy grid in GeV (m_pi * self.boosts)
+        N_nu : dict with cumulative yields, shape of the pion input:
+               'nu_mu', 'nu_e' (neutrino + antineutrino totals, backward
+               compatible) and 'detail' with the separate 'nu_mu',
+               'nubar_mu', 'nu_e', 'nubar_e' components.
+        """
+        if cooling not in ('drop', 'migrate'):
+            raise ValueError("cooling must be 'drop' or 'migrate'")
+        if cooling == 'migrate' and B_gauss is None:
+            raise ValueError("cooling='migrate' needs B_gauss=")
+        if kaons not in (False, True, 'K+'):
+            raise ValueError("kaons must be False, True, or 'K+'")
+
+        C = self._pion_decay_chain()
+
+        if N_pion is not None:
+            N_charged = charged_fraction * np.asarray(N_pion)
+            N_plus = N_minus = 0.5 * N_charged
+        elif getattr(self, 'photomeson_kernels', None) is not None:
+            kw = dict(alpha=alpha, mass_range=mass_range, boost_range=boost_range,
+                      true_range=true_range, P=P, weights=weights)
+            N_plus = self._photomeson_fold(self.photomeson_kernels['pi+'], L,
+                                           scaling_group='pi+', **kw)
+            N_minus = self._photomeson_fold(self.photomeson_kernels['pi-'], L,
+                                            scaling_group='pi-', **kw)
+        else:
+            N_lumped = self.pion_production(L, alpha=alpha, mass_range=mass_range,
+                                            boost_range=boost_range,
+                                            true_range=true_range, P=P, weights=weights)
+            N_plus = N_minus = 0.5 * charged_fraction * np.asarray(N_lumped)
+
+        if kaons:
+            kernels = getattr(self, 'photomeson_kernels', None) or {}
+            if 'K+' not in kernels:
+                raise ValueError(
+                    "kaons=True requires the SOPHIA kernels — build the core "
+                    "with photomeson_spectra= (the interaction-type kernels "
+                    "carry no strangeness channel)")
+            CK = self._kaon_decay_chain()
+            kwK = dict(alpha=alpha, mass_range=mass_range,
+                       boost_range=boost_range, true_range=true_range,
+                       P=P, weights=weights)
+            NK_plus = self._photomeson_fold(kernels['K+'], L,
+                                            scaling_group='K+', **kwK)
+            # kaons='K+' is the Huemmer et al. / NeuCosmA scope (K- dropped
+            # as ~2x suppressed): the direct nubar_mu kaon shoulder vanishes
+            NK_minus = (self._photomeson_fold(kernels['K-'], L,
+                                              scaling_group='K-', **kwK)
+                        if kaons is True and 'K-' in kernels
+                        else np.zeros_like(NK_plus))
+
+        E_nu = C['mpi'] * self.boosts
+        fold = lambda D, N: np.einsum('ij,il->jl', D, N)
+
+        if B_gauss is not None and cooling == 'migrate':
+            # exact cooled-decay transport: the secondaries are moved to
+            # their decay energies instead of dropped (PDG lifetimes)
+            S_pi = self.cooled_decay_matrix(E_nu, C['mpi'], 2.6033e-8, B_gauss)
+            S_mu = self.cooled_decay_matrix(E_nu, C['mmu'], 2.1969811e-6, B_gauss)
+            N_plus = fold(S_pi, N_plus)
+            N_minus = fold(S_pi, N_minus)
+            if kaons:
+                S_K = self.cooled_decay_matrix(CK['mK'] * self.boosts,
+                                               CK['mK'], CK['tauK'], B_gauss)
+                NK_plus = fold(S_K, NK_plus)
+                NK_minus = fold(S_K, NK_minus)
+            f_mu = None
+        elif B_gauss is not None:
+            # PDG rest-frame lifetimes (not CODATA constants)
+            f_pi = self.decay_before_cooling(E_nu, C['mpi'], 2.6033e-8, B_gauss)
+            f_mu = self.decay_before_cooling(E_nu, C['mmu'], 2.1969811e-6, B_gauss)
+            N_plus = f_pi[:, None] * N_plus
+            N_minus = f_pi[:, None] * N_minus
+            if kaons:
+                f_K = self.decay_before_cooling(CK['mK'] * self.boosts,
+                                                CK['mK'], CK['tauK'], B_gauss)
+                NK_plus = f_K[:, None] * NK_plus
+                NK_minus = f_K[:, None] * NK_minus
+        else:
+            f_mu = 1.0
+
+        # muons per helicity (cooled before their decay when B is given);
+        # CP mirror: the spectrum feeding mu+_R (Eq. 68) feeds mu-_L
+        muR_p, muL_p = fold(C['muR'], N_plus), fold(C['muL'], N_plus)
+        muL_m, muR_m = fold(C['muR'], N_minus), fold(C['muL'], N_minus)
+        if kaons:
+            bK = CK['BR_munu']
+            muR_p += bK * fold(CK['muR'], NK_plus)
+            muL_p += bK * fold(CK['muL'], NK_plus)
+            muL_m += bK * fold(CK['muR'], NK_minus)
+            muR_m += bK * fold(CK['muL'], NK_minus)
+        if B_gauss is not None and cooling == 'migrate':
+            muR_p, muL_p = fold(S_mu, muR_p), fold(S_mu, muL_p)
+            muR_m, muL_m = fold(S_mu, muR_m), fold(S_mu, muL_m)
+        elif B_gauss is not None:
+            for mu in (muR_p, muL_p, muR_m, muL_m):
+                mu *= f_mu[:, None] if np.ndim(f_mu) else f_mu
+
+        detail = {
+            'nu_mu':    fold(C['box'], N_plus) + fold(C['P70m'], muR_m) + fold(C['P70p'], muL_m),
+            'nubar_mu': fold(C['box'], N_minus) + fold(C['P70p'], muR_p) + fold(C['P70m'], muL_p),
+            'nu_e':     fold(C['P71p'], muR_p) + fold(C['P71m'], muL_p),
+            'nubar_e':  fold(C['P71m'], muR_m) + fold(C['P71p'], muL_m),
+        }
+        if kaons:
+            detail['nu_mu'] += bK * fold(CK['box'], NK_plus)
+            detail['nubar_mu'] += bK * fold(CK['box'], NK_minus)
+        N_nu = {'nu_mu': detail['nu_mu'] + detail['nubar_mu'],
+                'nu_e': detail['nu_e'] + detail['nubar_e'],
+                'detail': detail}
+        return E_nu, N_nu
 
     @property
     def species_masses(self):
@@ -943,47 +2351,58 @@ class InteractionCore():
 
         return total
     
-    def light_secondaries_production(self, L, alpha=None, mass_range=None, boost_range=None, true_range=None):
-        """Returns the production of each light species at positions L for a range of boosts.
+    def light_secondaries_production(self, L, alpha=None, mass_range=None, boost_range=None, true_range=None, P=None, cumulative=False):
+        """Returns the production rate of each light species at positions L for a
+        range of boosts, in units of number per injected nucleus per Mpc.
+        With cumulative=True the rate is integrated along L (trapezoid), giving
+        the cumulative counts up to each distance.
+
+        The light-yield tensor already contains the channel rates (yields are
+        stored as multiplicity x rate), so the rate of light species k is the
+        A-weighted fold of the heavy-cascade occupation with the yield rows,
+        summed over ALL destination channels (including those into the
+        absorbed states). Integrating the returned rate along L reproduces the
+        cumulative 'emission' tally of light_production_cumulative.
 
         Arguments:
         ----------
-        L : a float or an array of distances at which the pdf will be evaluated
+        L : a float or an array of distances at which the rate will be evaluated
         alpha : injection vector (sum of entries must equal one).
         mass_range : species to be included in the matrix. If None, all species are included.
-        boost_range : A two element variable with the limits minimum and maximum. The whole range by default (None). 
+        boost_range : boost values to evaluate. The whole grid by default (None).
+        P : optional precomputed heavy evolution, as returned by
+            species_evolution_boost_range with the same arguments; avoids
+            re-solving the cascade ODE.
+
+        Returns:
+        --------
+        production : ndarray, shape (6, n_boosts, n_L) — [He4, He3, H3, H2, p, n]
         """
         if boost_range is None:
             boost_range = self.boosts
 
-        reduced_tensor = self.interpolator(boost_range)
-        prod_mat = self.interpyields(boost_range)
+        prod_mat = self.interpyields(boost_range)   # multiplicity x rate, /Mpc
 
         if mass_range is not None:
-            reduced_tensor = reduced_tensor[np.ix_(mass_range, mass_range, range(len(boost_range)))]
             prod_mat = prod_mat[np.ix_(range(prod_mat.shape[0]), mass_range, mass_range, range(len(boost_range)))]
 
-        # make diagonal zero
-        reduced_tensor -= np.dstack([np.diag(np.diag(reduced_tensor[:, :, k])) for k in range(reduced_tensor.shape[-1])]) 
-        # recompute diagonal including absorption states
-        reduced_tensor -= np.stack([np.diag(row) for row in reduced_tensor.sum(axis=1).T], axis=2)
-        # reduce excluding absorption states
         indices = [mass_range.index(ival) for ival in true_range]
-        reduced_tensor = reduced_tensor[np.ix_(indices, indices, range(len(boost_range)))]
-        prod_mat = prod_mat[np.ix_(range(6), indices, indices, range(len(boost_range)))]
 
-        # Compute production
-        LamYp = prod_mat * reduced_tensor[None, :, :, :] # production rate matrix, independent of distance
+        # total yield rate of each light species from parent i: summed over all
+        # destination channels j (dropping any j loses the yields of channels
+        # into the absorbed states)
+        Y_tot = prod_mat[np.ix_(range(6), indices, range(prod_mat.shape[2]),
+                                range(len(boost_range)))].sum(axis=2)   # (6, n_sp, n_b)
 
-        d1, _, d3, d4 = LamYp.shape
-        t_vs_boost = np.atleast_3d(LamYp.sum(axis=2))
-        bigLamYp = np.append(np.append(np.moveaxis(LamYp, -1, 1), np.expand_dims(np.swapaxes(t_vs_boost, 1, 2), axis=3), axis=3), 
-                             np.zeros((d1, d4, 1, d3+1)), axis=2)
+        if P is None:
+            P = self.species_evolution_boost_range(L, alpha, mass_range, boost_range, true_range)
 
-        P = self.species_evolution_boost_range(L, alpha, mass_range, boost_range, true_range)
-        
-        production = np.sum(np.einsum('lmi, klij -> klmj', P, bigLamYp), axis=3)
+        # production rate of light species k at (boost b, distance m)
+        production = np.einsum('bmi, kib -> kbm', P[:, :, :len(indices)], Y_tot)
 
+        if cumulative:
+            from scipy.integrate import cumulative_trapezoid
+            production = cumulative_trapezoid(production, np.asarray(L), axis=-1, initial=0.0)
         return production
 
     def _build_light_decay_matrix(self, boosts):
@@ -1284,7 +2703,7 @@ class InteractionCore():
         L : a float or an array of distances at which the pdf will be evaluated
         alpha : injection vector (sum of entries must equal one).
         mass_range : species to be included in the matrix. If None, all species are included.
-        boost_range : A two element variable with the limits minimum and maximum. The whole range by default (None). 
+        boost_range : A two element variable with the limits minimum and maximum. The whole range by default (None).
         """
 
         if boost_range is None:
@@ -1453,6 +2872,36 @@ class InteractionCore():
         
         self.species = self.nuclei.copy()
         self.species.sort(key=ZA_ordinal, reverse=True)
+
+        # channel products that are stable (no decay data) but untracked and
+        # without a same-A tracked stand-in become INERT tracked species —
+        # they accumulate without interacting (e.g. Be-9 remnants when the
+        # table carries no Be-9 mother data). Dropping them would leak the
+        # channel's mass from the conservation accounting.
+        known_dec = self.decays if self.decays else {
+            804: None, 502: None, 503: None, 202: None, 200: None}
+        valley_A = {5, 6, 7, 8}
+        light6 = {(2, 4), (2, 3), (1, 3), (1, 2), (1, 1), (0, 1)}
+        inert = set()
+        for rows in self.all_branchings:
+            for row in np.atleast_2d(rows):
+                if not len(row):
+                    continue
+                Zp, Ap = int(row[0]), int(row[1])
+                if Ap <= 1 or (Zp, Ap) in light6 \
+                        or (Zp, Ap) in self.species or (Zp, Ap) in inert:
+                    continue
+                if (Ap * 100 + Zp) in known_dec:
+                    continue
+                if any(s[1] == Ap for s in self.species):
+                    continue
+                if Ap in valley_A:
+                    continue
+                inert.add((Zp, Ap))
+        if inert:
+            logger.debug('inert species added for untracked stable '
+                         'products: %s', sorted(inert))
+            self.species += sorted(inert, key=ZA_ordinal, reverse=True)
         self.species += [(0, 1), (1, 1)]
 
         self._resolve_unstable_products()
@@ -1532,12 +2981,20 @@ class InteractionCore():
         self.tensor = tensor.astype(self.ftype)
         self.light_prod_tensor = np.stack([lyt.astype(self.ftype) for lyt in ly_all_mats])
         self.interpolator = lambda boostval: interp1d(self.boosts, self.tensor, 'previous')(boostval)
-        self.interpyields = lambda boostval: interp1d(self.boosts, self.light_prod_tensor, 'cubic')(boostval)
+        # 'previous', like self.interpolator: the destruction (tensor) and production
+        # (light-yield) rates must come from the same boost bin, or nucleon
+        # conservation breaks at interpolated boosts
+        self.interpyields = lambda boostval: interp1d(self.boosts, self.light_prod_tensor, 'previous')(boostval)
 
     def save(self, path):
         """Saves the data to a .npz file.
 
         Saves all arrays needed to reconstruct an instance with load().
+        Construction-time secondaries machinery is NOT persisted (same policy
+        as the photomeson kernels): photomeson_kernels, pion_prod_tensor,
+        proton_recoil_tensor, photomeson_rates_pn and the
+        photomeson_scaling='inclusive' factor tables — rebuild from the
+        xsec_model to use the production folds.
 
         Arguments:
         ----------
@@ -1562,6 +3019,11 @@ class InteractionCore():
         for li, light_yields in enumerate(self.marginal_light_yields):
             for ni, arr in enumerate(light_yields):
                 data[f'mly_{li}_{ni}'] = arr
+
+        ej = getattr(self, 'photomeson_ejecta', None)
+        if ej is not None:
+            data['pm_ejecta_p'] = ej['p']
+            data['pm_ejecta_n'] = ej['n']
 
         np.savez(path, **data)
 
@@ -1598,8 +3060,14 @@ class InteractionCore():
             for li in range(n_light)
         ]
 
+        if 'pm_ejecta_p' in d:
+            self.photomeson_ejecta = {'p': d['pm_ejecta_p'], 'n': d['pm_ejecta_n']}
+
         self.interpolator = lambda boostval: interp1d(self.boosts, self.tensor, 'previous')(boostval)
-        self.interpyields = lambda boostval: interp1d(self.boosts, self.light_prod_tensor, 'cubic')(boostval)
+        # 'previous', like self.interpolator: the destruction (tensor) and production
+        # (light-yield) rates must come from the same boost bin, or nucleon
+        # conservation breaks at interpolated boosts
+        self.interpyields = lambda boostval: interp1d(self.boosts, self.light_prod_tensor, 'previous')(boostval)
 
     def get_distribution_parameters(self, mass_lims=(56, 11), injection_type=('only species', (26, 56)), absorption_type=('only mass', [54]), boost_range=None):
         """Produces the injection vector and mass_range required to
@@ -1704,11 +3172,17 @@ class InteractionCore():
         light_species = [(2, 4), (2, 3), (1, 3), (1, 2), (1, 1), (0, 1)]
         light_daughters = {402: 0, 302: 1, 301: 2, 201: 3, 101: 4, 100: 5}  # nucid -> index above
 
-        decays = self.decays if self.decays else {
+        builtin = {
             804: {'decay_time': 1.18e-16, 'channels': [[1.0, 402]]},   # Be8 -> He4 + He4
             502: {'decay_time': 1.01e-21, 'channels': [[1.0, 100]]},   # He5 -> He4 + n
             503: {'decay_time': 5.34e-22, 'channels': [[1.0, 101]]},   # Li5 -> He4 + p
+            202: {'decay_time': 1e-22,    'channels': [[1.0, 101]]},   # 2p  -> p + p
+            200: {'decay_time': 1e-22,    'channels': [[1.0, 100]]},   # 2n  -> n + n
         }
+        # the builtin particle-emitters stay available as a FALLBACK even
+        # with a decay table provided: nubase carries no entries for these
+        # unbound nuclides, and losing them dead-ends whole decay chains
+        decays = {**builtin, **self.decays} if self.decays else builtin
 
         def resolve(product, frac=1.0, depth=0):
             """List of (fraction, final remnant (Z, A), {light index: count}), or None."""
@@ -1716,7 +3190,40 @@ class InteractionCore():
             if (Z, A) in self.species:
                 return [(frac, (Z, A), {})]
             nucid = A * 100 + Z
-            if depth > 10 or nucid not in decays:
+            if depth > 10:
+                return None
+            if nucid not in decays:
+                # fallback ladder for products without decay data, so channel
+                # strength is never silently dropped: a same-A tracked species
+                # stands in for the beta descendant (charge shift only, like
+                # the beta branch below); particle-unstable masses outside the
+                # table map onto the valley (Stecker-Salamon prescription)
+                same_A = [s for s in self.species if s[1] == A and s != (Z, A)]
+                if same_A:
+                    Zn = min(same_A, key=lambda s: abs(s[0] - Z))
+                    return resolve(Zn, frac, depth + 1)
+                valley = {5: (2, 5), 6: (2, 4), 7: (2, 4), 8: (4, 8)}
+                if A in valley and valley[A] != (Z, A):
+                    Zv, Av = valley[A]
+                    # emit the leftover nucleons of the A -> valley step so
+                    # the redirect conserves mass (charge best-effort)
+                    n_p = int(np.clip(Z - Zv, 0, A - Av))
+                    n_n = (A - Av) - n_p
+                    counts0 = {}
+                    if n_p:
+                        counts0[4] = n_p
+                    if n_n:
+                        counts0[5] = n_n
+                    sub = resolve(valley[A], frac, depth + 1)
+                    if sub is None:
+                        return None
+                    out = []
+                    for sub_frac, sub_rem, sub_counts in sub:
+                        merged = dict(counts0)
+                        for li, cnt in sub_counts.items():
+                            merged[li] = merged.get(li, 0) + cnt
+                        out.append((sub_frac, sub_rem, merged))
+                    return out
                 return None
 
             outcomes = []
@@ -1785,7 +3292,8 @@ class InteractionCore():
                         yield_row[:2] = remnant
                         yield_row[2:] = count * frac * row[2:]
                         extra_yields.setdefault(li, []).append(yield_row)
-            self.all_branchings[k] = np.vstack(new_rows)
+            if new_rows:
+                self.all_branchings[k] = np.vstack(new_rows)
 
             # relabel light-yield rows consistently and append the emitted particles
             for li, yields in enumerate(self.marginal_light_yields):
@@ -1807,621 +3315,7 @@ class InteractionCore():
                     yields[k] = np.vstack(rows)
 
 
-class InteractionCore_CRPropA(InteractionCore):
-    """Producing interaction matrices from CRPropA interaction files 
-    """
-
-    def __init__(self, data_files=None):
-
-        if data_files is None:
-            # The CRPropa data directory must be provided by the user.
-            # Download the CRPropa data from https://github.com/CRPropa/CRPropa3-data
-            # and pass its path here, or set CRPROPA_DATA_PATH in the environment.
-            crpropa_data = os.environ.get('CRPROPA_DATA_PATH', '')
-            if not crpropa_data:
-                raise ValueError(
-                    "InteractionCore_CRPropA requires the CRPropa data directory.\n"
-                    "Either pass data_files={'path': '/your/crpropa/data/', ...} or\n"
-                    "set the environment variable CRPROPA_DATA_PATH=/your/crpropa/data/"
-                )
-            self.data_files = {
-                'path' : crpropa_data,
-                
-                'photodisintegration': {
-                    'rates_cmb' : 'Photodisintegration/rate_CMB.txt',
-                    'rates_ebl' : 'Photodisintegration/rate_EBL_LopezSaldana21.txt',
-                    'branchings_cmb' : 'Photodisintegration/branching_CMB.txt',
-                    'branchings_ebl' : 'Photodisintegration/branching_EBL_LopezSaldana21.txt',
-                },
-
-                'photopionproduction': {
-                    'rates_cmb' : 'PhotoPionProduction/rate_CMB.txt',
-                } 
-            }
-        else:
-            self.data_files = data_files
-        
-        InteractionCore.__init__(self)
-
-    def _generate_photomeson_table(self, nuclei):
-        """Creates photomeson data from tables assuming a superposition model.
-        """
-        from pandas import DataFrame, MultiIndex
-        
-        boosts = np.logspace(6, 14, 201)
-        cols = [f'{i}' for i in range(201)]
-        daughter_names = ['a', 'he3', 't', 'd', 'p', 'n']
-        pp_rates = np.genfromtxt(os.path.join(self.data_files['path'], self.data_files['photopionproduction']['rates_cmb']))
-
-        prates = np.interp(boosts, 10**pp_rates[:, 0], pp_rates[:, 1])
-        nrates = np.interp(boosts, 10**pp_rates[:, 0], pp_rates[:, 2])
-
-        zvals, avals = np.array([z for z, _ in nuclei]), np.array([a for _, a in nuclei])
-
-        Z = np.repeat(np.atleast_2d(zvals).T, len(boosts), axis=1)
-        A = np.repeat(np.atleast_2d(avals).T, len(boosts), axis=1)
-        N = A - Z
-
-        pprates = Z * prates + N * nrates
-
-        df_rates_pmes = DataFrame(data=np.hstack([nuclei, pprates]), index=MultiIndex.from_arrays(np.array(nuclei).T), columns=['Z', 'A'] + cols)
-
-        pmes_branchings = []
-        pmes_marginal_yields = []
-        for idx, (Z, A) in enumerate(nuclei):
-            remnants = [(Z, A-1), (Z-1, A-1)]
-            for br, (Zrem, Arem) in zip([(1-Z/A), Z/A], remnants):
-                if (Zrem, Arem) in nuclei:
-                    pmes_branchings.append(np.hstack([A, Z, Arem, Zrem, br * np.ones(201)]))
-                    pmes_marginal_yields.append(np.hstack([A, Z, Arem, Zrem, 0, 0, 0, 0, Z-Zrem, A-Arem-Z+Zrem, br * np.ones(201)]))
-
-            if not np.all([rem in nuclei for rem in remnants]):
-                if np.any([rem in nuclei for rem in remnants]):
-                    pmes_branchings[-1][4:] = np.ones(201)
-                    pmes_marginal_yields[-1][10:] = np.ones(201)
-                else:
-                    # No remnant in nuclei, add dummy channel with zeros
-                    pmes_branchings.append(np.hstack([A, Z, A-1, Z, np.zeros(201)]))
-                    pmes_marginal_yields.append(np.hstack([A, Z, A-1, Z, 0, 0, 0, 0, 0, 0, np.zeros(201)]))
-
-        
-        pmes_branchings = np.vstack(pmes_branchings)
-        pmes_branchings = DataFrame(data=pmes_branchings, index=MultiIndex.from_arrays(pmes_branchings[:, :4].T), columns=['A', 'Z', 'Ar', 'Zr'] + cols)
-
-        pmes_marginal_yields = np.vstack(pmes_marginal_yields)
-        pmes_marginal_yields = DataFrame(data=pmes_marginal_yields, index=MultiIndex.from_arrays(pmes_marginal_yields[:, :4].T), columns=['A', 'Z', 'Ar', 'Zr'] + daughter_names + cols)
-
-        # Merging channels with the same heavy product
-        merged_yields = []
-        for col in daughter_names:
-            df_brnch_no_channels = pmes_marginal_yields.drop(columns=daughter_names)
-            df_brnch_no_channels[cols] = df_brnch_no_channels.multiply(pmes_marginal_yields[col].values, axis='index')[cols]
-            merged_yields.append( df_brnch_no_channels )
-            
-        return df_rates_pmes, pmes_branchings, merged_yields
-
-    def _construct_from_files(self):
-        """CRPropA data is structured in different files depending on the 
-        interaction and the photon field.
-           This function loads the files and populates the fields:
-           - boosts: the boost grid in which the data is given
-           - nuclei: the list of nuclear species (Zi, Ai) contained in the files
-           - all_rates: the interaction rates including all processes and CMB+EBL
-           - all_branches: the marginal interaction rates including all processes and CMB+EBL
-        """
-        from pandas import DataFrame
-        cols = [f'{i}' for i in range(201)]
-
-        df_rates_cmb = load_rates(os.path.join(self.data_files['path'], self.data_files['photodisintegration']['rates_cmb']))
-        df_brnch_cmb, merged_yields_cmb = load_branchings(os.path.join(self.data_files['path'], self.data_files['photodisintegration']['branchings_cmb']))
-
-        df_rates_ebl = load_rates(os.path.join(self.data_files['path'], self.data_files['photodisintegration']['rates_ebl']))
-        df_brnch_ebl, merged_yields_ebl = load_branchings(os.path.join(self.data_files['path'], self.data_files['photodisintegration']['branchings_ebl']))
-
-        nuclei = [(z, a) for a, z in df_rates_cmb.index.values]
-        df_rates_pmes, df_brnch_pmes, merged_yields_pmes = self._generate_photomeson_table(nuclei=[(0, 1), (1, 1)] + nuclei)
-
-        df_rates = df_rates_cmb.groupby(by=['A', 'Z']).sum() + df_rates_ebl.groupby(by=['A', 'Z']).sum() + df_rates_pmes.groupby(by=['A', 'Z']).sum()
-
-        # Computing photomeson rates by superposition
-        pp_rates = np.genfromtxt(os.path.join(self.data_files['path'], self.data_files['photopionproduction']['rates_cmb']))
-        pprates = np.zeros((len(nuclei), 201))
-        boosts = np.logspace(6, 14, 201)
-        for k in range(pprates.shape[0]):
-            Z, A = nuclei[k]
-            pprates[k] = np.interp(boosts, 10**pp_rates[:, 0], Z*pp_rates[:, 1] + (A-Z)*pp_rates[:, 2])
-
-        df_brnch_cmb[cols] = df_brnch_cmb.multiply(df_rates_cmb.reindex(df_brnch_cmb.index, method='ffill'))[cols]
-        merged_cmb = df_brnch_cmb.groupby(by=['Z', 'A', 'Zr', 'Ar']).sum()
-        allmr_cmb = [np.hstack([np.vstack(merged_cmb.loc[nuc].index.values), merged_cmb.loc[nuc][cols].values]) for nuc in nuclei]
-
-        df_brnch_ebl[cols] = df_brnch_ebl.multiply(df_rates_ebl.reindex(df_brnch_ebl.index, method='ffill'))[cols]
-        merged_ebl = df_brnch_ebl.groupby(by=['Z', 'A', 'Zr', 'Ar']).sum()
-        allmr_ebl = [np.hstack([np.vstack(merged_ebl.loc[nuc].index.values), merged_ebl.loc[nuc][cols].values]) for nuc in nuclei]
-
-        df_brnch_pmes[cols] = df_brnch_pmes.multiply(df_rates_pmes.reindex(df_brnch_pmes.index, method='ffill'))[cols]
-        merged_pmes = df_brnch_pmes.groupby(by=['Z', 'A', 'Zr', 'Ar']).sum()
-        allmr_pmes = [np.hstack([np.vstack(merged_pmes.loc[nuc].index.values), merged_pmes.loc[nuc][cols].values]) for nuc in nuclei]
-
-        all_branchings = []
-        for mr1, mr2, mr3 in zip(allmr_cmb, allmr_ebl, allmr_pmes):
-            mr12 = merge_marginal_rates(mr1, mr2)
-            all_branchings.append(merge_marginal_rates(mr12, mr3))
-
-        all_merged = []
-        for mycmb, myebl, mypmes in zip(merged_yields_cmb, merged_yields_ebl, merged_yields_pmes):                    
-            light_yield_cmb = mycmb[cols].multiply(df_rates_cmb.reindex(mycmb[cols].index, method='ffill'))
-            light_yield_ebl = myebl[cols].multiply(df_rates_ebl.reindex(myebl[cols].index, method='ffill'))
-            light_yield_pmes = mypmes[cols].multiply(df_rates_pmes.reindex(mypmes[cols].index, method='ffill'))
-
-            merged_cols = (light_yield_cmb + light_yield_ebl).add(light_yield_pmes, fill_value=0)[cols]
-            merged = DataFrame(data=np.hstack([np.vstack(merged_cols.index.values), merged_cols.values]), index=merged_cols.index, columns=['A', 'Z', 'Ar', 'Zr'] + cols)
-
-            merged[cols] = merged.divide(df_rates.reindex(merged.index, method='ffill'))[cols]
-            merged = merged.groupby(by=['Z', 'A', 'Zr', 'Ar']).sum()
-            all_merged.append([np.hstack([np.vstack(merged.loc[nuc].index.values), merged.loc[nuc][cols].values]) for nuc in nuclei])
-    
-        self.boosts = np.logspace(6, 14, 201)
-        self.nuclei = nuclei
-        self.all_rates = df_rates.values
-        self.all_branchings = all_branchings
-        self.marginal_light_yields = all_merged
-
-        # Fix to avoid dead ends
-        print('!!! Replacing some nuclei to avoid dead ends !!!')
-        for i, branches in enumerate(self.all_branchings):
-            for j, branch in enumerate(branches):
-                if tuple(branch[:2]) in [(2, 5), (3, 5)]:
-                    self.all_branchings[i][j, :2] = [2, 4]
-                elif tuple(branch[:2]) in [(5, 9), (6, 9)]:
-                    self.all_branchings[i][j, :2] = [4, 9]
-
-    def check_data_consistency(self):
-        """Verify that data is complete and numbers add up as expected
-        """
-
-        nuclei = self.nuclei
-
-        allmr_cmb = get_marginal_rates(nuclei, rates_cmb, self.boosts, branchings_cmb) 
-        allmr_ebl = get_marginal_rates(nuclei, rates_ebl, self.boosts, branchings_ebl) 
-        allmr_ppi = get_marginal_rates(nuclei, pp_rates, self.boosts)
-        allmr = [merge_marginal_rates(merge_marginal_rates(mr1, mr2), mr3) for mr1, mr2, mr3 in zip(allmr_cmb, allmr_ebl, allmr_ppi)]
-
-        # TEST PHOTOPION: WORKING FINE
-        # for k, (mr, nuc) in enumerate(zip(allmr_ppi, nuclei)):
-        #     Z, A, N = nuc[0], nuc[1], nuc[1]-nuc[0]
-        #     tr = np.interp(boosts, 10**pp_rates[:, 0], Z*pp_rates[:, 1] + N*pp_rates[:, 2])
-        #     ratio = np.divide(np.sum(mr[:, 2:], axis=0), tr, where=tr>0)
-        #     non_null_ratio = ratio[np.where(np.logical_not(np.isclose(ratio, 0)))]
-
-        #     if np.any(np.logical_not(np.isclose(non_null_ratio, 1))):
-        #         print(nuc)
-        #         print(non_null_ratio)
-
-        # TEST PHOTODIS CMB: WORKING FINE. (3,8) AND (5, 8) FAIL COMPLETELY 
-        # for mr, tr, nuc in zip(allmr_cmb, rates_cmb, nuclei):
-        #     ratio = np.divide(np.sum(mr[:, 2:], axis=0), tr[2:], where=tr[2:]>0)
-        #     non_null_ratio = ratio[np.where(np.logical_not(np.isclose(ratio, 0)))]
-
-        #     if np.any(np.logical_not(np.isclose(non_null_ratio, 1))):
-        #         print(nuc)
-        #         print(non_null_ratio)
-
-        # TEST PHOTODIS EBL: MOST NUCLEI FAIL FOR THE LAST 57 BOOSTS. (3,8) AND (5, 8) FAIL COMPLETELY 
-        # for mr, tr, nuc in zip(allmr_ebl, rates_ebl, nuclei):
-        #     ratio = np.divide(np.sum(mr[:, 2:], axis=0), tr[2:], where=tr[2:]>0)
-        #     non_null_ratio = ratio[np.where(np.logical_not(np.isclose(ratio, 0)))]
-
-        #     # if np.any(np.logical_not(np.isclose(non_null_ratio, 1))):
-        #     # if sum(np.logical_not(np.isclose(non_null_ratio, 1))) > 57:
-        #     if np.any(np.logical_not(np.isclose(non_null_ratio[:-57], 1))):
-        #         print(nuc)
-        #         print(sum(np.logical_not(np.isclose(non_null_ratio, 1))))
-
-        # TEST ALL RATES: WORKING FINE. (3,8) AND (5, 8) FAIL COMPLETELY, AS EXPECTED
-        # for mr, tr, nuc in zip(allmr, all_rates, nuclei):
-        #     ratio = np.divide(np.sum(mr[:, 2:], axis=0), tr, where=tr>0)
-        #     non_null_ratio = ratio[np.where(np.logical_not(np.isclose(ratio, 0)))]
-
-        #     if np.any(np.logical_not(np.isclose(non_null_ratio, 1))):
-        #         print(nuc)
-        #         print(non_null_ratio)
-
-        #     print(nuc, ratio[boostidx])
-
-        # CHECK BRANCHINGS CMB: WORKING FINE. (3,8) AND (5, 8) FAIL COMPLETELY, AS EXPECTED
-        # for Z, N in set(zip(branchings_cmb[:, 0], branchings_cmb[:, 1])):
-        #     brsum = np.sum(branchings_cmb[(branchings_cmb[:, 0]==Z) * (branchings_cmb[:, 1]==N)][:, 2:], axis=0)
-
-        #     notnullbrsum = brsum[np.logical_not(np.isclose(brsum, 0))]
-
-        #     if np.any(np.logical_not(np.isclose(notnullbrsum[1:], 1))):
-        #         print(Z, N)
-        #         print(notnullbrsum)
-
-        # CHECK BRANCHINGS EBL: WORKING FINE. (3,8) AND (5, 8) FAIL COMPLETELY, AS EXPECTED
-        # for Z, N in set(zip(branchings_ebl[:, 0], branchings_ebl[:, 1])):
-        #     brsum = np.sum(branchings_ebl[(branchings_ebl[:, 0]==Z) * (branchings_ebl[:, 1]==N)][:, 2:], axis=0)
-
-        #     notnullbrsum = brsum[np.logical_not(np.isclose(brsum, 0))]
-
-        #     if np.any(np.logical_not(np.isclose(notnullbrsum[1:], 1))):
-        #         print(Z, N)
-        #         print(notnullbrsum)
-            
-        return None
-
-
-class InteractionCore_CRPropA_CMB_pdis(InteractionCore_CRPropA):
-    def _construct_from_files(self):
-        """CRPropA data is structured in different files depending on the 
-        interaction and the photon field.
-        """
-        cols = [f'{i}' for i in range(201)]
-
-        df_rates_cmb = load_rates(os.path.join(self.data_files['path'], self.data_files['photodisintegration']['rates_cmb']))
-        df_brnch_cmb, merged_yields_cmb = load_branchings(os.path.join(self.data_files['path'], self.data_files['photodisintegration']['branchings_cmb']))
-
-        df_rates = df_rates_cmb.groupby(by=['A', 'Z']).sum()
-        nuclei = [(z, a) for a, z in df_rates.index.values]
-
-        df_brnch_cmb[cols] = df_brnch_cmb.multiply(df_rates_cmb.reindex(df_brnch_cmb.index, method='ffill'))[cols]
-        merged_cmb = df_brnch_cmb.groupby(by=['Z', 'A', 'Zr', 'Ar']).sum()
-        allmr_cmb = [np.hstack([np.vstack(merged_cmb.loc[nuc].index.values), merged_cmb.loc[nuc][cols].values]) for nuc in nuclei]
-
-        all_merged = []
-        for mycmb in merged_yields_cmb:
-            merged = mycmb.copy()
-                    
-            light_yield_cmb = mycmb[cols].multiply(df_rates_cmb.reindex(mycmb[cols].index, method='ffill'))
-            merged[cols] = light_yield_cmb[cols]
-            merged[cols] = merged.divide(df_rates.reindex(merged.index, method='ffill'))[cols]
-            merged = merged.groupby(by=['Z', 'A', 'Zr', 'Ar']).sum()
-            all_merged.append([np.hstack([np.vstack(merged.loc[nuc].index.values), merged.loc[nuc][cols].values]) for nuc in nuclei])
-    
-        self.boosts = np.logspace(6, 14, 201)
-        self.nuclei = nuclei
-        self.all_rates = df_rates.values
-        self.all_branchings = allmr_cmb
-        self.marginal_light_yields = all_merged
-
-
-class InteractionCore_CRPropA_IRB_pdis(InteractionCore_CRPropA):
-    def _construct_from_files(self):
-        """CRPropA data is structured in different files depending on the 
-        interaction and the photon field.
-        """
-        cols = [f'{i}' for i in range(201)]
-
-        df_rates_ebl = load_rates(os.path.join(self.data_files['path'], self.data_files['photodisintegration']['rates_ebl']))
-        df_brnch_ebl, merged_yields_ebl = load_branchings(os.path.join(self.data_files['path'], self.data_files['photodisintegration']['branchings_ebl']))
-
-        df_rates = df_rates_ebl.groupby(by=['A', 'Z']).sum()
-        nuclei = [(z, a) for a, z in df_rates.index.values]
-
-        df_brnch_ebl[cols] = df_brnch_ebl.multiply(df_rates_ebl.reindex(df_brnch_ebl.index, method='ffill'))[cols]
-        merged_ebl = df_brnch_ebl.groupby(by=['Z', 'A', 'Zr', 'Ar']).sum()
-        allmr_ebl = [np.hstack([np.vstack(merged_ebl.loc[nuc].index.values), merged_ebl.loc[nuc][cols].values]) for nuc in nuclei]
-
-        all_merged = []
-        for myebl in merged_yields_ebl:
-            merged = myebl.copy()
-                    
-            light_yield_ebl = myebl[cols].multiply(df_rates_ebl.reindex(myebl[cols].index, method='ffill'))
-            merged[cols] = light_yield_ebl[cols]
-            merged[cols] = merged.divide(df_rates.reindex(merged.index, method='ffill'))[cols]
-            merged = merged.groupby(by=['Z', 'A', 'Zr', 'Ar']).sum()
-            all_merged.append([np.hstack([np.vstack(merged.loc[nuc].index.values), merged.loc[nuc][cols].values]) for nuc in nuclei])
-    
-        self.boosts = np.logspace(6, 14, 201)
-        self.nuclei = nuclei
-        self.all_rates = df_rates.values
-        self.all_branchings = allmr_ebl
-        self.marginal_light_yields = all_merged
-
-
-class InteractionCore_CRPropA_pdis(InteractionCore_CRPropA):
-    def _construct_from_files(self):
-        """CRPropA data is structured in different files depending on the 
-        interaction and the photon field.
-        """
-        cols = [f'{i}' for i in range(201)]
-
-        df_rates_cmb = load_rates(os.path.join(self.data_files['path'], self.data_files['photodisintegration']['rates_cmb']))
-        df_brnch_cmb, merged_yields_cmb = load_branchings(os.path.join(self.data_files['path'], self.data_files['photodisintegration']['branchings_cmb']))
-
-        df_rates_ebl = load_rates(os.path.join(self.data_files['path'], self.data_files['photodisintegration']['rates_ebl']))
-        df_brnch_ebl, merged_yields_ebl = load_branchings(os.path.join(self.data_files['path'], self.data_files['photodisintegration']['branchings_ebl']))
-
-        df_rates = df_rates_cmb.groupby(by=['A', 'Z']).sum() + df_rates_ebl.groupby(by=['A', 'Z']).sum()
-        # nuclei = list(zip(df_rates['Z'], df_rates['A']))
-        nuclei = [(z, a) for a, z in df_rates.index.values]
-
-        df_brnch_cmb[cols] = df_brnch_cmb.multiply(df_rates_cmb.reindex(df_brnch_cmb.index, method='ffill'))[cols]
-        merged_cmb = df_brnch_cmb.groupby(by=['Z', 'A', 'Zr', 'Ar']).sum()
-        allmr_cmb = [np.hstack([np.vstack(merged_cmb.loc[nuc].index.values), merged_cmb.loc[nuc][cols].values]) for nuc in nuclei]
-
-        df_brnch_ebl[cols] = df_brnch_ebl.multiply(df_rates_ebl.reindex(df_brnch_ebl.index, method='ffill'))[cols]
-        merged_ebl = df_brnch_ebl.groupby(by=['Z', 'A', 'Zr', 'Ar']).sum()
-        allmr_ebl = [np.hstack([np.vstack(merged_ebl.loc[nuc].index.values), merged_ebl.loc[nuc][cols].values]) for nuc in nuclei]
-
-        all_merged = []
-        for mycmb, myebl in zip(merged_yields_cmb, merged_yields_ebl):
-            merged = mycmb.copy()
-                    
-            light_yield_cmb = mycmb[cols].multiply(df_rates_cmb.reindex(mycmb[cols].index, method='ffill'))
-            light_yield_ebl = myebl[cols].multiply(df_rates_ebl.reindex(myebl[cols].index, method='ffill'))
-            merged[cols] = ( light_yield_cmb + light_yield_ebl )[cols]
-            merged[cols] = merged.divide(df_rates.reindex(merged.index, method='ffill'))[cols]
-            merged = merged.groupby(by=['Z', 'A', 'Zr', 'Ar']).sum()
-            all_merged.append([np.hstack([np.vstack(merged.loc[nuc].index.values), merged.loc[nuc][cols].values]) for nuc in nuclei])
-    
-        all_branchings = []
-        for mr1, mr2 in zip(allmr_cmb, allmr_ebl):
-            all_branchings.append(merge_marginal_rates(mr1, mr2))
-
-        self.boosts = np.logspace(6, 14, 201)
-        self.nuclei = nuclei
-        self.all_rates = df_rates.values
-        self.all_branchings = all_branchings
-        self.marginal_light_yields = all_merged
-
-
-class InteractionCore_UHECR_Source_old(InteractionCore):
-    """Producing interaction matrices from CRPropA interaction files.
-    It requires files for photodisintegration and for photomeson.  
-    """
-    
-    def __init__(self, data_directory, target_photon_spectrum):
-        """Requires a string specifying the directory where CRPropa 
-        cross section files are stored (argument data_directory) 
-        """
-        
-        self._construct_from_files(data_directory, target_photon_spectrum)
-        self._genenerate_complete_matrices()
-
-    def generate_marginal_rates(self, target_photons, data_directory, remove_dead_ends=True):
-        """Generate a marginal rates matrix with cross section files from crpropa.
-        
-        branchings is a 2d matrix where each row represents a disintegration channel.
-        The first three columns contain Z, N and a channel representation 6-digit number,
-        the remaining columns contain the cross section in mb for the channel as a function 
-        of energy.
-        """
-
-        boosts = np.logspace(-1, 12)
-
-        eps_crpropa = np.genfromtxt(data_directory + 'eps.txt') / 1e3 # in GeV
-        branchings = np.genfromtxt(data_directory + 'xs_pd.txt')
-
-        # He4, He3, H3, H2, p, n
-        daughters = [(2, 4), (2, 3), (1, 3), (1, 2), (1, 1), (0, 1)]
-        Zd = np.array([d[0] for d in daughters])
-        Ad = np.array([d[1] for d in daughters])
-        
-        nuclei = daughters[2::-1] + [(int(Z), int(Z)+int(N)) for Z, N in list(sorted(set(zip(branchings[:, 0], branchings[:, 1]))))]
-
-        marginal_rates = [[] for _ in nuclei]
-        for count, br_row in enumerate(branchings[:, :]):
-            Z, N, A = int(br_row[0]), int(br_row[1]), int(br_row[1])+int(br_row[0])
-            UHECR_SRFenergy = A * boosts # in GeV
-        
-            nprods = np.array(get_particle_numbers(int(br_row[2])))
-            prods = np.array([int(np > 0) for np in nprods])
-
-            # Creating remnant nucleus from channel
-            Zrem, Arem = Z - Zd.dot(prods), A - Ad.dot(prods)
-
-            cs_crpropa = br_row[3:]
-            r_pdis = ir.interaction_rate_from_cross_section(UHECR_SRFenergy, A,
-                    target_photons, eps_crpropa, cs_crpropa*mb_to_cm2)  / c_in_Mpc_sec # 1/Mpc
-                                                            
-            if (Zrem, Arem) not in nuclei:
-                # Change remnant isomer. 
-                # This only affects produced protons and neutrons since
-                # the yields of other light particles do not change.
-                if (Zrem-1, Arem) in nuclei:
-                    Zrem -= 1
-                elif (Zrem+1, Arem) in nuclei:
-                    Zrem += 1
-                elif (Zrem-2, Arem) in nuclei:
-                    Zrem -= 2
-                elif (Zrem+2, Arem) in nuclei:
-                    Zrem += 2
-                elif (Zrem-1, Arem-1) in nuclei:
-                    Zrem -= 1
-                    Arem -= 1
-                elif (Zrem-2, Arem-1) in nuclei:
-                    Zrem -= 2
-                    Arem -= 1
-                elif (Z == 3) and (A == 6):
-                    Zrem, Arem = 2, 4
-                else:
-                    print(f'No suitable isomer found for remnant ({Zrem:2d}, {Arem:2d}) with mother ({Z:2d}, {A:2d})')
-                    Zrem, Arem = 0, 0
-                    # continue
-            
-            nucidx = nuclei.index((Z, A))
-            # Largest fragment is not one of the small ones
-            if np.any([(mr[0] == Zrem) and (mr[1] == Arem) for mr in marginal_rates[nucidx]]):
-                idx = [j for j, mr in enumerate(marginal_rates[nucidx]) if (mr[0] == Zrem) and (mr[1] == Arem)][0]
-                marginal_rates[nucidx][idx][2:] += r_pdis
-            else:
-                rates_large = np.zeros(len(boosts) + 2)
-                rates_large[:2] = Zrem, Arem
-                rates_large[2:] = r_pdis
-                marginal_rates[nucidx].append(rates_large)
-            
-        # Remove branchings leading to nuclei not included
-        if remove_dead_ends:
-            new_marginal_rates = []
-            for k, mr in enumerate(marginal_rates):
-                stacked_mr = np.array(mr)
-                if len(stacked_mr.shape) > 1:
-                    if np.any(stacked_mr[:, 1] == 0):
-                        tot = stacked_mr.sum(axis=0)
-                        new_mr = stacked_mr[np.where(stacked_mr[:, 1] != 0)]
-                        new_tot = new_mr.sum(axis=0)
-                        new_mr[:, 2:] *= np.divide(tot, new_tot, where=new_tot!=0, out=np.zeros_like(tot))[2:]
-
-                        new_marginal_rates.append([mr_row for mr_row in new_mr])
-                    else:
-                        new_marginal_rates.append(mr)
-                else:
-                    new_marginal_rates.append(mr)
-            marginal_rates = new_marginal_rates
-
-        return nuclei, marginal_rates
-
-    def _construct_from_files(self, data_directory, target_photons):
-        """Using CRPROPA cross sections to produce the rates for a source
-        of UHECR with a background photon field as a broken power law.
-
-        CRPropA cross section file contains  is structured in different files depending on the 
-        interaction and the photon field.
-        """
-
-        boosts = np.logspace(-1, 12)
-        e_pmes = np.logspace(-1, 4, 100)  # in GeV
-
-        nuclei, all_pdis_rates = self.generate_marginal_rates(target_photons, data_directory, False)
-
-        all_rates, pdis_rates, pprates, all_branchings, allmr_pdis = [], [], [], [], []
-        for nucidx, (_, A) in enumerate(nuclei):
-            UHECR_SRFenergy = A * boosts # in GeV
-            
-            cs_pmes = ir.cs_photomeson(e_pmes, A) # in cm2
-            r_pmes = ir.interaction_rate_from_cross_section(UHECR_SRFenergy, A,
-                                                        target_photons, e_pmes, cs_pmes) / c_in_Mpc_sec # 1/Mpc
-            # r_pmes = np.zeros_like(r_pmes)
-            pprates.append(r_pmes) # 1/Mpc
-
-            if A < 6:
-                # 4He and below do not have photodis. channels
-                all_rates.append(r_pmes)
-
-                mrval = np.zeros((2, len(r_pmes) + 2))
-                mrval[0, 0], mrval[0, 1] = 0, 1
-                mrval[1, 0], mrval[1, 1] = 1, 1
-                allmr_pdis.append(mrval)
-                continue
-
-            if len(all_pdis_rates[nucidx]) > 1:
-                r_pdis = np.array(all_pdis_rates[nucidx]).sum(axis=0)[2:]
-            else:
-                r_pdis = np.array(all_pdis_rates[nucidx])[2:]
-
-            pdis_rates.append(r_pdis)
-            mr_pdis = [[chr[0], chr[1]] + list(chr[2:]) for chr in all_pdis_rates[nucidx]]
-
-            if len(mr_pdis) > 1:
-                allmr_pdis.append(np.vstack(mr_pdis))
-            else:
-                allmr_pdis.append(np.array(mr_pdis))
-            
-            total_rate = (r_pdis + r_pmes) # 1/Mpc
-            all_rates.append(total_rate)
-
-        all_rates = np.vstack(all_rates)
-        allmr_phpi = get_marginal_rates(nuclei, pprates, boosts, 'minimal')
-        
-        for mr1, mr2 in zip(allmr_pdis, allmr_phpi):
-            all_branchings.append(merge_marginal_rates(mr1, mr2))
-        
-        self.boosts = boosts 
-        self.nuclei = nuclei
-        self.all_rates = all_rates
-        self.all_branchings = all_branchings
-
-
-class InteractionCore_UHECR_Source(InteractionCore):
-    """ Producing interaction matrices from CRPropA interaction files.
-        It requires files for photodisintegration and for photomeson.  
-    """
-    
-    def __init__(self, data_directory, target_photon_spectrum, boostfactor=None):
-        """ Requires a string specifying the directory where CRPropa
-            cross section files are stored (argument data_directory)
-        """
-
-        self._construct_from_files(data_directory, target_photon_spectrum, boostfactor)
-        self._genenerate_complete_matrices()
-
-    def _construct_from_files(self, data_directory, target_photons, boostfactor=None):
-        """Using CRPROPA cross sections to produce the rates for a source
-        of UHECR with a background photon field as a broken power law.
-
-        CRPropA cross section file contains  is structured in different files depending on the 
-        interaction and the photon field.
-        """
-        from pandas import DataFrame
-        boosts = np.logspace(0, 12, 131)
-
-        if boostfactor is not None:
-            boosts *= boostfactor
-
-        cols = [f'{i}' for i in range(len(boosts))]
-
-        _pd_dir = 'PD_Talys1.8_Khan' if os.path.isdir(data_directory + 'PD_Talys1.8_Khan') else 'PD_Talys1.9'
-        eps_crpropa = np.genfromtxt(data_directory + f'{_pd_dir}/eps.txt') / 1e3 # in GeV
-        branchings = np.genfromtxt(data_directory + f'{_pd_dir}/xs_pd_thin.txt')
-        df_rates_pdis, df_brnch_pdis, merged_yields_pdis = \
-            generate_photodisinteg_tables_from_cross_sections(eps_crpropa, branchings, target_photons, boosts=boosts)
-        
-        nuclei = [(int(Z), int(A)) for A, Z in df_rates_pdis.index.values]
-
-        xsp = np.genfromtxt(data_directory + 'PPP/xs_proton.txt')
-        xsn = np.genfromtxt(data_directory + 'PPP/xs_neutron.txt')
-        xsp[:, 1] *= 1e-3 # mubarn to mbarn
-        xsn[:, 1] *= 1e-3 # mubarn to mbarn
-        df_rates_pmes, df_brnch_pmes, merged_yields_pmes = \
-            generate_photomeson_tables_from_cross_sections(nuclei, xsp, xsn, target_photons, boosts=boosts)
-
-        df_rates = df_rates_pdis.groupby(by=['A', 'Z']).sum() + df_rates_pmes.groupby(by=['A', 'Z']).sum()
-
-        df_brnch_pdis[cols] = df_brnch_pdis.multiply(df_rates_pdis.reindex(df_brnch_pdis.index, method='ffill'))[cols]
-        merged_pdis = df_brnch_pdis.groupby(by=['Z', 'A', 'Zr', 'Ar']).sum()
-        allmr_pdis = [np.hstack([np.vstack(merged_pdis.loc[nuc].index.values), merged_pdis.loc[nuc][cols].values]) for nuc in nuclei]
-
-        # IMPORTANT: pmes_branches already are rescaled, following line is not needed
-        # df_brnch_pmes[cols] = df_brnch_pmes.multiply(df_rates_pmes.reindex(df_brnch_pmes.index, method='ffill'))[cols]
-        merged_pmes = df_brnch_pmes.groupby(by=['Z', 'A', 'Zr', 'Ar']).sum()
-        allmr_pmes = [np.hstack([np.vstack(merged_pmes.loc[nuc].index.values), merged_pmes.loc[nuc][cols].values]) for nuc in nuclei]
-
-        all_branchings = []
-        for mr1, mr2 in zip(allmr_pdis, allmr_pmes):
-            all_branchings.append(merge_marginal_rates(mr1, mr2))
-
-        all_merged = []
-        for mypdis, mypmes in zip(merged_yields_pdis, merged_yields_pmes):                    
-            light_yield_pdis = mypdis[cols].multiply(df_rates_pdis.reindex(mypdis[cols].index, method='ffill'))
-            light_yield_pmes = mypmes[cols].multiply(df_rates_pmes.reindex(mypmes[cols].index, method='ffill'))
-
-            merged_cols = light_yield_pdis.add(light_yield_pmes, fill_value=0)[cols]
-            merged = DataFrame(data=np.hstack([np.vstack(merged_cols.index.values), merged_cols.values]), index=merged_cols.index, columns=['A', 'Z', 'Ar', 'Zr'] + cols)
-
-            merged[cols] = merged.divide(df_rates.reindex(merged.index, method='ffill'))[cols]
-            merged = merged.groupby(by=['Z', 'A', 'Zr', 'Ar']).sum()
-            all_merged.append([np.hstack([np.vstack(merged.loc[nuc].index.values), merged.loc[nuc][cols].values]) for nuc in nuclei])
-
-        self.boosts = boosts
-        self.nuclei = nuclei
-        self.all_rates = df_rates.values
-        self.all_branchings = all_branchings
-        self.marginal_light_yields = all_merged
-
-
 class InteractionCore_Source(InteractionCore):
-    """ Producing interaction matrices from CRPropA interaction files.
-        Using cross section models for photodisintegration and for photomeson.
-    """
-
-    def __init__(self, epsrange, target_photon_spectrum, path=None, xsec_model=None, nuclear_decay_On=False):
-        """ Based on a cross section model
-        """
-
-        if not (path is None):
-            self.path = path
             from .photonuclear_cross_sections import CRPropa_model
 
             self.sim_model = CRPropa_model(path=self.path)
