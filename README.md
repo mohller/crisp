@@ -48,6 +48,10 @@ crisp.fetch_crpropa_tables()          # saves to ~/.cache/crisp/CRPropa3-data/ta
 crisp-fetch-data                      # on the terminal, equivalent
 ```
 
+The AstroPhoMes photomeson tables are handled the same way, via
+`crisp.fetch_astrophomes()` (or `crisp.get_astrophomes_path()`), and are
+fetched automatically the first time a model that needs them is built.
+
 ## Citation
 
 Use of the code should be aknowledged citing
