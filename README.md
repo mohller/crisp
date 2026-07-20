@@ -7,7 +7,7 @@ A convenience package to compute quantities related to the propagation of ultrah
 
 ## Usage
 
-Try the examples directly in your browser — no installation needed:
+Try the examples directly in your browser (no installation needed):
 
 | Notebook | Binder | Colab |
 |----------|--------|-------|

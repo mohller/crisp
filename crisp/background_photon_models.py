@@ -38,27 +38,54 @@ def target_photons_spectrum(Emin=1e-6, Emax=1e-4, Ebr=1e-3, si1=1, si2=2, normal
         e1, e2, norm = Emin, Emax, 1.
     else:
         (e1, e2), norm = normal
-        print('normal parameters:', e1, e2, norm)
 
-    A = 1.  # normalization constant of the spectrum
+    def shape(e):
+        e = np.asarray(e, dtype=float)
+        inside = (e >= Emin) & (e <= Emax)
+        safe = np.where(inside, e, 1.)          # keep 0**(-si) out of the powers
+        return np.where(inside,
+                        np.where(safe <= Ebr, (Ebr / safe)**si1, (Ebr / safe)**si2),
+                        0.)
 
-    def spectrum(e):
-        if (e < Emin) or (e > Emax):
-            nk = 0
-        elif e <= Ebr:
-            nk = (Ebr / e)**si1
-        else:
-            nk = (Ebr / e)**si2
-
-        return A * nk
-
+    # NOTE: the 1000-point quadrature below is deliberate, not an oversight.
+    # source_models and the example notebooks are pinned against this
+    # normalization; _normalized_spectrum's 4000-point grid shifts it by up to
+    # ~8e-4 for the wide bands used there, so this stays as-is.
     egrid = logspace(log10(e1), log10(e2), 1000)
-    dnde = array([spectrum(e) for e in egrid])
-    Fluence_integral = trapezoid(egrid**2 * dnde * log(10), x=log10(egrid))
+    A = norm / trapezoid(egrid**2 * shape(egrid) * log(10), x=log10(egrid))
 
-    A = norm / Fluence_integral  # renormalizing the spectrum
+    return lambda e: A * shape(e)
 
-    return vectorize(spectrum)
+
+def powerlaw_photon_spectrum(alpha, Emin=1e-9, Emax=1e-2, normal=None, E_piv=1e-6):
+    """Pure power-law photon spectrum n(E) ~ (E/E_piv)^(-alpha), windowed to
+    [Emin, Emax]; energies in GeV. The shape a GRB whose gamma-ray fit is a
+    plain PL carries — no break and no cutoff are defined by such a fit, so
+    the observed band is the whole model. Normalization as in
+    band_photon_spectrum.
+    """
+    def shape(e):
+        return (np.asarray(e, dtype=float) / E_piv)**(-alpha)
+
+    return _normalized_spectrum(shape, Emin, Emax, normal)
+
+
+def cutoffpl_photon_spectrum(E_peak, alpha, Emin=1e-9, Emax=1e-2, normal=None,
+                             E_piv=1e-6):
+    """Exponential-cutoff power-law photon spectrum; energies in GeV:
+
+        n(E) = (E/E_piv)^(-alpha) exp(-(2 - alpha) E / E_peak)
+
+    The cutoff factor is written so that E^2 n(E) peaks at E_peak, which is
+    the quantity a CPL gamma-ray fit reports. A CPL defines no high-energy
+    index: the exponential cutoff *is* its high-energy behaviour.
+    Normalization as in band_photon_spectrum.
+    """
+    def shape(e):
+        e = np.asarray(e, dtype=float)
+        return (e / E_piv)**(-alpha) * np.exp(-max(2. - alpha, 1e-3) * e / E_peak)
+
+    return _normalized_spectrum(shape, Emin, Emax, normal)
 
 
 def _normalized_spectrum(shape, Emin, Emax, normal):
