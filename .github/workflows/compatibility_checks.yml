@@ -22,11 +22,24 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      # git's auto-gc runs detached by default and repacks loose objects
+      # mid-job, deleting .git/objects/<shard> directories underneath any
+      # action that is walking the workspace tree
+      - name: Disable background git gc
+        run: git config gc.auto 0
+
       - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
           cache: 'pip'
+          # without this, the cache key is computed by globbing '**' across the
+          # whole workspace -- that walk descends into .git/objects and races
+          # the repack above, failing with
+          # "ENOENT: no such file or directory, realpath '.../.git/objects/9f'"
+          cache-dependency-path: |
+            pyproject.toml
+            requirements.txt
 
       - name: Install minimum declared dependencies
         if: matrix.deps == 'min'
