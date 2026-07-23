@@ -693,6 +693,51 @@ class UHECRSourceModel(ABC):
         return float(np.exp(np.interp(0.0, ratio[[ix, ix - 1]],
                                       np.log(rates['E'])[[ix, ix - 1]])))
 
+    def effective_thickness(self, L=None, index=None):
+        """Coherent-inhomogeneity change of variable for adiabatic cooling
+        (methods paper Sect. 3.1), injection side.
+
+        Adiabatic cooling at the comoving expansion rate Gamma c / R (cf.
+        loss_rates' 'adiabatic' entry) is species- and boost-independent: a
+        rigid drift b = r_ad / c = Gamma / R per unit path length in
+        ln(gamma). It is therefore a coherent inhomogeneity — the
+        homogeneous transport solution is reused unchanged, with the
+        propagation variable remapped. For a power-law injection of
+        spectral index -index, integrating the injection along the cooled
+        characteristics turns a residence length L into the effective
+        thickness
+
+            delta(L) = (1 - exp(-(index - 1) b L)) / ((index - 1) b),
+
+        the closed form of int_0^L exp(-(index-1) b s) ds — always < L, and
+        -> L as b -> 0 or index -> 1.
+
+        Arguments:
+        ----------
+        L     : residence length(s) [Mpc]; scalar or array. Ignored when
+                index is None.
+        index : spectral index k of the injection q ~ E^-k, or None.
+
+        Returns:
+        --------
+        index=None : the drift b [1/Mpc] (plain float).
+        else       : delta(L) [Mpc], same shape as L.
+        """
+        try:
+            Gam_ad = float(self.get_parameter('bulk_lorentz_factor').to('').m)
+        except Exception:
+            Gam_ad = 1.0
+        b = Gam_ad / self.get_parameter('radius').to('Mpc').m   # 1/Mpc
+
+        if index is None:
+            return b
+
+        L = np.asarray(L, dtype=float)
+        a = (index - 1.0) * b
+        if a == 0.0:
+            return L + 0.0
+        return (1.0 - np.exp(-a * L)) / a
+
     def injection_spectrum(self, species=(26, 56), index=-2.0, E_max=None,
                            boost_range=(1e1, 1e8), interaction_core=None,
                            eta_acc=1.0, injection_time=None):
