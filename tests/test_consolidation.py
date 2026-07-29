@@ -832,6 +832,63 @@ def test_source_model_physics_methods():
     assert d1 < MACHINE and d2 < MACHINE
 
 
+def test_species_loss_rates():
+    """UHECRSourceModel.species_loss_rates (plan mossy-watching-goose): loops
+    loss_rates over several species and splits the result into the
+    coherent (adiabatic, species/boost-independent) and dispersive
+    (synchrotron + pair, boost-dependent) [1/Mpc] arrays that
+    species_evolution_boost_range's coherent_loss=/energy_loss= and
+    reprocessed_nucleons's energy_loss= consume -- exact agreement with a
+    manual per-species loss_rates loop, zero dispersive rate for neutral
+    species without paying for their pair-production integral, and a
+    working end-to-end hookup into the new transport parameters."""
+    from scipy.constants import c, parsec
+    from crisp.source_models import OneZoneISModel
+
+    ph = OneZoneISModel(photon_energy_min=1e-7, photon_energy_max=3e-4,
+                        photon_energy_brk=1e-6, variability_timescale=.01,
+                        bulk_lorentz_factor=300, photon_luminosity=1e53,
+                        baryonic_loading=10, photon_energy=100, redshift=2)
+    core = InteractionCore(xsec_model=psb_xsec(), target_photons=ph.target_photons,
+                           photomeson='kernels', boosts=np.logspace(0, 12, 60),
+                           eps=np.logspace(-4, 4, 300))
+
+    species_list = [(26, 56), (2, 4), (1, 1), (0, 1)]
+    coherent, dispersive = ph.species_loss_rates(species_list, core, include_pair=True)
+    assert dispersive.shape == (len(core.boosts), len(species_list))
+
+    c_Mpc = (c * 1e2) / (parsec * 1e8)
+    ref = np.zeros_like(dispersive)
+    for i, sp in enumerate(species_list):
+        lr = ph.loss_rates(sp, core, include_pair=True)
+        if i == 0:
+            assert coherent == lr['adiabatic'][0] / c_Mpc
+        if sp[0] != 0:
+            ref[:, i] = (lr['synchrotron'] + lr['pair']) / c_Mpc
+    assert rel_diff(dispersive, ref) == 0.0
+    i_n = species_list.index((0, 1))
+    assert dispersive[:, i_n].max() == 0.0
+    print(f'  coherent = {coherent:.3e} /Mpc; dispersive == manual loss_rates loop '
+          f'exactly; neutron column exactly 0')
+
+    # end-to-end: feed straight into species_evolution_boost_range
+    alpha, mr, tr, _ = core.get_distribution_parameters(
+        mass_lims=(56, 0), injection_type=('only species', (26, 56)),
+        absorption_type=('only mass', [1]))
+    i_fe = tr.index([m for m in mr if core.species[m] == (26, 56)][0])
+    w = np.exp(-0.5 * ((np.arange(len(core.boosts)) - 40) / 3.0) ** 2)
+    w /= w.sum()
+    alpha_local = np.zeros((len(core.boosts), len(tr)))
+    alpha_local[:, i_fe] = w
+    fe_dispersive = dispersive[:, [sp for sp in species_list].index((26, 56))]
+    P = core.species_evolution_boost_range(
+        np.linspace(0.0, 1e-16, 4), alpha_local, mr, core.boosts, tr,
+        coherent_loss=coherent, energy_loss=fe_dispersive)
+    assert P.shape == (len(core.boosts), 4, len(tr) + 1)
+    assert np.all(np.isfinite(P))
+    print('  hooks directly into species_evolution_boost_range(coherent_loss=, energy_loss=)')
+
+
 def test_frame_conversions():
     """The frame-aware parameter API: schema-declared kinds/native frames,
     get_parameter(frame=), the frames= input declaration, and the comoving
@@ -1786,6 +1843,193 @@ def test_gdra_construction():
     assert 0.5 < r_g / r_p < 1.5
 
 
+def test_species_evolution_with_losses():
+    """species_evolution_boost_range's coherent_loss=/energy_loss= (plan
+    mossy-watching-goose): the no-loss path stays bit-identical; the drift
+    step reuses shift_log_boost's exact (coherent) and CIC (dispersive)
+    branches, checked in isolation against a closed-form pure-drift case;
+    a real core stays globally conserving with interactions AND losses
+    active; and the recommended composition with the existing
+    cascade_nucleon_source / reprocessed_nucleons(energy_loss=) pipeline
+    (no changes to either) runs end to end."""
+    from crisp.core import InteractionCore
+
+    _, core = source_pair()      # cached CMB kernels core (see test_nucleon_reprocessing)
+    alpha, mr, tr, _ = core.get_distribution_parameters(
+        mass_lims=(56, 0), injection_type=('only species', (26, 56)),
+        absorption_type=('only mass', [1]))
+    br = core.boosts[40:80]
+    L = np.linspace(0.0, 50.0, 6)
+
+    # 1. no-loss path: explicit None kwargs are bit-identical to the default
+    # (the dispatch must not perturb the pre-existing exact code path)
+    P_default = core.species_evolution_boost_range(L, alpha, mr, br, tr)
+    P_none = core.species_evolution_boost_range(L, alpha, mr, br, tr,
+                                                 coherent_loss=None, energy_loss=None)
+    assert np.array_equal(P_default, P_none)
+    Ps = core.species_evolution_boost_range(25.0, alpha, mr, br, tr)
+    assert Ps.shape == (len(br), len(tr) + 1)
+    print('  no-loss path: bit-identical to explicit None kwargs, scalar-L shape unchanged')
+
+    # 2. closed-form drift, isolated from interactions (hand-built zero
+    # tensor): a boost-localized gaussian's mean ln(gamma) must drift by
+    # exactly -b*L for the exact (coherent) branch, and to CIC's first-order
+    # accuracy for the dispersive (array) branch — both number-conserving
+    n_b, n_sp = 400, 2
+    boosts = np.logspace(2, 8, n_b)
+    zero_tensor = np.zeros((n_sp, n_sp, n_b))
+    i0 = 200
+    w = np.exp(-0.5 * ((np.arange(n_b) - i0) / 3.0) ** 2)
+    w /= w.sum()
+    alpha0 = np.zeros((n_b, n_sp))
+    alpha0[:, 0] = w
+    b_rate, L_t = 0.02, 40.0
+    mean_before = np.sum(np.log(boosts) * w)
+    predicted = mean_before - b_rate * L_t
+
+    bare = InteractionCore.__new__(InteractionCore)
+    out_c = bare._species_evolution_with_drift(
+        zero_tensor, boosts, np.array([L_t]), alpha0,
+        coherent_loss=b_rate, energy_loss=None)
+    occ_c = out_c[:, 0, 0]
+    mean_c = np.sum(np.log(boosts) * occ_c) / occ_c.sum()
+    assert abs(mean_c - predicted) / abs(predicted) < 1e-6
+    assert abs(occ_c.sum() - 1.0) < 1e-10
+
+    out_e = bare._species_evolution_with_drift(
+        zero_tensor, boosts, np.array([L_t]), alpha0,
+        coherent_loss=None, energy_loss=b_rate * np.ones(n_b))
+    occ_e = out_e[:, 0, 0]
+    mean_e = np.sum(np.log(boosts) * occ_e) / occ_e.sum()
+    assert abs(mean_e - predicted) / abs(predicted) < 1e-2
+    assert abs(occ_e.sum() - 1.0) < 1e-10
+    print(f'  closed-form drift: exact branch rel. error {abs(mean_c - predicted) / abs(predicted):.1e}, '
+          f'CIC branch {abs(mean_e - predicted) / abs(predicted):.1e}, both number-conserving to 1e-10')
+
+    # 3. real core, interactions + losses together: total probability
+    # (species + absorbed, summed over ALL boost bins) is conserved
+    # globally, and surviving Fe-56's mean ln(gamma) cools monotonically.
+    # A boost-resolved (n_b, n_true) alpha is required here (not the plain
+    # (n_true,) vector): once drift mixes bins, broadcasting one alpha to
+    # every bin no longer means "the independent per-bin answer" the
+    # no-loss path exploits, it means "inject at every bin at once" (see
+    # the method's docstring) — a real caller wants the boost-localized form.
+    br_full = core.boosts
+    i_fe = tr.index([m for m in mr if core.species[m] == (26, 56)][0])
+    w2 = np.exp(-0.5 * ((np.arange(len(br_full)) - 60) / 3.0) ** 2)
+    w2 /= w2.sum()
+    alpha_local = np.zeros((len(br_full), len(tr)))
+    alpha_local[:, i_fe] = w2
+    L2 = np.linspace(0.0, 30.0, 6)
+    P_loss = core.species_evolution_boost_range(
+        L2, alpha_local, mr, br_full, tr,
+        coherent_loss=0.01, energy_loss=0.005 * np.ones(len(br_full)))
+    assert P_loss.shape == (len(br_full), len(L2), len(tr) + 1)
+    global_tot = P_loss.sum(axis=-1).sum(axis=0)
+    assert np.allclose(global_tot, 1.0, atol=1e-6)
+    mean_fe = ((np.log(br_full)[:, None] * P_loss[:, :, i_fe]).sum(axis=0)
+              / P_loss[:, :, i_fe].sum(axis=0))
+    assert np.all(np.diff(mean_fe) <= 1e-9)
+    print(f'  real core: global conservation {global_tot.max() - 1:.1e}, '
+          f'<ln Gamma>(Fe) {mean_fe[0]:.3f} -> {mean_fe[-1]:.3f}')
+
+    # 4. drop-in composition with the existing nucleon pipeline:
+    # cascade_nucleon_source's narrow+wide terms consume P= directly (alpha
+    # is unused whenever P is given); its conversion sub-term still calls
+    # light_cascade_production internally, which has no P= hook and needs a
+    # 1D alpha, so the plain 1D alpha covers that fallback while P= drives
+    # the loss-aware terms.
+    q = core.cascade_nucleon_source(L2, alpha=alpha, mass_range=mr,
+                                    boost_range=br_full, true_range=tr, P=P_loss)
+    assert q.shape == (len(br_full), len(L2), 2)
+    assert np.all(np.isfinite(q))
+    n_pn = core.reprocessed_nucleons(L2, source=q,
+                                     energy_loss=0.005 * np.ones(len(br_full)))
+    assert n_pn.shape == (len(br_full), len(L2), 2)
+    assert np.all(np.isfinite(n_pn)) and n_pn.min() >= -1e-12
+    print('  full pipeline: species_evolution_boost_range(losses) -> '
+          'cascade_nucleon_source -> reprocessed_nucleons(energy_loss=) runs clean')
+
+
+def test_extragalactic_ci():
+    """ExtragalacticPropagation: cosmological CI transport (methods paper
+    Sect. 3) — thickness pin, exact no-interaction redshift limit, and the
+    segmented chain gauged against a fine brute-force z-stepping reference."""
+    from scipy.linalg import expm
+    from crisp.extragalactic import ExtragalacticPropagation
+    from crisp import continuous_losses as cl
+
+    boosts = np.logspace(6, 11.5, 48)
+    ep = ExtragalacticPropagation(xsec_model=psb_xsec(), boosts=boosts,
+                                  eps=1e-3 * np.logspace(-1, 2.1, 200),
+                                  verbose=False)
+
+    # thickness delta(z) == the Eq.-27 quadrature of continuous_losses
+    for z in (0.1, 1.0):
+        zg = np.linspace(1e-9, z, 4001)
+        ref = -cl.Lprime_trapz(zg)[-1]
+        assert np.isclose(ep.thickness(z), ref, rtol=1e-6, atol=0)
+
+    # no-interaction limit: injection far below every threshold redshifts
+    # rigidly by ln(1+z) and conserves number to machine precision
+    dln = np.log(boosts[1] / boosts[0])
+    w = np.zeros(48); w[20] = 1.0                     # gamma ~ 2e8: no interactions
+    res = ep.propagate(0.3, {(26, 56): w}, n_seg=5)
+    occ, absb = res['occupations'], res['absorbed']
+    i_fe = res['species'].index((26, 56))
+    assert np.isclose(occ.sum() + absb.sum(), 1.0, rtol=0, atol=1e-12)
+    cen = (occ[:, i_fe] * np.arange(48)).sum() / occ[:, i_fe].sum()
+    assert np.isclose(20 - cen, np.log(1.3) / dln, rtol=1e-6, atol=0)
+    assert np.delete(occ, i_fe, axis=1).max() < 1e-6
+    print(f'  no-interaction limit: shift {20 - cen:.3f} bins '
+          f'(= ln(1.3)/dln), number exact')
+
+    # chain gauge: partial-survival bin vs a 120-step brute-force reference
+    # built from the same exact-identity tensors
+    z_src, i_inj = 0.05, 28                           # tau ~ O(1) at 48-bin grid
+    r_fe = -ep._core_at(0.0).tensor[
+        ep._core_at(0.0).species.index((26, 56)),
+        ep._core_at(0.0).species.index((26, 56)), :]
+    tau = np.interp(boosts, ep._core_at(0.0).boosts, r_fe) \
+        * ep._proper_length(0.0, z_src)
+    i_inj = int(np.argmin(np.abs(tau - 0.5)))         # pick tau ~ 0.5 bin
+    w = np.zeros(48); w[i_inj] = 1.0
+    res = ep.propagate(z_src, {(26, 56): w}, n_seg=8)
+
+    core = ep._core_at(0.0)
+    _, mr, tr, _ = core.get_distribution_parameters(
+        mass_lims=(56, 0), injection_type=('only species', (26, 56)),
+        absorption_type=('only mass', [1]))
+    species = [core.species[t] for t in tr]
+    n_tr = len(species)
+    state = np.zeros((48, n_tr)); state[i_inj, species.index((26, 56))] = 1.0
+    absorbed = np.zeros(48)
+    z_edges = np.expm1(np.linspace(np.log1p(z_src), 0.0, 121))
+    x = np.arange(48, dtype=float)
+    for z_hi, z_lo in zip(z_edges[:-1], z_edges[1:]):
+        z_mid = np.sqrt((1 + z_hi) * (1 + z_lo)) - 1
+        L = ep._proper_length(z_lo, z_hi)
+        red, absin = ep._reduced_tensor(core, mr, tr, (1 + z_mid) * boosts)
+        for b in range(48):
+            M = np.zeros((n_tr + 1, n_tr + 1))
+            M[:n_tr, :n_tr] = red[:, :, b]; M[:n_tr, n_tr] = absin[:, b]
+            v = np.append(state[b], absorbed[b]) @ expm(
+                M * (1 + z_mid) ** 3 * L)
+            state[b], absorbed[b] = v[:n_tr], v[n_tr]
+        sh = np.log((1 + z_hi) / (1 + z_lo)) / dln
+        for c_ in range(n_tr):
+            state[:, c_] = np.interp(x + sh, x, state[:, c_], left=0, right=0)
+        absorbed = np.interp(x + sh, x, absorbed, left=0, right=0)
+
+    dev = np.abs(res['occupations'] - state).max() / state.max()
+    s_ci = res['occupations'][:, species.index((26, 56))].sum()
+    s_bf = state[:, species.index((26, 56))].sum()
+    print(f'  chain gauge (8 seg vs 120 steps): max dev {dev:.2e}, '
+          f'iron survival {s_ci:.4f} vs {s_bf:.4f}')
+    assert dev < 0.01
+    assert abs(s_ci - s_bf) < 0.01
+
+
 def test_crpropa_removed():
     """The CRPropa file-driven cores were testing scaffolding (user decision,
     2026-07-09) and were deleted in phase 5, not replicated."""
@@ -1796,7 +2040,7 @@ def test_crpropa_removed():
     print('  scaffolding classes absent, as intended')
 
 
-# ---------------------------------------------------------------- plain runner
+# ---------------------------------------------------------------- main runner
 
 def main():
     tests = [(name, fn) for name, fn in sorted(globals().items())
