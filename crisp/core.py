@@ -623,6 +623,55 @@ def deposit_log_cic(boosts, gammas, weights):
     return row
 
 
+def shift_log_boost(boosts, state, shift_bins):
+    """Shift a (n_boost, n_species) occupation array down in ln(gamma) by
+    shift_bins, given directly in bin units: scalar (a coherent, species-
+    and boost-independent drift, e.g. adiabatic cooling at Gamma c / R) ->
+    exact gather (np.interp), no numerical diffusion; 1D per-bin array,
+    shared by every species column (a dispersive drift evaluated at each
+    source bin's own boost) -> conservative deposit via deposit_log_cic,
+    applied once per column at gammas = boosts * exp(-shift_bins * dlnb)
+    (the absolute-boost position equivalent to the bin-space shift on a
+    log-uniform grid); 2D (n_boost, n_species) array, one shift per
+    (bin, species) pair (e.g. synchrotron, genuinely different per
+    species) -> the same conservative deposit, vectorized across all
+    columns at once (bin-index space directly -- dst = bin_index -
+    shift_bins -- the exact algebraic reduction of the 1D branch's
+    gammas round-trip, skipped here since it would otherwise mean one
+    deposit_log_cic call per species column). Counts pushed below the
+    grid floor are dropped in every path (they leave the tracked
+    window); a caller wanting a per-species-different SCALAR drift
+    (e.g. Z^2/A-scaled pair losses, one number per species) calls this
+    once per column with that column's own scalar shift_bins instead.
+    """
+    n_b = state.shape[0]
+    x = np.arange(n_b, dtype=float)
+    shift_bins = np.asarray(shift_bins, dtype=float)
+    out = np.zeros_like(state)
+    if shift_bins.ndim == 0:
+        src = x + float(shift_bins)
+        for c in range(state.shape[1]):
+            out[:, c] = np.interp(src, x, state[:, c], left=0.0, right=0.0)
+        return out
+    if shift_bins.ndim == 2:
+        if shift_bins.shape != state.shape:
+            raise ValueError(f'2D shift_bins must match state shape {state.shape}, '
+                             f'got {shift_bins.shape}')
+        dst = x[:, None] - shift_bins                    # (n_b, n_col)
+        j0 = np.floor(dst).astype(int)
+        f = dst - j0
+        col = np.broadcast_to(np.arange(state.shape[1]), state.shape)
+        for jj, wt in ((j0, (1.0 - f) * state), (j0 + 1, f * state)):
+            ok = (jj >= 0) & (jj < n_b)
+            np.add.at(out, (jj[ok], col[ok]), wt[ok])
+        return out
+    dlnb = np.log(boosts[1] / boosts[0])
+    gammas = np.asarray(boosts, dtype=float) * np.exp(-shift_bins * dlnb)
+    for c in range(state.shape[1]):
+        out[:, c] = deposit_log_cic(boosts, gammas, state[:, c])
+    return out
+
+
 def fix_dead_end(product, rate):
     """Takes dead end nucleus (product) and computes the products of its
     disintegration and the corresponding rate.
@@ -2303,9 +2352,10 @@ class InteractionCore():
         """
         pass
 
-    def species_evolution_boost_range(self, L, alpha=None, mass_range=None, boost_range=None, true_range=None):
+    def species_evolution_boost_range(self, L, alpha=None, mass_range=None, boost_range=None,
+                                      true_range=None, coherent_loss=None, energy_loss=None):
         """Returns the probabilities of each species at positions L for a range of boosts.
-        If the distances are negative and in decreasing order, it's equivalent to back propagation. 
+        If the distances are negative and in decreasing order, it's equivalent to back propagation.
 
         Arguments:
         ----------
@@ -2314,11 +2364,53 @@ class InteractionCore():
         mass_range : species to be included in the matrix. If None, all species are included.
         true_range : range of species not part of the absorption range (excluding indices for species that are part of the absorption state)
                      if none is given, the last species in mass_range is considered the absorption state.
-        boost_range : A two element variable with the limits minimum and maximum. The whole range by default (None). 
+        boost_range : A two element variable with the limits minimum and maximum. The whole range by default (None).
+        coherent_loss : optional scalar continuous-loss rate b = -dln(gamma)/dx
+                     [1/Mpc], species- and boost-independent (e.g. adiabatic
+                     cooling Gamma/R): applied every sub-step as an exact
+                     rigid shift in ln(gamma) (shift_log_boost's scalar
+                     branch, no numerical diffusion) -- the coherent-
+                     inhomogeneity treatment of the methods paper Sect. 3.1.
+        energy_loss : optional continuous fractional energy-loss rate on
+                     boost_range (uniform log grid): shape (n_b,) applied to
+                     every true_range species, or (n_b, n_true) per species
+                     (e.g. synchrotron and/or pair losses -- both boost-
+                     dependent even for a single species, so no exact
+                     treatment exists). Applied every sub-step via
+                     conservative cloud-in-cell (shift_log_boost's array
+                     branch) -- the dispersive-inhomogeneity treatment of
+                     Sect. 3.2.
+
+        When either coherent_loss or energy_loss is given, L must be a
+        non-negative scalar or a non-negative, ascending array (forward
+        propagation only -- back propagation with active continuous losses
+        is not implemented), and the method switches from the single exact
+        expm per boost bin above to a chain of sub-steps (interaction, then
+        drift) between L=0 and each requested position, with the sub-step
+        count chosen automatically from the stiffness of the tensor and the
+        supplied rates (the same convention as reprocessed_nucleons: every
+        rate * sub-step stays bounded). With both None (the default), this
+        method is unchanged and bit-identical to before.
+
+        Injection with losses active: without drift, boost bins never mix,
+        so broadcasting one species-only alpha to every bin and reading off
+        row b is exactly equivalent to injecting alpha at b in isolation --
+        that equivalence is what lets the no-loss path solve every boost
+        bin's independent problem in one batched call. Drift breaks it:
+        shift_log_boost mixes neighboring bins, so a uniformly-broadcast
+        alpha stops meaning "the answer for injection at this bin" and
+        instead means "the state from injecting at every bin at once,
+        summed in by the drift" -- rarely what's wanted. Pass alpha as a
+        (n_boost_range, n_true) array (matching mass_range's true_range
+        columns) for the general, boost-resolved case (e.g. injection
+        confined to a limited boost window); the plain (n_true,) vector
+        remains valid as the special case of a genuinely uniform-in-boost
+        injection, broadcast internally to every bin.
         """
 
         if boost_range is None:
             boost_range = self.boosts
+        boost_range = np.asarray(boost_range, dtype=float)
 
         reduced_tensor = self.interpolator(boost_range)
 
@@ -2326,31 +2418,161 @@ class InteractionCore():
             reduced_tensor = reduced_tensor[np.ix_(mass_range, mass_range, range(len(boost_range)))]
 
         # make diagonal zero
-        reduced_tensor -= np.dstack([np.diag(np.diag(reduced_tensor[:, :, k])) for k in range(reduced_tensor.shape[-1])]) 
+        reduced_tensor -= np.dstack([np.diag(np.diag(reduced_tensor[:, :, k])) for k in range(reduced_tensor.shape[-1])])
         # recompute diagonal including absorption states
         reduced_tensor -= np.stack([np.diag(row) for row in reduced_tensor.sum(axis=1).T], axis=2)
         # reduce excluding absorption states
         indices = [mass_range.index(ival) for ival in true_range]
         reduced_tensor = reduced_tensor[np.ix_(indices, indices, range(len(boost_range)))]
 
-        _, c, d = reduced_tensor.shape
-        t_vs_boost = np.atleast_3d(reduced_tensor.sum(axis=1))
-        bigLambda = np.append(np.append(reduced_tensor, np.swapaxes(t_vs_boost, 1, 2), axis=1), np.zeros((1, c+1, d)), axis=0)
+        if coherent_loss is None and energy_loss is None:
+            _, c, d = reduced_tensor.shape
+            t_vs_boost = np.atleast_3d(reduced_tensor.sum(axis=1))
+            bigLambda = np.append(np.append(reduced_tensor, np.swapaxes(t_vs_boost, 1, 2), axis=1), np.zeros((1, c+1, d)), axis=0)
 
-        if type(L) is np.ndarray:
-            # Per-boost sub-batches avoid a scipy batched-expm precision issue
-            # that appears when matrices with widely different norms share a batch.
-            expmatL = np.stack([
-                expm(L[:, None, None] * bigLambda[:, :, b])
-                for b in range(bigLambda.shape[-1])
-            ])
-        else:
-            expmatL = expm(np.moveaxis(bigLambda * L, -1, 0))
+            if type(L) is np.ndarray:
+                # Per-boost sub-batches avoid a scipy batched-expm precision issue
+                # that appears when matrices with widely different norms share a batch.
+                expmatL = np.stack([
+                    expm(L[:, None, None] * bigLambda[:, :, b])
+                    for b in range(bigLambda.shape[-1])
+                ])
+            else:
+                expmatL = expm(np.moveaxis(bigLambda * L, -1, 0))
 
-        total = np.matmul(np.append(alpha[indices], 0), expmatL)
+            total = np.matmul(np.append(alpha[indices], 0), expmatL)
 
-        return total
-    
+            return total
+
+        alpha_arr = np.asarray(alpha, dtype=float)
+        alpha_idx = alpha_arr[indices] if alpha_arr.ndim == 1 else alpha_arr[:, indices]
+        return self._species_evolution_with_drift(
+            reduced_tensor, boost_range, L, alpha_idx,
+            coherent_loss=coherent_loss, energy_loss=energy_loss)
+
+    def _species_evolution_with_drift(self, reduced_tensor, boost_range, L, alpha0,
+                                      coherent_loss=None, energy_loss=None):
+        """Substepped companion to species_evolution_boost_range for
+        coherent_loss / energy_loss != None -- see its docstring.
+
+        reduced_tensor : (n_true, n_true, n_b) generator, already restricted
+                     to true_range (as built by species_evolution_boost_range
+                     before the exact-path augmentation).
+        alpha0 : injection on true_range: (n_true,) broadcast to every boost
+                     bin, or (n_b, n_true) already boost-resolved (see the
+                     public method's docstring for why this matters once
+                     drift is active).
+
+        Interactions are exact per sub-step (one expm per boost bin of the
+        augmented (n_true+1, n_true+1) generator); the absorbed (n_true-th)
+        slot only receives inflow and does not itself drift. Losses are
+        applied between interaction sub-steps via shift_log_boost: exactly
+        for coherent_loss, conservatively (CIC) for energy_loss.
+
+        The sub-step grid is chosen ONCE for the whole path [0, L[-1]] and
+        the per-boost expm precomputed once from it (a single set of n_b
+        dense (n_true+1)^2 exponentials), independent of how many, or how
+        irregularly spaced, checkpoints are requested: state is recorded
+        into the output whenever the running position passes a requested L
+        (the same 'advance until past checkpoint' pattern used to fix the
+        time-resolution bug this generalizes). Sizing the grid per
+        REQUESTED INTERVAL instead (recomputing the expm set every time)
+        was tried and is why this method exists in its current form: with
+        a log-spaced checkpoint grid, essentially every interval has a
+        distinct spacing, so a per-interval expm cache never hits and the
+        (n_true+1)^2 exponentials get recomputed hundreds of times over --
+        catastrophic at n_true ~ 500.
+        """
+        n_true, _, n_b = reduced_tensor.shape
+        dlnb = np.log(boost_range[1] / boost_range[0])
+        alpha0 = np.asarray(alpha0, dtype=float)
+        inj = np.broadcast_to(alpha0, (n_b, n_true)) if alpha0.ndim == 1 else alpha0
+        if inj.shape != (n_b, n_true):
+            raise ValueError(f'alpha must have shape ({n_true},) or '
+                             f'({n_b}, {n_true}), got {alpha0.shape}')
+
+        scalar_L = not isinstance(L, np.ndarray)
+        L_in = np.array([float(L)]) if scalar_L else np.asarray(L, dtype=float)
+        if L_in.ndim != 1 or L_in.size == 0 or L_in[0] < 0 or np.any(np.diff(L_in) < 0):
+            raise ValueError('coherent_loss/energy_loss require a non-negative, '
+                             'ascending L (forward propagation only)')
+        # integration always starts at the injection, L = 0 (matching the
+        # no-loss path's convention); prepend it as a checkpoint if the
+        # caller's own grid does not start there, and drop it again on return
+        prepend = L_in[0] > 0.0
+        L_arr = np.concatenate([[0.0], L_in]) if prepend else L_in
+        L_max = float(L_arr[-1])
+
+        e_loss = None if energy_loss is None else np.asarray(energy_loss, dtype=float)
+        c_loss = None if coherent_loss is None else float(coherent_loss)
+
+        n_L = len(L_arr)
+        out = np.zeros((n_b, n_L, n_true + 1))
+        state = np.zeros((n_b, n_true + 1))
+        state[:, :n_true] = inj
+        out[:, 0, :] = state
+        k_rec = 1
+        while k_rec < n_L and L_arr[k_rec] <= 0.0:
+            out[:, k_rec, :] = state
+            k_rec += 1
+
+        if L_max > 0.0 and k_rec < n_L:
+            # stiffness estimate for the sub-step count, mirroring
+            # reprocessed_nucleons: cap every rate * sub-step at <= 60 so
+            # expm's internal scaling stays well conditioned. Far-tail
+            # boost bins can carry spuriously huge tabulated/extrapolated
+            # rates (as noted in reprocessed_nucleons), so restrict to
+            # bins whose rate is not negligible relative to the peak
+            # before taking the max.
+            diag_rate = np.stack([-np.diag(reduced_tensor[:, :, b]) for b in range(n_b)], axis=1)
+            rate_per_boost = diag_rate.max(axis=0) if n_true else np.zeros(n_b)
+            rate_max = rate_per_boost.max() if n_b else 0.0
+            lam_act = rate_per_boost[rate_per_boost > 1e-6 * rate_max].max() if rate_max > 0 else 0.0
+            if c_loss is not None:
+                lam_act = max(lam_act, abs(c_loss) / dlnb)
+            if e_loss is not None:
+                lam_act = max(lam_act, np.abs(e_loss).max() / dlnb)
+
+            m_total = max(1, int(np.ceil(L_max * lam_act / 60.0))) if lam_act > 0 else 1
+            dl = L_max / m_total
+
+            E_steps = np.empty((n_b, n_true + 1, n_true + 1))
+            for b in range(n_b):
+                Mb = np.zeros((n_true + 1, n_true + 1))
+                Mb[:n_true, :n_true] = reduced_tensor[:, :, b]
+                Mb[:n_true, n_true] = -reduced_tensor[:, :, b].sum(axis=1)
+                E_steps[b] = expm(Mb * dl)
+
+            shift_c = None if c_loss is None else c_loss * dl / dlnb
+            if e_loss is None:
+                shift_e = None
+            elif e_loss.ndim == 1:
+                shift_e = e_loss * dl / dlnb                        # (n_b,)
+            else:
+                shift_e = e_loss * (dl / dlnb)                      # (n_b, n_true)
+
+            l_now = 0.0
+            for _ in range(m_total):
+                state = np.einsum('bi,bij->bj', state, E_steps)
+                live = state[:, :n_true]
+                if shift_c is not None:
+                    live = shift_log_boost(boost_range, live, shift_c)
+                if shift_e is not None:
+                    live = shift_log_boost(boost_range, live, shift_e)
+                state[:, :n_true] = live
+                l_now += dl
+                while k_rec < n_L and l_now >= L_arr[k_rec] * (1 - 1e-9):
+                    out[:, k_rec, :] = state
+                    k_rec += 1
+
+        while k_rec < n_L:
+            out[:, k_rec, :] = state
+            k_rec += 1
+
+        if scalar_L:
+            return out[:, -1, :]
+        return out[:, 1:, :] if prepend else out
+
     def light_secondaries_production(self, L, alpha=None, mass_range=None, boost_range=None, true_range=None, P=None, cumulative=False):
         """Returns the production rate of each light species at positions L for a
         range of boosts, in units of number per injected nucleus per Mpc.

@@ -675,6 +675,56 @@ class UHECRSourceModel(ABC):
 
         return out
 
+    def species_loss_rates(self, species_list, interaction_core=None,
+                           include_pair=True, include_ic=False):
+        """Continuous-loss rates of several species at once, converted to
+        the [1/Mpc] convention and split into the coherent/dispersive drift
+        arrays consumed by InteractionCore.species_evolution_boost_range
+        (coherent_loss=, energy_loss=) and reprocessed_nucleons
+        (energy_loss=): loops loss_rates over species_list and separates
+        its 1/s entries into the adiabatic rate (species- and
+        boost-independent by construction -- coherent, an exact rigid
+        shift on the receiving end, methods paper Sect. 3.1) and
+        synchrotron (+ pair, + inverse Compton if requested), which are
+        boost-dependent even for a single species and so have no exact
+        treatment (dispersive -- conservative CIC, Sect. 3.2). Neutral
+        species (Z = 0) get zero dispersive rate without evaluating
+        synchrotron/pair/IC: both vanish exactly for Z = 0, but pair's own
+        integral is expensive to run just to multiply the result by zero.
+
+        Arguments:
+        ----------
+        species_list : sequence of (Z, A) tuples, in the order the
+                      caller's true_range columns are in.
+        interaction_core, include_pair, include_ic : as in loss_rates.
+
+        Returns:
+        --------
+        coherent : float [1/Mpc] (the adiabatic rate).
+        dispersive : ndarray (n_boosts, len(species_list)) [1/Mpc], on the
+                     core's boost grid.
+        """
+        from scipy.constants import c, parsec
+        core = self._resolve_core(interaction_core)
+        c_Mpc = c * 1e2 / (parsec * 1e8)
+
+        coherent = None
+        dispersive = np.zeros((len(core.boosts), len(species_list)))
+        for i, sp in enumerate(species_list):
+            lr = self.loss_rates(sp, core, include_pair=include_pair, include_ic=include_ic)
+            if coherent is None:
+                coherent = float(lr['adiabatic'][0]) / c_Mpc
+            if sp[0] == 0:
+                continue                   # neutral: synchrotron/pair/IC vanish exactly
+            disp = lr['synchrotron'].copy()
+            if include_pair and 'pair' in lr:
+                disp = disp + lr['pair']
+            if include_ic and 'inverse_compton' in lr:
+                disp = disp + lr['inverse_compton']
+            dispersive[:, i] = disp / c_Mpc
+
+        return coherent, dispersive
+
     def max_energy(self, species, interaction_core=None, eta_acc=1.0,
                    kappa=False):
         """Comoving maximal energy E'_max [GeV]: where the acceleration rate
