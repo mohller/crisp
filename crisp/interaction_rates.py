@@ -244,6 +244,20 @@ def exact_rates_for_sigma(boosts, target_photons, eps_GeV, sigma_rows_mb):
     pgrid = np.logspace(lo, hi, n_points)
     pdensity_eV = lambda e: np.asarray(target_photons(np.asarray(e) * 1e-9)) * 1e-9
 
-    rates = compute_rates(pdensity_eV, pgrid, eweighted, eps_MeV,
-                          boostgrid=boosts, common_bounds=(lo, hi), N=n_points)
+    # group xsecs by chun to speed up the convolution and keep the 
+    # transient array size bounded. Large reaction networks with hundreds 
+    # of species, can put n_rows in the tens of thousands, where the 
+    # unchunked array reaches multiple GB per InteractionCore construction.
+    eweighted = np.atleast_2d(eweighted)
+    row_chunk = 2000
+    if eweighted.shape[0] > row_chunk:
+        rates = np.concatenate([
+            compute_rates(pdensity_eV, pgrid, eweighted[i:i + row_chunk],
+                         eps_MeV, boostgrid=boosts, common_bounds=(lo, hi),
+                         N=n_points)
+            for i in range(0, eweighted.shape[0], row_chunk)
+        ], axis=0)
+    else:
+        rates = compute_rates(pdensity_eV, pgrid, eweighted, eps_MeV,
+                              boostgrid=boosts, common_bounds=(lo, hi), N=n_points)
     return np.clip(rates, 0.0, None)
