@@ -71,6 +71,21 @@ class Cross_Section_Model():
     interaction_type = 'photodisintegration'
 
     def __init__(self, *args, **kwargs):
+        """Every subclass constructor accepts these two keywords in
+        addition to its own model-specific ones (data path, table file,
+        and so on).
+
+        Parameters
+        ----------
+        erange : tuple of float, optional
+            (eps_min, eps_max) in MeV: the photon energy window over which
+            `cross_section` returns nonzero values. Default (10, 140).
+        filter_nuclei : callable, optional
+            (Z, A) -> bool, applied while building `self.nuclei` so a
+            model can be restricted to a subset of species (for example
+            `lambda za: za[1] <= 56` to keep only nuclei up to iron).
+            Default keeps every nuclide the model's data provides.
+        """
         if 'erange' not in kwargs:
             self.erange = (10, 140) # in MeV
         else:
@@ -80,12 +95,37 @@ class Cross_Section_Model():
         if 'filter_nuclei' not in kwargs:
             def selection_function(nuc):
                 return True
-                
+
             self.filter_nuclei = selection_function
         else:
             self.filter_nuclei = kwargs['filter_nuclei']
 
     def cross_section(self, *args, **kwargs):
+        """Photonuclear cross section for nuclide (Z, A). Implemented by
+        every subclass with the signature below; the base class only
+        documents the shared contract.
+
+        Parameters
+        ----------
+        eps : array_like
+            Photon energy in MeV (in the nucleus rest frame).
+        Z, A : int
+            Charge and mass number of the interacting nucleus.
+        nloss : int, optional
+            If given, return only the exclusive channel that removes this
+            many nucleons (summed over every remnant reachable by losing
+            exactly `nloss` nucleons, when several are mapped to it).
+        rem : tuple of int, optional
+            If given, return only the exclusive channel producing this
+            (Z_remnant, A_remnant). `nloss` and `rem` are mutually
+            exclusive; when neither is given, the total cross section
+            (all channels summed) is returned.
+
+        Returns
+        -------
+        ndarray
+            Cross section in mb, same shape as `eps`.
+        """
         # To be defined in each case
         pass
 
@@ -189,6 +229,22 @@ class GDR_atlas(Cross_Section_Model):
        Data and models obtained from https://www-nds.iaea.org/PSFdatabase/atlas-gdr.html
     """
     def __init__(self, *args, channel_set=None, **kwargs):
+        """Loads the IAEA GDR atlas parameter tables (SLO and SMLO
+        Lorentzian fits) and builds the exclusive channel list per
+        nuclide.
+
+        Parameters
+        ----------
+        channel_set : optional
+            Reserved for a future explicit channel set; currently unused
+            (channels are always the PSB-branching list built internally).
+        erange, filter_nuclei : optional
+            See `Cross_Section_Model.__init__`.
+
+        Examples
+        --------
+        >>> gdr = GDR_atlas()
+        """
         Cross_Section_Model.__init__(self, *args, **kwargs)
 
         self.slo_filename = os.path.join(_DATA_DIR, 'gdr_parameters_exp&systematics/gdr-parameters_exp&systematics_slo.dat')
@@ -230,21 +286,38 @@ class GDR_atlas(Cross_Section_Model):
                 self.channels.append(channels)
 
     def cross_section(self, eps, Z, A, nloss=None, rem=None, gdr_type='slo'):
-        """Returns the cross section in mb, takes energy eps in MeV.
-
-        Per channel, following the PSB energy-region structure (!! the
-        branchings are not part of the GDR atlas !!):
+        """Cross section in mb, following the PSB energy-region structure
+        for the branchings (the branchings themselves are not part of the
+        GDR atlas):
 
         - eps < 30 MeV (the giant dipole proper): the Lorentzian strength
           goes to the exclusive 1n / 2n channels (0.8 / 0.2), as in PSB's
-          low-energy component — mean mass loss ~1.2 per interaction;
+          low-energy component (mean mass loss about 1.2 per interaction);
         - eps >= 30 MeV: the PSB high-energy multiplicity branchings over
-          the neutron-loss channels (mean ~4.3 nucleons for A > 22);
+          the neutron-loss channels (mean about 4.3 nucleons for A > 22);
         - the Levinger quasi-deuteron part is carried at all energies by its
           physical n + p channel, remnant (Z-1, A-2).
 
         The channel sum reproduces total_cross_section identically in every
         energy region.
+
+        Parameters
+        ----------
+        eps : array_like
+            Photon energy in MeV.
+        Z, A : int
+            Charge and mass number of the interacting nucleus.
+        nloss : int, optional
+            Return only the channel losing this many nucleons.
+        rem : tuple of int, optional
+            Return only the channel producing this (Z_remnant, A_remnant).
+        gdr_type : {'slo', 'smlo'}, optional
+            Which atlas Lorentzian parametrization to use. Default 'slo'.
+
+        Returns
+        -------
+        ndarray
+            Cross section in mb, same shape as `eps`.
         """
         if nloss is None and rem is None:
             return self.total_cross_section(eps, Z, A, gdr_type=gdr_type)
@@ -325,10 +398,25 @@ class GDR_atlas(Cross_Section_Model):
         return np.nan_to_num(sgm_GDR)
 
     def total_cross_section(self, eps, Z, A, gdr_type='slo'):
-        """Total photodisintegration cross section [mb], eps in MeV: the GDR
-        Lorentzians plus the Levinger quasi-deuteron term (which the channel
-        sum reproduces identically: GDR x branchings + the (Z-1, A-2) QD
-        channel)."""
+        """Total photodisintegration cross section: the GDR Lorentzians
+        plus the Levinger quasi-deuteron term (which the channel sum
+        reproduces identically: GDR times branchings, plus the
+        (Z-1, A-2) QD channel).
+
+        Parameters
+        ----------
+        eps : array_like
+            Photon energy in MeV.
+        Z, A : int
+            Charge and mass number of the interacting nucleus.
+        gdr_type : {'slo', 'smlo'}, optional
+            Which atlas Lorentzian parametrization to use. Default 'slo'.
+
+        Returns
+        -------
+        ndarray
+            Cross section in mb, same shape as `eps`.
+        """
         csec = self.gdr_cross_section(eps, Z, A, gdr_type=gdr_type) \
             + self.quasi_deuteron_cross_section(eps, Z, A)
 
@@ -340,6 +428,19 @@ class PSB_model(Cross_Section_Model):
        Source: https://ui.adsabs.harvard.edu/abs/1976ApJ...205..638P/abstract
     """
     def __init__(self, *args, **kwargs):
+        """Loads the PSB parameter table shipped with the package. Unlike
+        `CRPropa_model` or `SimProp_model`, no external data path is
+        needed, so this is the quickest cross section model to try.
+
+        Parameters
+        ----------
+        erange, filter_nuclei : optional
+            See `Cross_Section_Model.__init__`.
+
+        Examples
+        --------
+        >>> psb = PSB_model()
+        """
         Cross_Section_Model.__init__(self, *args, **kwargs)
 
         self.PSB_filename = os.path.join(_DATA_DIR, 'PSB1976.csv')
@@ -363,8 +464,25 @@ class PSB_model(Cross_Section_Model):
             self.channels.append(channels)
 
     def cross_section(self, eps, Z, A, nloss=None, rem=None):
-        """The cross section as modeled in the reference to compute the
-        interaction rates.
+        """PSB 1976 cross section: a flat continuum above 30 MeV plus a
+        Gaussian giant-dipole peak in the 1n/2n channels, both scaled by
+        the Sigma_d Thomas-Reiche-Kuhn sum rule.
+
+        Parameters
+        ----------
+        eps : array_like
+            Photon energy in MeV.
+        Z, A : int
+            Charge and mass number of the interacting nucleus.
+        nloss : int, optional
+            Return only the channel losing this many nucleons.
+        rem : tuple of int, optional
+            Return only the channel producing this (Z_remnant, A_remnant).
+
+        Returns
+        -------
+        ndarray
+            Cross section in mb, same shape as `eps`.
         """
         from scipy.special import erf
         params = self.params[np.logical_and(self.params['Z'] == Z, self.params['A'] == A)]
@@ -399,8 +517,20 @@ class PSB_model(Cross_Section_Model):
         return np.where(np.logical_and(self.erange[0] <= eps, eps < self.erange[1]), csec, np.zeros_like(eps))
 
     def total_cross_section(self, eps, Z, A):
-        """Cross section computed as the sum of all the exclusive cross sections
-        of the channels of the given nucleus (Z, A)
+        """Total cross section, the sum of the exclusive cross sections
+        over every channel of nucleus (Z, A).
+
+        Parameters
+        ----------
+        eps : array_like
+            Photon energy in MeV.
+        Z, A : int
+            Charge and mass number of the interacting nucleus.
+
+        Returns
+        -------
+        ndarray
+            Cross section in mb, same shape as `eps`.
         """
         channels = []
         for remnant in self.channels[self.nuclei.index((Z, A))]:
@@ -414,13 +544,24 @@ class SimProp_model(Cross_Section_Model):
        Source: https://iopscience.iop.org/article/10.1088/1475-7516/2017/11/009
     """
     def __init__(self, *args, filename=None, M=0, **kwargs):
-        """Loads one of the models defined in the code
+        """Loads one of the parametrizations bundled with SimPropv2r4.
 
-        Arguments:
+        Parameters
         ----------
-        filename: the file containing the data (e.g. xsect_BreitWigner_TALYS-1.0.txt) 
-                  by default, assumes the PSB model is used.
-        M: the input parameter used in SimProp for the given file (see publication).
+        filename : str, optional
+            Data file to load (e.g. 'xsect_BreitWigner_TALYS-1.0.txt').
+            Default (None) picks the file matching `M`.
+        M : int, optional
+            SimProp's model index (see the publication): 0/1 select the
+            PSB-derived table, 2 the TALYS-1.6 Breit-Wigner fit, 3 its
+            two-component variant, 4 the two-component Gaussian fit.
+            Default 0.
+        erange, filter_nuclei : optional
+            See `Cross_Section_Model.__init__`.
+
+        Examples
+        --------
+        >>> sp = SimProp_model()
         """
         Cross_Section_Model.__init__(self, *args, **kwargs)
 
@@ -487,8 +628,26 @@ class SimProp_model(Cross_Section_Model):
             self.channels[self.nuclei.index((4, 9))] = [(1, 1), (2, 4)]
 
     def cross_section(self, eps, Z, A, nloss=None, rem=None):
-        """The cross section as modeled in the reference to compute the
-        interaction rates.
+        """Cross section for the parametrization selected by `self.M`
+        (see the constructor): a flat continuum plus a resonance term
+        for M in (0, 1, 2), or a fixed two-Lorentzian/Gaussian fit for
+        M in (3, 4).
+
+        Parameters
+        ----------
+        eps : array_like
+            Photon energy in MeV.
+        Z, A : int
+            Charge and mass number of the interacting nucleus.
+        nloss : int, optional
+            Return only the channel losing this many nucleons.
+        rem : tuple of int, optional
+            Return only the channel producing this (Z_remnant, A_remnant).
+
+        Returns
+        -------
+        ndarray
+            Cross section in mb, same shape as `eps`.
         """
         from scipy.special import erf
 
@@ -566,8 +725,20 @@ class SimProp_model(Cross_Section_Model):
         return np.where(np.logical_and(self.erange[0] <= eps, eps < self.erange[1]), csec, np.zeros_like(eps))
     
     def total_cross_section(self, eps, Z, A):
-        """Cross section computed as the sum of all the exclusive cross sections
-        of the channels of the given nucleus (Z, A)
+        """Total cross section, the sum of the exclusive cross sections
+        over every channel of nucleus (Z, A).
+
+        Parameters
+        ----------
+        eps : array_like
+            Photon energy in MeV.
+        Z, A : int
+            Charge and mass number of the interacting nucleus.
+
+        Returns
+        -------
+        ndarray
+            Cross section in mb, same shape as `eps`.
         """
         channels = []
         for remnant in self.channels[self.nuclei.index((Z, A))]:
@@ -605,10 +776,12 @@ class TabulatedDisintegration(Cross_Section_Model):
     Rows with A_res outside (0, A) are rejected; residual weights may be
     given unnormalized (relative branchings suffice).
 
-    Arguments:
+    Parameters
     ----------
-    totals, multiplicities : file paths (or open file-like objects).
-    erange : optional (MeV) window; defaults to the table's grid span.
+    totals, multiplicities : str or file-like
+        File paths (or open file-like objects) in the formats above.
+    erange : tuple of float, optional
+        (eps_min, eps_max) in MeV. Default: the table's own grid span.
     """
     interaction_type = 'photodisintegration'
 
@@ -678,6 +851,27 @@ class TabulatedDisintegration(Cross_Section_Model):
                     wsum > 0, table[rem] / np.where(wsum > 0, wsum, 1.0), 0.0)
 
     def cross_section(self, eps, Z, A, nloss=None, rem=None):
+        """Cross section interpolated from the loaded tables: the total
+        table when neither `nloss` nor `rem` is given, or the total times
+        the interpolated per-energy residual weight otherwise.
+
+        Parameters
+        ----------
+        eps : array_like
+            Photon energy in MeV.
+        Z, A : int
+            Charge and mass number of the interacting nucleus.
+        nloss : int, optional
+            Return only the channel losing this many nucleons.
+        rem : tuple of int, optional
+            Return only the channel producing this (Z_remnant, A_remnant).
+
+        Returns
+        -------
+        ndarray
+            Cross section in mb, same shape as `eps`. Zero outside
+            `erange` or for a nucleus absent from the totals table.
+        """
         eps = np.asarray(eps, dtype=float)
         if (Z, A) not in self.totals:
             return np.zeros_like(eps)
@@ -1008,11 +1202,23 @@ class CRPropa_model(Cross_Section_Model):
        Source: https://iopscience.iop.org/article/10.1088/1475-7516/2017/11/009
     """
     def __init__(self, *args, path=None, **kwargs):
-        """Loads the tabulated cross sections
+        """Loads a CRPropa3-data cross section table from disk.
 
-        Arguments:
+        Parameters
         ----------
-        path: path to the cross section tables
+        path : str
+            Directory holding one of CRPropa3-data's photodisintegration
+            table sets (e.g. `.../PD_external`, `.../PD_Talys1.9`), as
+            fetched by `crisp.data_download.fetch_crpropa_tables` /
+            `get_tables_path`.
+        erange, filter_nuclei : optional
+            See `Cross_Section_Model.__init__`.
+
+        Examples
+        --------
+        >>> from crisp.data_download import get_tables_path
+        >>> tables = get_tables_path(verbose=False)
+        >>> crp = CRPropa_model(path=tables + 'PD_external')
         """
         Cross_Section_Model.__init__(self, *args, **kwargs)
 
@@ -1052,8 +1258,26 @@ class CRPropa_model(Cross_Section_Model):
                 self.nuclei.append((int(Z), int(A)))
 
     def cross_section(self, eps, Z, A, nloss=None, rem=None):
-        """The cross section as modeled in the reference to compute the
-        interaction rates.
+        """Cross section interpolated from the CRPropa3-data exclusive
+        channel tables, with channels decoded from the branching-file
+        channel number (`get_particle_numbers`).
+
+        Parameters
+        ----------
+        eps : array_like
+            Photon energy in MeV.
+        Z, A : int
+            Charge and mass number of the interacting nucleus.
+        nloss : int, optional
+            Return only the channel(s) losing this many nucleons (summed
+            over every tabulated channel with that mass loss).
+        rem : tuple of int, optional
+            Return only the channel producing this (Z_remnant, A_remnant).
+
+        Returns
+        -------
+        ndarray
+            Cross section in mb, same shape as `eps`.
         """
         csec = np.zeros_like(eps)
 
@@ -1082,8 +1306,21 @@ class CRPropa_model(Cross_Section_Model):
         return np.where(np.logical_and(self.erange[0] <= eps, eps < self.erange[1]), csec, np.zeros_like(eps))
 
     def total_cross_section(self, eps, Z, A):
-        """Cross section computed as the sum of all the exclusive cross sections
-        of the channels of the given nucleus (Z, A)
+        """Total cross section, read directly from CRPropa3-data's summed
+        table (`xs_pd_sum.txt` / `xs_sum.txt`) rather than by summing the
+        exclusive channels.
+
+        Parameters
+        ----------
+        eps : array_like
+            Photon energy in MeV.
+        Z, A : int
+            Charge and mass number of the interacting nucleus.
+
+        Returns
+        -------
+        ndarray
+            Cross section in mb, same shape as `eps`.
         """
         xs = self.tot_xsec_data[np.argwhere(np.logical_and(self.tot_xsec_data[:, 0] == Z, self.tot_xsec_data[:, 1] == A))].flatten()[2:]
 
@@ -1429,11 +1666,7 @@ class Model_Rack(Cross_Section_Model):
     """A model holder that joins the cross sections of different models
     (photodisintegration and photomeson alike) into one interface."""
     def __init__(self, models=None, **kwargs):
-        """Populates the model set
-
-        Arguments:
-        ----------
-        models: list of models to be used.
+        """Populates the model set.
 
         The rack's nuclei are the union of the models' nuclei, and each
         nucleus's channels are the union of the remnants over all models
@@ -1441,6 +1674,26 @@ class Model_Rack(Cross_Section_Model):
         cross_section(rem=...) sums the contributions of every model, so a
         remnant shared between models (e.g. the photodisintegration and
         photomeson single-nucleon channels) carries the combined rate.
+
+        Parameters
+        ----------
+        models : list of Cross_Section_Model
+            The models to combine, typically two or more
+            `Cross_Section_Model` subclasses covering complementary
+            nuclide ranges or interaction types (photodisintegration and
+            photomeson).
+
+        Examples
+        --------
+        Combine two CRPropa photodisintegration table sets covering
+        different mass ranges:
+
+        >>> from crisp.data_download import get_tables_path
+        >>> tables = get_tables_path(verbose=False)
+        >>> rack = Model_Rack(models=(
+        ...     CRPropa_model(path=tables + 'PD_external'),
+        ...     CRPropa_model(path=tables + 'PD_Talys1.9'),
+        ... ))
         """
         self.models = models
 
@@ -1471,6 +1724,25 @@ class Model_Rack(Cross_Section_Model):
                 if getattr(m, 'interaction_type', 'photodisintegration') == 'photomeson']
 
     def cross_section(self, eps, Z, A, nloss=None, rem=None):
+        """Cross section summed over every member model that tracks
+        nucleus (Z, A).
+
+        Parameters
+        ----------
+        eps : array_like
+            Photon energy in MeV.
+        Z, A : int
+            Charge and mass number of the interacting nucleus.
+        nloss : int, optional
+            Return only the channel losing this many nucleons.
+        rem : tuple of int, optional
+            Return only the channel producing this (Z_remnant, A_remnant).
+
+        Returns
+        -------
+        ndarray
+            Cross section in mb, same shape as `eps`.
+        """
         csec = np.zeros_like(eps)
 
         for model in self.models:
@@ -1480,6 +1752,21 @@ class Model_Rack(Cross_Section_Model):
         return csec
 
     def total_cross_section(self, eps, Z, A):
+        """Total cross section summed over every member model that
+        tracks nucleus (Z, A).
+
+        Parameters
+        ----------
+        eps : array_like
+            Photon energy in MeV.
+        Z, A : int
+            Charge and mass number of the interacting nucleus.
+
+        Returns
+        -------
+        ndarray
+            Cross section in mb, same shape as `eps`.
+        """
         csec = np.zeros_like(eps)
 
         for model in self.models:
