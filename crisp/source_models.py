@@ -1,3 +1,69 @@
+"""
+Astrophysical source models: injection spectra and target photon fields
+for InteractionCore.
+
+`InteractionCore` (in `core.py`) needs two things to propagate a cosmic
+ray population: an injection vector (how many nuclei of which species,
+at which energy) and, when photomeson or photodisintegration rates are
+computed from a source's own radiation field rather than the CMB or the
+EBL, a target photon spectrum. This module supplies both, derived from
+physical source parameters (luminosity, variability timescale, bulk
+Lorentz factor, and so on) instead of being specified by hand.
+
+`UHECRSourceModel` is the abstract base every model in this module
+subclasses. It stores its input parameters as `pint` quantities, so
+values carry units and are converted rather than silently misread, and
+each derived property (radius, magnetic field, photon density) is
+computed together with the symbolic `sympy` expression and the
+substituted values that produced it, so `generate_report()` can print
+the equation actually used, not just its numeric result. Some
+parameters are only meaningfully defined in one reference frame
+(comoving/jet, engine/central source, or observer at Earth); `kind` and
+`native_frame` on each parameter's schema entry declare how, and
+`get_parameter(name, frame=...)` converts between them on request.
+
+Concrete models built on that base:
+
+- `OneZoneISModel`: the classic single-zone GRB internal-shock model
+  parametrized by observed quantities (photon luminosity, bulk Lorentz
+  factor, variability timescale, redshift), in the NeuCosmA tradition
+  (Huemmer et al. 2012).
+- `AGNJetModel`: an AGN jet blob (FSRQ/blazar) with a BLR external
+  photon field Doppler boosted into the blob frame.
+- `InternalShockModel`, and its subclasses `PhotosphericDissipationModel`
+  and `ICMARTModel`: the GRB prompt-emission jet models of De Lia and
+  Tamborra (2024, arXiv:2406.14975), parametrized by microphysical
+  energy fractions (eps_d, eps_e, eps_A, eps_B) of the engine's isotropic
+  energy budget rather than by observed quantities directly. The three
+  differ only in where the dissipation happens and what target photon
+  field results: internal shocks with a Band spectrum, a dissipative
+  photosphere with a three component spectrum, or magnetic reconnection
+  (ICMART) at a fixed radius.
+- `VariablePhotonSource`: wraps a source model whose target photon field
+  changes over time, keeping one `InteractionCore` in memory and
+  serializing past states to disk so they can be swapped back in.
+
+A source model connects to the rest of the package through
+`build_core(epsrange, xsec_model)`, which builds an
+`InteractionCore_Source` from the model's `target_photons` and a cross
+section model, and `injection_spectrum(...)`, which returns the
+baryon-budget-normalized injection callable Q(E) for that core's species
+and boost grid. `xsec_model` is any `photonuclear_cross_sections`
+model implementing the `Cross_Section_Model` interface (`CRPropa_model`,
+`PSB_model`, `SimProp_model`, `Model_Rack`, and so on); this module only
+duck-types against that interface and does not import from
+`photonuclear_cross_sections` directly. From there, `rates_by_interaction`,
+`loss_rates`, `max_energy`, and `species_loss_rates` give diagnostics on
+that source's own photon field, and `compute_temporal_response` /
+`simulate_time_evolution` fold the injection history through the
+propagated response to get densities as a function of time rather than
+just of distance.
+
+See the notebooks under `examples/` (for instance
+`GRB_Jet_Composition.ipynb`) for worked constructions of these models
+end to end.
+"""
+
 import pint
 import numpy as np
 import sympy as sp
