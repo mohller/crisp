@@ -1,3 +1,36 @@
+"""Target photon field spectra: the callables `InteractionCore` and the
+source models fold cross sections against.
+
+Every photon field in the package (the CMB, a GRB's Band spectrum, an
+AGN's BLR photons, and so on) is represented the same way: a callable
+taking a photon energy in GeV and returning a number density in
+GeV^-1 cm^-3, ready to pass as `target_photons=` to `InteractionCore` or
+to build a source model's `self.target_photons`. This module supplies
+the shapes:
+
+- Empirical spectral shapes used to model astrophysical sources:
+  `target_photons_spectrum` (broken power law), `powerlaw_photon_spectrum`,
+  `cutoffpl_photon_spectrum`, `band_photon_spectrum` (the GRB Band
+  function used by `source_models.InternalShockModel`), and
+  `fastcooling_photon_spectrum` (used by
+  `source_models.PhotosphericDissipationModel`'s synchrotron/upscattered
+  components). All normalize against an integrated fluence over a given
+  energy range via the `normal=` argument.
+- The thermal CMB: `black_body_spectral_radiance` (Planck's law) feeds
+  `cmb_photon_density`/`cmb_photon_density_GeVcm3`, the CMB number
+  density most `InteractionCore` calls use directly.
+- The extragalactic background light (EBL): the
+  `create_interpolated_EBLmodel_*` functions load one of the tabulated
+  EBL models (Gilmore 2012, Andrews 2018, Saldana-Lopez 2021, one per
+  data file in `crisp/data/`) and build a redshift-dependent interpolator,
+  which `extragalactic.py` wraps into `ebl_*_at_z` callables for
+  redshift-aware propagation.
+
+Most users only need `cmb_photon_density_GeVcm3` (via `InteractionCore`'s
+default) or one of the EBL models; the source-specific shapes are mainly
+consumed by `source_models.py`.
+"""
+
 from pickle import load
 import numpy as np
 from numpy import pi, expm1, array, vectorize, logspace, log, log10, loadtxt, newaxis, minimum
