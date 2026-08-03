@@ -36,7 +36,17 @@ from . import continuous_losses as _cl
 
 def cmb_density_at_z(z):
     """Proper CMB spectral density at redshift z: blackbody at T0 (1+z).
-    Returns a callable n(e_GeV) in GeV^-1 cm^-3 (the house convention)."""
+
+    Parameters
+    ----------
+    z : float
+        Redshift.
+
+    Returns
+    -------
+    callable
+        n(e_GeV) in GeV^-1 cm^-3 (the house convention).
+    """
     from .background_photon_models import To
     T = To * (1.0 + z)
     return lambda e: cmb_photon_density(T, np.asarray(e) * 1e9) / 1e6 * 1e9
@@ -57,21 +67,54 @@ def _ebl_spline_at_z(spline, z, e_lo=1.3e-12, e_hi=1.2e-8):
 
 
 def ebl_gilmore_at_z(z):
-    """Proper Gilmore-2012 EBL density at redshift z (see _ebl_spline_at_z)."""
+    """Proper Gilmore-2012 EBL density at redshift z (see _ebl_spline_at_z).
+
+    Parameters
+    ----------
+    z : float
+        Redshift.
+
+    Returns
+    -------
+    callable
+        n(e_GeV) in GeV^-1 cm^-3, windowed to the model's common support.
+    """
     from .background_photon_models import eblg_interp
     return _ebl_spline_at_z(eblg_interp, z)
 
 
 def ebl_saldana_at_z(z):
     """Proper Saldana-Lopez-2021 EBL density at redshift z (tabulated to
-    z = 6; see _ebl_spline_at_z)."""
+    z = 6; see _ebl_spline_at_z).
+
+    Parameters
+    ----------
+    z : float
+        Redshift (<= 6, the table's tabulated range).
+
+    Returns
+    -------
+    callable
+        n(e_GeV) in GeV^-1 cm^-3, windowed to the model's common support.
+    """
     from .background_photon_models import ebls_interp
     return _ebl_spline_at_z(ebls_interp, z)
 
 
 def ebl_andrews_at_z(z):
     """Proper Andrews-2018 EBL density at redshift z (tabulated to z = 6;
-    see _ebl_spline_at_z)."""
+    see _ebl_spline_at_z).
+
+    Parameters
+    ----------
+    z : float
+        Redshift (<= 6, the table's tabulated range).
+
+    Returns
+    -------
+    callable
+        n(e_GeV) in GeV^-1 cm^-3, windowed to the model's common support.
+    """
     from .background_photon_models import ebla_interp
     return _ebl_spline_at_z(ebla_interp, z)
 

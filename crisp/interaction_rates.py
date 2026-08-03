@@ -40,8 +40,8 @@ def gyroradius(Z, B, E):
     where using the relation in cgs: e*G = 4.8E10 g*cm/s and the
     conversion factor GeV = 1.602E-10 kg*m2/s2 in the prefactor.
 
-    Parameters:
-    -----------
+    Parameters
+    ----------
     Z : particle's atomic number
     B : mean magnetic flux density in Gauss
     E : particle energies in GeV
@@ -53,8 +53,8 @@ def gyroradius(Z, B, E):
 def interaction_rate_adiabatic(energies, radius):
     """Returns the adiabatic interaction rate
 
-    Parameters:
-    -----------
+    Parameters
+    ----------
     energies  : particle energies in GeV
     radius : shell radius in m
     """
@@ -65,8 +65,8 @@ def interaction_rate_adiabatic(energies, radius):
 def interaction_rate_acceleration(energies, Z, eta, mgn_field):
     """Returns the acceleration interaction rate
 
-    Parameters:
-    -----------
+    Parameters
+    ----------
     energies  : particle energies in GeV
     Z         : particle's atomic number
     eta       : acceleration efficiency (0..1 dimensionless)
@@ -96,8 +96,8 @@ def interaction_rate_synchrotron(energies, Z, A, mgn_field):
 
     t^-1 = P / E = 2/3 hbar alpha c^2 Z^2 gamma^4 / Rg^2 / E
 
-    Parameters:
-    -----------
+    Parameters
+    ----------
     energies  : particle energies in GeV
     A         : particle's nucleon number
     Z         : particle's atomic number
@@ -121,15 +121,15 @@ def interaction_rate_from_cross_section_boosts(boosts, ng, eg, cs):
     masses (e.g. crisp.data.nucleardecays.nuclear_mass_GeV) only to convert
     between energies and boosts at the interface.
 
-    Parameters:
-    -----------
+    Parameters
+    ----------
     boosts    : uhecr's Lorentz factors
     ng        : a function describing the photon spectral density. Should take
                 energy in GeV and return photon density in GeV^-1 cm^-3
     eg        : photon grid for the cross section (energy in nucleus rest frame in GeV)
     cs        : cross section for photonuclear interaction evaluated in eg, given in cm^2
-    Returns:
-    --------
+    Returns
+    -------
     rates     : interaction rates corresponding to cross section provided in s^-1
     """
     (ymin, ymax), f = get_interp_response_function(eg, cs)
@@ -145,16 +145,17 @@ def interaction_rate_from_cross_section_boosts(boosts, ng, eg, cs):
 
 def interaction_rate_from_cross_section(energies, A, ng, eg, cs):
     """Returns the interaction rate from the cross section and the photon spectrum
-    Parameters:
-    -----------
+
+    Parameters
+    ----------
     energies  : uhecr's energies in GeV
     A         : uhecr's mass in GeV/c2 (nucleon number typically)
     ng        : a function describing the photon spectral density. Should take 
                 energy in GeV and return photon density in GeV^-1 cm^-3
     eg        : photon grid for the cross section (energy in nucleus rest frame in GeV)
     cs        : cross section for photonuclear interaction evaluated in eg, given in cm^2
-    Returns:
-    --------
+    Returns
+    -------
     rates     : interaction rates corresponding to cross section provided in s^-1
     """
     m = A * .939  # nuclear mass in GeV
@@ -185,8 +186,8 @@ def compute_rates(pdensity, pgrid, eweighted_xsec, egrid, boostgrid=None,
     analytically as g(y_max) (y_max / y)^2 — without this tail the rates are
     underestimated at boosts where 2 Gamma eps_peak exceeds the sigma range.
 
-    Arguments
-    ---------
+    Parameters
+    ----------
     pdensity : a function yielding target photon spectral density in [eV^-1 cm^-3] and taking energy in eV
     pgrid : photon energy grid in eV
     eweighted_xsec : energy weighted cross section table in mb
@@ -241,15 +242,15 @@ def exact_rates_for_sigma(boosts, target_photons, eps_GeV, sigma_rows_mb):
     eps_field_max). Rates are clipped at zero (cubic interpolation of the
     convolution can leave tiny negatives).
 
-    Arguments:
+    Parameters
     ----------
     boosts        : Lorentz-factor grid
     target_photons: photon field n_gamma(eps) in GeV^-1 cm^-3, eps in GeV
     eps_GeV       : photon-energy grid where the cross sections are sampled
     sigma_rows_mb : array (n_rows, len(eps_GeV)) of cross sections in mb
 
-    Returns:
-    --------
+    Returns
+    -------
     rates : ndarray (n_rows, len(boosts)) in Mpc^-1
     """
     eps_GeV = np.asarray(eps_GeV)
