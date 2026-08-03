@@ -1423,7 +1423,8 @@ class InteractionCore():
 
         return decomposed
 
-    def pion_production(self, L, alpha=None, mass_range=None, boost_range=None, true_range=None, P=None, weights=None):
+    def pion_production(self, L, alpha=None, mass_range=None, boost_range=None, true_range=None, P=None, weights=None,
+                       method=None):
         """Cumulative pion spectrum produced by the heavy cascade at positions L.
 
         Solves the heavy cascade ODE for each parent boost and folds the result
@@ -1450,6 +1451,13 @@ class InteractionCore():
                      (len(boost_range),) — e.g. the injected number per slice,
                      dQ/dlnΓ · ΔlnΓ. The parent slices are then summed as a
                      weighted ladder total instead of unit injections.
+        method     : passed straight through to species_evolution_boost_range
+                     when P is None (ignored otherwise) -- None (default)
+                     evaluates the heavy cascade exactly, matching this
+                     method's historical behavior; 'auto'/'substep' let a
+                     large species count over a wide L range trade a little
+                     precision for a lot of speed, same tradeoff documented
+                     there.
 
         Returns:
         --------
@@ -1462,28 +1470,29 @@ class InteractionCore():
         return self._photomeson_fold(self.pion_prod_tensor, L, alpha=alpha,
                                      mass_range=mass_range, boost_range=boost_range,
                                      true_range=true_range, P=P, weights=weights,
-                                     scaling_group='pion')
+                                     scaling_group='pion', method=method)
 
     def photomeson_production(self, species, L, alpha=None, mass_range=None,
                               boost_range=None, true_range=None, P=None, weights=None,
-                              cumulative=True):
+                              cumulative=True, method=None):
         """Cumulative production of one photomeson secondary species along L:
         the charge/species-resolved kernel folded with the heavy cascade.
 
         species : one of 'pi+', 'pi-', 'pi0', 'p', 'n'
                   (self.photomeson_kernels); other arguments as in
-                  pion_production. cumulative=False returns the local
-                  production rate per unit path instead of the L-integral.
+                  pion_production, including method (see there).
+                  cumulative=False returns the local production rate per
+                  unit path instead of the L-integral.
         """
         group = {'pi+': 'pi+', 'pi-': 'pi-', 'pi0': 'pi0', 'p': 'N', 'n': 'N'}[species]
         return self._photomeson_fold(self.photomeson_kernels[species], L, alpha=alpha,
                                      mass_range=mass_range, boost_range=boost_range,
                                      true_range=true_range, P=P, weights=weights,
-                                     scaling_group=group, cumulative=cumulative)
+                                     scaling_group=group, cumulative=cumulative, method=method)
 
     def _photomeson_fold(self, kernel, L, alpha=None, mass_range=None,
                          boost_range=None, true_range=None, P=None, weights=None,
-                         scaling_group=None, cumulative=True):
+                         scaling_group=None, cumulative=True, method=None):
         """Fold a photomeson kernel (2, n_b, n_b) with the heavy cascade and
         integrate along L — the shared machinery of pion_production,
         proton_recoil_production and the per-charge neutrino folds.
@@ -1495,7 +1504,11 @@ class InteractionCore():
         cumulative : True (default) integrates the production along L;
             False returns the local production RATE per unit path
             (n_b_sec, n_L) [same units per Mpc] — e.g. the wide-spectrum
-            nucleon source term of reprocessed_nucleons."""
+            nucleon source term of reprocessed_nucleons.
+        method : passed straight through to species_evolution_boost_range
+            for the heavy-cascade solve when P is None; see that method's
+            docstring (None/default -> exact, matching this method's
+            historical behavior bit-for-bit)."""
         from scipy.integrate import cumulative_trapezoid
 
         if boost_range is None:
@@ -1509,34 +1522,14 @@ class InteractionCore():
         if P is not None:
             heavy = np.asarray(P)[:, :, :n_sp]             # (n_b, n_L, n_sp)
         else:
-            # --- heavy cascade ODE (follows light_cascade_production structure) ---
-            reduced_tensor = self.interpolator(boost_range)   # (n_sp_full, n_sp_full, n_b)
-
-            if mass_range is not None:
-                reduced_tensor = reduced_tensor[np.ix_(mass_range, mass_range, range(n_b))]
-
-            reduced_tensor -= np.dstack([np.diag(np.diag(reduced_tensor[:, :, k]))
-                                         for k in range(n_b)])
-            reduced_tensor -= np.stack([np.diag(row) for row in reduced_tensor.sum(axis=1).T], axis=2)
-
-            reduced_tensor = reduced_tensor[np.ix_(indices, indices, range(n_b))]
-            heavy_abs      = reduced_tensor.sum(axis=1)        # (n_sp, n_b)
-
-            sz      = n_sp + 1
-            big_mat = np.zeros((sz, sz, n_b))
-            big_mat[:n_sp, :n_sp, :] = reduced_tensor
-            big_mat[:n_sp,  n_sp, :] = heavy_abs
-
-            alpha_aug = np.append(alpha[indices], 0.0)
-
-            # Per-boost sub-batches avoid a scipy batched-expm precision issue
-            # that appears when matrices with widely different norms share a batch.
-            expmatL = np.stack([
-                expm(L_arr[:, None, None] * big_mat[:, :, b])
-                for b in range(big_mat.shape[-1])
-            ])
-            result  = np.matmul(alpha_aug, expmatL)            # (n_b, n_L, sz)
-            heavy   = result[:, :, :n_sp]                      # (n_b, n_L, n_sp)
+            # heavy cascade ODE: the same (n_sp+1)-augmented exact system
+            # species_evolution_boost_range solves, so delegate to it
+            # directly (one place this math lives) instead of re-deriving
+            # it here -- also picks up method='auto'/'substep' for free.
+            P_full = self.species_evolution_boost_range(
+                L_arr, alpha=alpha, mass_range=mass_range, boost_range=boost_range,
+                true_range=true_range, method=method)
+            heavy = P_full[:, :, :n_sp]                        # (n_b, n_L, n_sp)
 
         # --- fold with the kernel ---
         # interpolate kernel to boost_range on the parent-boost axis
@@ -2352,8 +2345,137 @@ class InteractionCore():
         """
         pass
 
+    def _diagonal_fixed_tensor(self, boost_range, mass_range, guard_single=False):
+        """Interaction tensor restricted to mass_range (if given), with the
+        diagonal zeroed then recomputed as total outflow (row-sum, still
+        over the full mass_range, so outflow to absorbed species is
+        accounted for before those columns are ever dropped). Still
+        mass_range-shaped, NOT yet restricted to true_range -- the first
+        of two shared stages (see _restricted_generator), split out because
+        light_production_cumulative needs this intermediate form for an
+        extra computation (its 'leading arrival' rates) before applying
+        its own true_range restriction.
+
+        guard_single : if True, skip the diagonal zero/recompute steps
+        entirely when the mass_range-restricted tensor has exactly one
+        species (matches pdf_boost_range's and get_distribution_parameters's
+        pre-existing special case for a degenerate 1x1 tensor; every other
+        caller never had this guard, so it defaults off to preserve their
+        exact prior behavior)."""
+        reduced_tensor = self.interpolator(boost_range)
+        if mass_range is not None:
+            reduced_tensor = reduced_tensor[np.ix_(mass_range, mass_range, range(len(boost_range)))]
+
+        if not guard_single or len(reduced_tensor[:, :, 0]) > 1:
+            reduced_tensor -= np.dstack([np.diag(np.diag(reduced_tensor[:, :, k]))
+                                         for k in range(reduced_tensor.shape[-1])])
+            reduced_tensor -= np.stack([np.diag(row) for row in reduced_tensor.sum(axis=1).T], axis=2)
+        return reduced_tensor
+
+    def _restricted_generator(self, boost_range, mass_range, true_range, guard_single=False):
+        """_diagonal_fixed_tensor, further restricted to true_range (the
+        non-absorbed rows/columns) -- shared preprocessing for
+        light_cascade_production, cdf_boost_range, and pdf_boost_range
+        (light_production_cumulative uses _diagonal_fixed_tensor directly
+        instead -- see its own docstring note above; species_evolution_
+        boost_range and _photomeson_fold no longer need this at all --
+        the former IS the canonical exact-path implementation, the latter
+        now delegates to it instead of re-deriving the same tensor).
+
+        Returns (reduced_tensor, indices) where indices is
+        [mass_range.index(v) for v in true_range] -- every caller needs
+        this to index alpha/species lookups against the restricted array."""
+        reduced_tensor = self._diagonal_fixed_tensor(boost_range, mass_range, guard_single=guard_single)
+        indices = [mass_range.index(ival) for ival in true_range]
+        reduced_tensor = reduced_tensor[np.ix_(indices, indices, range(len(boost_range)))]
+        return reduced_tensor, indices
+
+    @staticmethod
+    def _expm_per_boost(M, L):
+        """expm(L * M[:, :, b]) for every boost bin b, stacked into one
+        (n_b, ...) array. Batched per boost bin rather than in one call
+        across all of them -- avoids a scipy batched-expm precision issue
+        that appears when different boost bins' matrices have widely
+        different norms. Shared by _photomeson_fold [no longer -- see its
+        own docstring], light_cascade_production, light_production_
+        cumulative, cdf_boost_range, pdf_boost_range.
+
+        MEMORY: for array L this returns and holds the FULL stack, shape
+        (n_b, n_L, sz, sz) where sz is the matrix's own side (n_true+1 for
+        cdf/pdf_boost_range's bare tensor, n_true+7 for
+        light_cascade_production's heavy+light block, n_true+25 for
+        light_production_cumulative's heavy+light+3-tally block) -- i.e.
+        n_b * n_L * sz^2 * 8 bytes. At a few hundred species and a
+        few-dozen-point L this is negligible; at the package's own
+        ultra-heavy end (n_true ~ 1000+, as in
+        Attenuation_Factor_UltraHeavy.ipynb's A<=208 network) this is the
+        SAME class of blowup species_evolution_boost_range's exact path
+        used to have before it was changed (this session) to reduce with
+        alpha one boost at a time instead of materializing this stack --
+        that fix was NOT propagated to these four callers. None of them
+        are exercised at that scale by any notebook in this repo today,
+        so nothing is currently broken, but a caller reaching for
+        light_cascade_production/light_production_cumulative/
+        cdf_boost_range/pdf_boost_range at a comparable species count and
+        L-grid density should expect the same wall in the same place, not
+        yet fixed here."""
+        n_b = M.shape[-1]
+        if type(L) is np.ndarray:
+            return np.stack([expm(L[:, None, None] * M[:, :, b]) for b in range(n_b)])
+        return expm(np.moveaxis(M * L, -1, 0))
+
+    @staticmethod
+    def _stiffness_rate(reduced_tensor):
+        """Peak interaction rate [1/Mpc] driving both the exact path's
+        expm scaling-and-squaring cost and the substep path's step count
+        -- restricted to boost bins whose rate isn't negligible relative
+        to the peak (far-tail boost bins can carry spuriously huge
+        tabulated/extrapolated rates, per reprocessed_nucleons)."""
+        n_true, _, n_b = reduced_tensor.shape
+        diag_rate = np.stack([-np.diag(reduced_tensor[:, :, b]) for b in range(n_b)], axis=1)
+        rate_per_boost = diag_rate.max(axis=0) if n_true else np.zeros(n_b)
+        rate_max = rate_per_boost.max() if n_b else 0.0
+        return rate_per_boost[rate_per_boost > 1e-6 * rate_max].max() if rate_max > 0 else 0.0
+
+    @staticmethod
+    def _exact_is_cheaper(n_true, L, lam_act):
+        """Cost-proxy comparison used by method='auto' for a zero-drift
+        propagation: direct per-distance expm (the 'exact' path) vs. a
+        chained-substep evaluation (the 'substep' path), both solving the
+        identical equation. expm's cost is dominated by ~log2(L_max*rate)
+        scaling-and-squaring doublings, each an O(n_true^3) matrix-matrix
+        multiply, paid once per requested distance; the substep path's
+        cost is dominated by its step count (sized to resolve every
+        requested checkpoint under resolve_checkpoints), each a cheap
+        O(n_true^2) matrix-vector multiply. Back propagation (any
+        negative L) always forces exact -- the substep path has no such
+        implementation."""
+        L_arr = np.atleast_1d(np.asarray(L, dtype=float))
+        if L_arr.size == 0 or np.any(L_arr < 0):
+            return True
+        L_max = float(np.max(L_arr))
+        if L_max <= 0.0 or lam_act <= 0.0:
+            return True
+
+        n_L = L_arr.size
+        s_max = max(1, int(np.ceil(np.log2(max(L_max * lam_act, 1.0)))))
+        cost_exact = n_L * s_max * n_true
+
+        m_stiff = max(1, int(np.ceil(L_max * lam_act / 60.0)))
+        if n_L > 1:
+            gaps = np.diff(np.sort(L_arr))
+            gaps = gaps[gaps > 0]
+            min_gap = gaps.min() if gaps.size else L_max
+            m_res = max(1, int(np.ceil(L_max / min_gap)))
+        else:
+            m_res = 1
+        m_total = max(m_stiff, m_res)
+
+        return cost_exact <= m_total
+
     def species_evolution_boost_range(self, L, alpha=None, mass_range=None, boost_range=None,
-                                      true_range=None, coherent_loss=None, energy_loss=None):
+                                      true_range=None, coherent_loss=None, energy_loss=None,
+                                      resolve_checkpoints=None, method=None):
         """Returns the probabilities of each species at positions L for a range of boosts.
         If the distances are negative and in decreasing order, it's equivalent to back propagation.
 
@@ -2380,17 +2502,77 @@ class InteractionCore():
                      conservative cloud-in-cell (shift_log_boost's array
                      branch) -- the dispersive-inhomogeneity treatment of
                      Sect. 3.2.
+        resolve_checkpoints : only meaningful for a sub-stepped evaluation
+                     (coherent_loss/energy_loss active, or method='auto'/
+                     'substep' choosing the sub-stepped path for a
+                     zero-drift case -- see method below). The sub-step
+                     count is normally chosen from tensor/rate stiffness
+                     alone, independent of how many or how closely spaced
+                     the requested L values are -- fine when only a
+                     handful of checkpoints are requested, but it means
+                     closely-spaced checkpoints can round onto the same
+                     sub-step position (a quantization artifact -- e.g.
+                     visible as a staircase if the returned values are
+                     read off as a smooth function of L). True
+                     additionally floors the sub-step spacing at the
+                     tightest gap between requested checkpoints, so every
+                     one resolves to its own position, at a modest cost
+                     increase. Default None: resolves to True when the
+                     sub-stepped path is standing in for an exact,
+                     zero-drift evaluation (accuracy matters, since
+                     nothing else asked for approximate output), and to
+                     False -- the original, cheaper behavior -- when a
+                     genuine coherent_loss/energy_loss was requested.
+        method : None (default), 'exact', 'substep', or 'auto'. Only
+                     meaningful when coherent_loss/energy_loss represent
+                     no real continuous loss (coherent_loss in (None, 0.0)
+                     and energy_loss is None) -- with an actual loss rate
+                     active, the sub-stepped path is the only option
+                     regardless of this argument (raises ValueError only
+                     if method='exact' is explicitly requested there; no
+                     closed form exists for L-dependent drift -- the
+                     default, None, never raises this, it simply defers to
+                     the sub-stepped path whenever real drift is active,
+                     same as before this argument existed). For the
+                     zero-drift case, both the direct 'exact' expm-per-distance
+                     evaluation below and a chained-substep evaluation
+                     (see _species_evolution_with_drift) solve the
+                     identical equation -- they differ only in cost, which
+                     can favor either one depending on species count,
+                     L_max, tensor stiffness, and how many distances are
+                     requested (see _exact_is_cheaper): 'exact' is cheap
+                     for small-to-moderate species counts and L_max*rate
+                     products, but its cost grows with the number of
+                     scipy expm scaling-and-squaring doublings needed, which
+                     can make it dramatically slower than 'substep' at
+                     large species counts evaluated over a wide distance
+                     range (measured directly: ~20x for a 1184-species
+                     network over 200 Mpc). None resolves to 'exact' in
+                     the zero-drift case, so that every OTHER method built
+                     on top of this one -- several duplicate its exact-path
+                     math inline rather than calling it (_photomeson_fold,
+                     light_cascade_production, light_production_cumulative)
+                     -- keeps agreeing with it to machine precision by
+                     default; pass method='auto' explicitly to let this
+                     call estimate both costs and pick the cheaper one (or
+                     'substep' to force it), accepting that the result will
+                     then only agree with those other methods' internal
+                     computations to substep-level precision, not machine
+                     precision (falls back to 'exact' for back propagation
+                     either way, which 'substep' cannot do).
 
-        When either coherent_loss or energy_loss is given, L must be a
-        non-negative scalar or a non-negative, ascending array (forward
-        propagation only -- back propagation with active continuous losses
-        is not implemented), and the method switches from the single exact
-        expm per boost bin above to a chain of sub-steps (interaction, then
-        drift) between L=0 and each requested position, with the sub-step
-        count chosen automatically from the stiffness of the tensor and the
-        supplied rates (the same convention as reprocessed_nucleons: every
-        rate * sub-step stays bounded). With both None (the default), this
-        method is unchanged and bit-identical to before.
+        When either coherent_loss or energy_loss is a genuine nonzero
+        rate, L must be a non-negative scalar or a non-negative, ascending
+        array (forward propagation only -- back propagation with active
+        continuous losses is not implemented), and the method switches
+        from the single exact expm per boost bin above to a chain of
+        sub-steps (interaction, then drift) between L=0 and each requested
+        position, with the sub-step count chosen automatically from the
+        stiffness of the tensor and the supplied rates (the same
+        convention as reprocessed_nucleons: every rate * sub-step stays
+        bounded). With coherent_loss=None, energy_loss=None, and
+        method='exact' (or 'auto' resolving to 'exact'), this path is
+        unchanged and bit-identical to before this argument existed.
 
         Injection with losses active: without drift, boost bins never mix,
         so broadcasting one species-only alpha to every bin and reading off
@@ -2425,33 +2607,92 @@ class InteractionCore():
         indices = [mass_range.index(ival) for ival in true_range]
         reduced_tensor = reduced_tensor[np.ix_(indices, indices, range(len(boost_range)))]
 
-        if coherent_loss is None and energy_loss is None:
+        if method is not None and method not in ('auto', 'exact', 'substep'):
+            raise ValueError("method must be 'auto', 'exact', 'substep', or None")
+
+        zero_drift = (coherent_loss is None or coherent_loss == 0.0) and energy_loss is None
+
+        if method == 'exact' and not zero_drift:
+            # only trips on an EXPLICIT method='exact' -- the default
+            # (None) never raises this; it just defers to the sub-stepped
+            # path below whenever real drift is active, exactly as before
+            # this argument existed.
+            raise ValueError("method='exact' has no closed form for an "
+                             "active coherent_loss/energy_loss; use "
+                             "method='substep' or 'auto', or leave method "
+                             "unset (defaults to the sub-stepped path when "
+                             "drift is active)")
+
+        if not zero_drift:
+            use_exact = False           # only the sub-stepped path can apply real drift
+        elif method is None or method == 'exact':
+            use_exact = True            # unset default (and explicit 'exact'): always exact
+        elif method == 'substep':
+            use_exact = False
+        else:                            # method == 'auto'
+            lam_act = self._stiffness_rate(reduced_tensor)
+            use_exact = self._exact_is_cheaper(reduced_tensor.shape[0], L, lam_act)
+
+        if use_exact:
             _, c, d = reduced_tensor.shape
             t_vs_boost = np.atleast_3d(reduced_tensor.sum(axis=1))
             bigLambda = np.append(np.append(reduced_tensor, np.swapaxes(t_vs_boost, 1, 2), axis=1), np.zeros((1, c+1, d)), axis=0)
 
-            if type(L) is np.ndarray:
-                # Per-boost sub-batches avoid a scipy batched-expm precision issue
-                # that appears when matrices with widely different norms share a batch.
-                expmatL = np.stack([
-                    expm(L[:, None, None] * bigLambda[:, :, b])
-                    for b in range(bigLambda.shape[-1])
-                ])
+            alpha_arr = np.asarray(alpha, dtype=float)
+            if alpha_arr.ndim == 1:
+                # single composition, broadcast identically to every boost
+                # bin -- exact since bins never mix without drift, so this
+                # is equivalent to solving each bin's injection in isolation.
+                vec_full = np.append(alpha_arr[indices], 0.0)          # (c+1,)
             else:
-                expmatL = expm(np.moveaxis(bigLambda * L, -1, 0))
+                # boost-resolved composition: row b must be propagated with
+                # boost b's own transfer matrix, not a single shared vector
+                # -- indexing alpha_arr's boost axis with species indices
+                # (what a naive np.matmul would do here) is wrong.
+                vec_full = np.zeros((alpha_arr.shape[0], c + 1))
+                vec_full[:, :c] = alpha_arr[:, indices]                # (n_boost, c+1)
 
-            total = np.matmul(np.append(alpha[indices], 0), expmatL)
+            is_1d = alpha_arr.ndim == 1
+            array_L = type(L) is np.ndarray
+            # Reduce with alpha ONE BOOST AT A TIME: stacking every boost's
+            # own (n_L, c+1, c+1) exponential before reducing (the previous
+            # form of this code) peaks at n_boost times a single boost's
+            # array -- for a large species count (e.g. this package's own
+            # A<=208 ultra-heavy network, c ~ 1180) and a several-dozen-point
+            # distance grid, that stack alone is tens of GB even though any
+            # one boost's batch is well under 1 GB. Per-boost sub-batching
+            # over L also avoids a scipy batched-expm precision issue that
+            # appears when matrices with widely different norms (as
+            # different boost bins routinely have) share one batch.
+            out_shape = (d, len(L), c + 1) if array_L else (d, c + 1)
+            total = np.empty(out_shape)
+            for b in range(d):
+                Eb = expm(L[:, None, None] * bigLambda[:, :, b]) if array_L \
+                    else expm(bigLambda[:, :, b] * L)
+                vb = vec_full if is_1d else vec_full[b]
+                total[b] = vb @ Eb
 
             return total
+
+        # sub-stepped path: either a genuine coherent_loss/energy_loss was
+        # requested, or method chose (explicitly or via 'auto''s cost
+        # estimate) to evaluate a zero-drift propagation this way instead.
+        # Default resolve_checkpoints accordingly: standing in for an
+        # exact evaluation should actually resolve every checkpoint (True);
+        # a real drift request keeps the original, cheaper default (False).
+        if resolve_checkpoints is None:
+            resolve_checkpoints = zero_drift
 
         alpha_arr = np.asarray(alpha, dtype=float)
         alpha_idx = alpha_arr[indices] if alpha_arr.ndim == 1 else alpha_arr[:, indices]
         return self._species_evolution_with_drift(
             reduced_tensor, boost_range, L, alpha_idx,
-            coherent_loss=coherent_loss, energy_loss=energy_loss)
+            coherent_loss=coherent_loss, energy_loss=energy_loss,
+            resolve_checkpoints=resolve_checkpoints)
 
     def _species_evolution_with_drift(self, reduced_tensor, boost_range, L, alpha0,
-                                      coherent_loss=None, energy_loss=None):
+                                      coherent_loss=None, energy_loss=None,
+                                      resolve_checkpoints=False):
         """Substepped companion to species_evolution_boost_range for
         coherent_loss / energy_loss != None -- see its docstring.
 
@@ -2481,7 +2722,10 @@ class InteractionCore():
         a log-spaced checkpoint grid, essentially every interval has a
         distinct spacing, so a per-interval expm cache never hits and the
         (n_true+1)^2 exponentials get recomputed hundreds of times over --
-        catastrophic at n_true ~ 500.
+        catastrophic at n_true ~ 500. `resolve_checkpoints=True` is a
+        middle ground: still ONE grid, ONE precomputed expm set, just sized
+        finer (a resolution floor on top of the stiffness floor) so checkpoints
+        don't round onto shared positions -- not a re-derivation per interval.
         """
         n_true, _, n_b = reduced_tensor.shape
         dlnb = np.log(boost_range[1] / boost_range[0])
@@ -2533,7 +2777,20 @@ class InteractionCore():
             if e_loss is not None:
                 lam_act = max(lam_act, np.abs(e_loss).max() / dlnb)
 
-            m_total = max(1, int(np.ceil(L_max * lam_act / 60.0))) if lam_act > 0 else 1
+            m_stiff = max(1, int(np.ceil(L_max * lam_act / 60.0))) if lam_act > 0 else 1
+            if resolve_checkpoints and n_L > 1:
+                # resolution floor: also require the sub-step spacing to be
+                # no coarser than the tightest gap between requested
+                # checkpoints, so no two round onto the same position. This
+                # is independent of the stiffness floor above -- take the
+                # finer (larger m_total) of the two.
+                gaps = np.diff(L_arr)
+                gaps = gaps[gaps > 0]
+                min_gap = gaps.min() if gaps.size else L_max
+                m_res = max(1, int(np.ceil(L_max / min_gap)))
+                m_total = max(m_stiff, m_res)
+            else:
+                m_total = m_stiff
             dl = L_max / m_total
 
             E_steps = np.empty((n_b, n_true + 1, n_true + 1))
@@ -2730,23 +2987,20 @@ class InteractionCore():
         mass_range : species indices to include. Must be provided together with true_range.
         boost_range : boost values to evaluate. Full grid by default.
         true_range : subset of mass_range that are not absorption states.
+
+        MEMORY: solved via _expm_per_boost on an (n_true+7)x(n_true+7) block
+        (heavy + 6 light species + absorbed), full stack held for array L --
+        see _expm_per_boost's own docstring for the scaling this implies at
+        large n_true.
         """
         if boost_range is None:
             boost_range = self.boosts
 
-        reduced_tensor = self.interpolator(boost_range)   # (n_sp_full, n_sp_full, n_b)
         prod_mat = self.interpyields(boost_range)          # (6, n_sp_full, n_sp_full, n_b)
-
         if mass_range is not None:
-            reduced_tensor = reduced_tensor[np.ix_(mass_range, mass_range, range(len(boost_range)))]
             prod_mat = prod_mat[np.ix_(range(prod_mat.shape[0]), mass_range, mass_range, range(len(boost_range)))]
 
-        # make diagonal zero, then recompute it to absorb outflow to absorbed species
-        reduced_tensor -= np.dstack([np.diag(np.diag(reduced_tensor[:, :, k])) for k in range(reduced_tensor.shape[-1])])
-        reduced_tensor -= np.stack([np.diag(row) for row in reduced_tensor.sum(axis=1).T], axis=2)
-
-        # restrict to true_range (non-absorbed) species
-        indices = [mass_range.index(ival) for ival in true_range]
+        reduced_tensor, indices = self._restricted_generator(boost_range, mass_range, true_range)
 
         n_sp = len(indices)
         n_b  = len(boost_range)
@@ -2758,7 +3012,6 @@ class InteractionCore():
         Y_full  = prod_mat[np.ix_(range(6), indices, range(prod_mat.shape[2]), range(n_b))].sum(axis=2)
         Y_block = np.moveaxis(Y_full, 0, 1)                  # (n_sp, 6, n_b)
 
-        reduced_tensor = reduced_tensor[np.ix_(indices, indices, range(n_b))]
         prod_mat = prod_mat[np.ix_(range(6), indices, indices, range(n_b))]
 
         # Light particle evolution matrix: radioactive decay + photodisintegration
@@ -2780,21 +3033,14 @@ class InteractionCore():
         # Initial state: heavy injection, no light particles, no absorbed
         alpha_aug = np.append(np.append(alpha[indices], np.zeros(6)), 0.0)
 
+        expmatL = self._expm_per_boost(big_mat, L)
         if type(L) is np.ndarray:
-            # Per-boost sub-batches avoid a scipy batched-expm precision issue
-            # that appears when matrices with widely different norms share a batch.
-            expmatL = np.stack([
-                expm(L[:, None, None] * big_mat[:, :, b])
-                for b in range(big_mat.shape[-1])
-            ])
             result  = np.matmul(alpha_aug, expmatL)          # (n_b, n_L, sz)
             light   = result[:, :, n_sp:n_sp+6]             # (n_b, n_L, 6)
-            return np.moveaxis(light, -1, 0)                 # (6, n_b, n_L)
         else:
-            expmatL = expm(np.moveaxis(big_mat * L, -1, 0))
             result  = np.matmul(alpha_aug, expmatL)          # (n_b, sz)
             light   = result[:, n_sp:n_sp+6]                 # (n_b, 6)
-            return np.moveaxis(light, -1, 0)                 # (6, n_b)
+        return np.moveaxis(light, -1, 0)                     # (6, n_b, n_L) or (6, n_b)
 
     def light_production_cumulative(self, L, alpha=None, mass_range=None, boost_range=None,
                                     true_range=None, channel='total'):
@@ -2829,6 +3075,13 @@ class InteractionCore():
         boost_range : boost values to evaluate. Full grid by default.
         true_range : subset of mass_range that are not absorption states.
         channel : 'emission', 'conversion', 'leading' or 'total' (default).
+
+        MEMORY: the largest of this file's augmented systems -- solved via
+        _expm_per_boost on an (n_true+25)x(n_true+25) block (heavy + 6
+        light + 3x6 accumulator tallies + absorbed), full stack held for
+        array L. Hits the same large-n_true memory wall _expm_per_boost's
+        docstring describes, at a smaller n_true than any other method here
+        (its block is the biggest of the four sharing that helper).
         """
         if channel not in ('emission', 'conversion', 'leading', 'total'):
             raise ValueError(f"channel must be 'emission', 'conversion', 'leading' "
@@ -2836,16 +3089,13 @@ class InteractionCore():
         if boost_range is None:
             boost_range = self.boosts
 
-        reduced_tensor = self.interpolator(boost_range)   # (n_sp_full, n_sp_full, n_b)
         prod_mat = self.interpyields(boost_range)          # (6, n_sp_full, n_sp_full, n_b)
-
         if mass_range is not None:
-            reduced_tensor = reduced_tensor[np.ix_(mass_range, mass_range, range(len(boost_range)))]
             prod_mat = prod_mat[np.ix_(range(prod_mat.shape[0]), mass_range, mass_range, range(len(boost_range)))]
 
-        # make diagonal zero, then recompute it to absorb outflow to absorbed species
-        reduced_tensor -= np.dstack([np.diag(np.diag(reduced_tensor[:, :, k])) for k in range(reduced_tensor.shape[-1])])
-        reduced_tensor -= np.stack([np.diag(row) for row in reduced_tensor.sum(axis=1).T], axis=2)
+        # mass_range-shaped, diagonal-fixed, but not yet true_range-restricted --
+        # the lead_block computation below needs it in this intermediate form.
+        reduced_tensor = self._diagonal_fixed_tensor(boost_range, mass_range)
 
         indices = [mass_range.index(ival) for ival in true_range]
         n_sp = len(indices)
@@ -2896,16 +3146,10 @@ class InteractionCore():
 
         alpha_aug = np.append(alpha[indices], np.zeros(25))
 
+        expmatL = self._expm_per_boost(big_mat, L)
         if type(L) is np.ndarray:
-            # Per-boost sub-batches avoid a scipy batched-expm precision issue
-            # that appears when matrices with widely different norms share a batch.
-            expmatL = np.stack([
-                expm(L[:, None, None] * big_mat[:, :, b])
-                for b in range(big_mat.shape[-1])
-            ])
             result  = np.matmul(alpha_aug, expmatL)          # (n_b, n_L, sz)
         else:
-            expmatL = expm(np.moveaxis(big_mat * L, -1, 0))
             result  = np.matmul(alpha_aug, expmatL)          # (n_b, sz)
 
         if channel == 'total':
@@ -2926,33 +3170,28 @@ class InteractionCore():
         alpha : injection vector (sum of entries must equal one).
         mass_range : species to be included in the matrix. If None, all species are included.
         boost_range : A two element variable with the limits minimum and maximum. The whole range by default (None).
+
+        MEMORY: solved via _expm_per_boost on the bare (n_true)x(n_true)
+        tensor (no absorption augmentation, the smallest of this file's
+        systems), full stack held for array L -- see _expm_per_boost's own
+        docstring. KNOWN BUG, not fixed here: the scalar-L branch below
+        (the `else` of `if alpha.shape == ones.shape`) reduces expmatL to a
+        2-D result but the einsum pattern used is the one for array L's 3-D
+        result -- raises a shape ValueError for a 1-D alpha and scalar L.
+        Pre-existing (confirmed via git history the einsum branching itself
+        was never touched by this session's refactor); never exercised by
+        any notebook or test in this repo, which only ever call this with
+        array L.
         """
 
         if boost_range is None:
-            boost_range = self.boosts       
+            boost_range = self.boosts
 
-        reduced_tensor = self.interpolator(boost_range)
-
-        if mass_range is not None:
-            reduced_tensor = reduced_tensor[np.ix_(mass_range, mass_range, range(len(boost_range)))]
-        
-        # make diagonal zero
-        reduced_tensor -= np.dstack([np.diag(np.diag(reduced_tensor[:, :, k])) for k in range(reduced_tensor.shape[-1])]) 
-        # recompute diagonal including absorption states
-        reduced_tensor -= np.stack([np.diag(row) for row in reduced_tensor.sum(axis=1).T], axis=2)
-        # reduce excluding absorption states
-        indices = [mass_range.index(ival) for ival in true_range]
-        reduced_tensor = reduced_tensor[np.ix_(indices, indices, range(len(boost_range)))]
+        reduced_tensor, indices = self._restricted_generator(boost_range, mass_range, true_range)
 
         ones = np.ones_like(-np.moveaxis(reduced_tensor, -1, 0).dot(np.ones_like(alpha[indices])))
 
-        if type(L) is np.ndarray:
-            expmatL = np.stack([
-                expm(L[:, None, None] * reduced_tensor[:, :, b])
-                for b in range(reduced_tensor.shape[-1])
-            ])
-        else:
-            expmatL = expm(np.moveaxis(reduced_tensor * L, -1, 0))
+        expmatL = self._expm_per_boost(reduced_tensor, L)
 
         if alpha.shape == ones.shape:
             total = 1 - np.matmul(np.matmul(alpha[indices], expmatL), ones)
@@ -2972,38 +3211,24 @@ class InteractionCore():
         omega : ending or production vector. By default is set to omega=-Te
         true_range : range of species not part of the absorption range (excluding indices for species that are part of the absorption state)
                      if none is given, the last species in mass_range is considered the absorption state.
-        boost_range : A two element variable with the limits minimum and maximum. The whole range by default (None). 
+        boost_range : A two element variable with the limits minimum and maximum. The whole range by default (None).
+
+        MEMORY: same profile as cdf_boost_range (bare (n_true)x(n_true)
+        tensor, full per-boost stack for array L) -- see _expm_per_boost.
+        Shares the same pre-existing, unfixed scalar-L/1-D-alpha shape bug
+        described there too.
         """
 
         if boost_range is None:
-            boost_range = self.boosts       
+            boost_range = self.boosts
 
-        reduced_tensor = self.interpolator(boost_range)
-        
-        if mass_range is not None:
-            reduced_tensor = reduced_tensor[np.ix_(mass_range, mass_range, range(len(boost_range)))]
-
-        # if is a matrix
-        if len(reduced_tensor[:, :, 0]) > 1:
-            # make diagonal zero 
-            reduced_tensor -= np.dstack([np.diag(np.diag(reduced_tensor[:, :, k])) for k in range(reduced_tensor.shape[-1])]) 
-            # recompute diagonal including absorption states
-            reduced_tensor -= np.stack([np.diag(row) for row in reduced_tensor.sum(axis=1).T], axis=2)
-
-        # reduce excluding absorption states
-        indices = [mass_range.index(ival) for ival in true_range]
-        reduced_tensor = reduced_tensor[np.ix_(indices, indices, range(len(boost_range)))]
+        reduced_tensor, indices = self._restricted_generator(
+            boost_range, mass_range, true_range, guard_single=True)
 
         if omega is None:
             omega = - np.moveaxis(reduced_tensor, -1, 0).dot(np.ones_like(alpha[indices]))
 
-        if type(L) is np.ndarray:
-            expmatL = np.stack([
-                expm(L[:, None, None] * reduced_tensor[:, :, b])
-                for b in range(reduced_tensor.shape[-1])
-            ])
-        else:
-            expmatL = expm(np.moveaxis(reduced_tensor * L, -1, 0))
+        expmatL = self._expm_per_boost(reduced_tensor, L)
 
         if alpha.shape == omega.shape:
             total = np.matmul(np.matmul(alpha[indices], expmatL), omega)
