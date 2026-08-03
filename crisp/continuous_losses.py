@@ -1,3 +1,31 @@
+"""Continuous energy-loss (CEL) rates: Bethe-Heitler pair production and
+the redshift/boost evolution built on it.
+
+Where the rest of the package treats photodisintegration and photomeson
+interactions as discrete, boost-changing events handled by
+`InteractionCore`'s transport tensors, pair production on the photon
+field is smooth enough on cosmic-ray timescales to be modeled as a
+continuous drag on the Lorentz factor instead. `Bpp_generic` computes
+that drag, B = -(1/gamma) dgamma/dt in Mpc^-1, for an arbitrary target
+photon field; `Bpp_Blumenthal` specializes it to the CMB with a
+precomputed lookup (much faster, since the CMB shape never changes);
+`Bpp_crpropa` reads a CRPropa-exported table for a cross-check.
+
+The `dlngdz_*` / `dlngdl_tot_proton` functions combine that pair-production
+drag with the adiabatic (Hubble) term into a single d(ln gamma)/dz or
+d(ln gamma)/dl derivative, which `g_in_z` integrates to trace how a
+particle's boost falls off as it propagates from injection redshift z0
+down to z ~ 0. `Lprime_trapz` and the `thickness`/`pthickness` family
+compute the corresponding comoving path length (interaction depth) as a
+function of redshift; `extragalactic.py` pins its own effective
+thickness against `Lprime_trapz` for the CMB's coherent-inhomogeneity
+treatment (see that module's docstring), and `source_models.py`'s
+`loss_rates(include_pair=True)` calls `Bpp_generic` for the
+pair-production rate on a source's own photon field.
+
+Most users will not call into this module directly.
+"""
+
 import numpy as np
 from scipy.integrate import cumulative_trapezoid, trapezoid
 from astropy import units as u
