@@ -1,3 +1,45 @@
+"""Canonical serial-cascade benchmarks and general matrix-exponential
+disintegration distributions, in the terms of the methods paper (Sect. 2:
+regular serial cascades, irregular serial cascades, and the general
+concurrent-cascade matrix-exponential form).
+
+A regular serial cascade (RSeC) is the paper's idealized reference case:
+each interaction produces exactly one daughter (a serial, not branching,
+chain), and the interaction rate scales exactly with mass,
+lambda_A = A * lambda_1. Under that assumption the distance-until-
+absorption distribution for losing k nucleons has the closed binomial
+form of the paper's Eq. 7. `transition_matrix` builds the corresponding
+tridiagonal RSeC rate matrix directly (state l has outgoing rate
+(A - l) * lam); `transition_matrix_gaussian_variation` perturbs those
+rates with a log-Gaussian factor to generate irregular serial cascade
+(ISeC) instances, quantifying how much a realistic (non-regular) cascade
+deviates from the canonical benchmark.
+
+`pdf`, `cdf`, and `momenta` evaluate any such matrix-exponential
+distribution (the paper's general concurrent-cascade form, phi exp(Lambda
+L) ...): given a transition matrix and an injection vector, they are the
+generic machinery both the canonical RSeC/ISeC matrices above and a full,
+realistic disintegration network share. `ME` wraps a (matrix, injection,
+ejection) triple as a `scipy.stats.rv_continuous` for convenient
+sampling/fitting. `complete_matrix` builds that full, realistic transition
+matrix from an actual cross-section-derived rate and branching table
+(one-nucleon-loss transitions with the true, non-regular branchings),
+and `create_distribution` / `create_distribution_crpropa` wrap it into an
+`ME` distribution, i.e. the realistic counterpart to compare against the
+canonical RSeC/ISeC benchmark. `reduce_matrix` collapses such a matrix
+down to its equivalent mass-only serial chain (Horvath and Telek's
+theorem). `prepare_species_list` (also imported directly by `core.py`)
+enumerates the species reachable from an injected nucleus by losing up
+to `nloss` nucleons, and `get_injection_parameters` builds the matching
+injection vector.
+
+`InteractionCore.cdf_boost_range`/`pdf_boost_range` solve the same kind
+of distance-until-absorption problem directly from the full interaction
+tensor, for arbitrary (non-serial) cascades; this module's closed-form
+RSeC/ISeC solutions remain the paper's benchmark for how close a
+realistic cross-section model comes to the regular-cascade idealization.
+"""
+
 import numpy as np
 from scipy.linalg import expm
 from scipy.stats import rv_continuous
@@ -15,14 +57,39 @@ def recurs_spec(Z, A, nloss=1):
 def prepare_species_list(nuclei, Zinj=26, Ainj=56, nloss=2, mass_range=False, random_chain=False):
     """Returns the list of species included in all
     possible disintegration chains that begin at species
-    (Ainj, Zinj) and end at any species with a number of 
+    (Ainj, Zinj) and end at any species with a number of
     nucleons less given by nloss.
 
-    When mass_range is True, all species with mass from Ainj up to and 
-    including Ainj-k are included.
+    When mass_range is True, all species with mass from Ainj up to and
+    including Ainj-nloss are included, regardless of whether they lie on
+    an actual disintegration chain.
 
-    When random_chain is true, a random sequence of decreasing mass nuclei
-    is returned, where they  
+    When random_chain is True, a single random decreasing-mass chain is
+    returned instead of every reachable species: starting at (Zinj, Ainj),
+    each step loses one proton or one neutron (chosen at random, subject
+    to landing on a nuclide present in `nuclei`) until `nloss` nucleons
+    have been shed.
+
+    Parameters
+    ----------
+    nuclei : list of tuple of int
+        The (Z, A) nuclides available to build chains from (species
+        outside this list are never selected).
+    Zinj, Ainj : int, optional
+        Charge and mass number of the injected nucleus. Default (26, 56).
+    nloss : int, optional
+        Maximum number of nucleons lost along a chain. Default 2.
+    mass_range : bool, optional
+        Return the flat mass window described above instead of walking
+        the disintegration chains. Default False.
+    random_chain : bool, optional
+        Return one random chain instead of every reachable species.
+        Default False.
+
+    Returns
+    -------
+    list of tuple of int
+        The selected (Z, A) species.
     """
     if random_chain:
         selected = [(Zinj, Ainj)]
@@ -53,9 +120,27 @@ def complete_matrix(nuclei, all_rates, all_branchings, species_list=None, idx=No
 
     idx denotes the index of boost to be used.
 
-    Arguments:
-    ---------
-    nuclei : (list) nuclei to be included in the disintegration matrix, specified as (Z, A)
+    Parameters
+    ----------
+    nuclei : list of tuple of int
+        Full list of (Z, A) nuclides that `all_rates`/`all_branchings`
+        are indexed against (CRPropa-style tables).
+    all_rates : array_like
+        Per-nuclide interaction rate on the boost grid, indexed like
+        `nuclei`.
+    all_branchings : list
+        Per-nuclide list of branchings to daughters (He4, He3, H3, H2, p,
+        n, and others), indexed like `nuclei`.
+    species_list : list of tuple of int, optional
+        The (Z, A) species to include as matrix states; default the
+        result of `prepare_species_list()` with its own defaults.
+    idx : int, optional
+        Index into the boost grid to build the matrix at. Default 0.
+
+    Returns
+    -------
+    ndarray
+        The (len(species_list), len(species_list)) transition matrix.
     """
     if species_list is None:
         species_list = prepare_species_list()
@@ -95,11 +180,35 @@ def complete_matrix(nuclei, all_rates, all_branchings, species_list=None, idx=No
     return Tmatrix
 
 def create_distribution(nuclei, all_rates, all_branchings, Zinj=None, Ainj=None, nloss=None, idx=None):
-    """Return pdf for starting a given species and lose a given number of nucleons
+    """Return the matrix-exponential distance-until-absorption
+    distribution for a nucleus (Zinj, Ainj) losing up to nloss nucleons,
+    built from `complete_matrix`.
 
-    Arguments:
-    ---------
-    nuclei : (list) nuclei to be included in the disintegration matrix, specified as (Z, A)
+    Parameters
+    ----------
+    nuclei : list of tuple of int
+        Full list of (Z, A) nuclides that `all_rates`/`all_branchings`
+        are indexed against (CRPropa-style tables).
+    all_rates : array_like
+        Per-nuclide interaction rate on the boost grid, indexed like
+        `nuclei`.
+    all_branchings : list
+        Per-nuclide list of branchings to daughters, indexed like
+        `nuclei`; see `complete_matrix`.
+    Zinj, Ainj : int
+        Charge and mass number of the injected nucleus.
+    nloss : int
+        Number of nucleons lost that defines absorption (species with
+        A = Ainj - nloss are the absorbing states).
+    idx : int, optional
+        Index into the boost grid to build the matrix at. Default 0.
+
+    Returns
+    -------
+    thedist : ME
+        The matrix-exponential distribution (a `scipy.stats.rv_continuous`).
+    species : list of tuple of int
+        The (Z, A) species in `thedist.matrix`'s state order.
     """
     species = prepare_species_list(nuclei, Zinj, Ainj, nloss)
     Tmatrix = complete_matrix(nuclei, all_rates, all_branchings, species, idx=idx)
@@ -118,11 +227,39 @@ def create_distribution(nuclei, all_rates, all_branchings, Zinj=None, Ainj=None,
     return thedist, species
 
 def create_distribution_crpropa(nuclei, boost, all_rates, all_branchings, Zinj=None, Ainj=None, nloss=None, idx=None):
-    """Return pdf for starting a given species and lose a given number of nucleons. Adapted for crpropa data.
+    """Return the matrix-exponential distance-until-absorption
+    distribution for a nucleus (Zinj, Ainj) losing up to nloss nucleons.
+    Same construction as `create_distribution`, kept as a separate entry
+    point for CRPropa-sourced rate/branching tables.
 
-    Arguments:
-    ---------
-    nuclei : (list) nuclei to be included in the disintegration matrix, specified as (Z, A)
+    Parameters
+    ----------
+    nuclei : list of tuple of int
+        Full list of (Z, A) nuclides that `all_rates`/`all_branchings`
+        are indexed against.
+    boost : unused
+        Accepted for signature compatibility with CRPropa-style callers;
+        not read by this function (`idx` selects the boost row instead).
+    all_rates : array_like
+        Per-nuclide interaction rate on the boost grid, indexed like
+        `nuclei`.
+    all_branchings : list
+        Per-nuclide list of branchings to daughters, indexed like
+        `nuclei`; see `complete_matrix`.
+    Zinj, Ainj : int
+        Charge and mass number of the injected nucleus.
+    nloss : int
+        Number of nucleons lost that defines absorption (species with
+        A = Ainj - nloss are the absorbing states).
+    idx : int, optional
+        Index into the boost grid to build the matrix at. Default 0.
+
+    Returns
+    -------
+    thedist : ME
+        The matrix-exponential distribution (a `scipy.stats.rv_continuous`).
+    species : list of tuple of int
+        The (Z, A) species in `thedist.matrix`'s state order.
     """
     species = prepare_species_list(nuclei, Zinj, Ainj, nloss)
     Tmatrix = complete_matrix(nuclei, all_rates, all_branchings, species, idx=idx)
