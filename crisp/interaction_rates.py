@@ -1,3 +1,30 @@
+"""Interaction rate integrals: turning a cross section and a photon field
+into a rate in 1/s or 1/Mpc.
+
+`InteractionCore` calls into this module to build its interaction
+tensors; the functions here are the rate integrals themselves,
+independent of the species bookkeeping that lives in `core.py`. Two
+families are provided:
+
+- Non-photon rates that depend only on the particle's own kinematics
+  and an external field: `interaction_rate_adiabatic` (Hubble-like
+  expansion), `interaction_rate_acceleration` (Bohm-like, via
+  `gyroradius`), and `interaction_rate_synchrotron`.
+- Photon-field interaction rates, which fold a photonuclear cross
+  section against an isotropic photon spectral density: the direct,
+  one-Lorentz-factor-at-a-time integrators
+  `interaction_rate_from_cross_section` /
+  `interaction_rate_from_cross_section_boosts`, and the batched,
+  FFT-based `compute_rates` / `exact_rates_for_sigma`, which evaluate
+  every cross-section row on the whole boost grid in one log-space
+  convolution. `InteractionCore` uses the batched path; the direct
+  integrators are mainly useful for a one-off cross-check.
+
+Most users will not call into this module directly; it is consumed by
+`core.InteractionCore` while it builds its tensors from a
+`photonuclear_cross_sections` model and a target photon field.
+"""
+
 import numpy as np
 from astropy.constants import c, hbar, alpha, m_p
 from astropy.units import cm, GeV, g, s
