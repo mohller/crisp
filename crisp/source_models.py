@@ -153,7 +153,29 @@ class ParameterSchema:
 
 # Base class for source models
 class UHECRSourceModel(ABC):
-    """Base class for UHECR source models with SI-based robust computations"""
+    """Abstract base for astrophysical UHECR source models.
+
+    Subclasses declare a `SCHEMA` (a list of `ParameterSchema` entries)
+    and a `property_methods` mapping from a derived property's name to
+    the `_compute_*` method that produces it; the base class then handles
+    unit-aware storage of the inputs, computes every derived property in
+    dependency order, and keeps the symbolic expression and substituted
+    values behind each one for `generate_report()`. Concrete subclasses
+    (`OneZoneISModel`, `AGNJetModel`, `InternalShockModel` and its
+    variants) implement the `_compute_radius`, `_compute_shell_width`,
+    `_compute_volume`, `_compute_em_density`, and `_compute_magnetic_field`
+    abstract methods and set `self.target_photons` to a callable photon
+    spectrum in `__init__`.
+
+    Parameters are read back with `get_parameter(name, frame=...)`
+    (or `parameters()` for the list of available names), and once a
+    photon field and cross section model are combined into an
+    `InteractionCore` via `build_core`, the instance-level methods below
+    (`injection_spectrum`, `rates_by_interaction`, `loss_rates`,
+    `max_energy`, `neutrino_fluence`, `compute_temporal_response`) turn
+    the source's physical parameters into the quantities `InteractionCore`
+    needs, or into observable predictions derived from its output.
+    """
 
     # Symbolic variables
     n_gamma, eta, n_p, R, d, B, epsilon_gamma = symbols('n_gamma eta n_p R d B epsilon_gamma')
@@ -468,10 +490,27 @@ class UHECRSourceModel(ABC):
     def build_core(self, epsrange, xsec_model):
         """Build and store an InteractionCore_Source from self.target_photons.
 
-        Arguments:
+        `xsec_model` is any `photonuclear_cross_sections` model that
+        implements the `Cross_Section_Model` interface (`CRPropa_model`,
+        `PSB_model`, `SimProp_model`, `Model_Rack`, and so on); this
+        module only duck-types against that interface.
+
+        Parameters
         ----------
-        epsrange   : (e_min, e_max) photon energy range in GeV
-        xsec_model : cross-section model instance (e.g. CRPropa_model)
+        epsrange : tuple of float
+            (e_min, e_max) photon energy range in GeV.
+        xsec_model : Cross_Section_Model
+            Cross section model instance (e.g. `CRPropa_model`).
+
+        Examples
+        --------
+        >>> from crisp.photonuclear_cross_sections import PSB_model
+        >>> source = OneZoneISModel(
+        ...     photon_luminosity=1e51, bulk_lorentz_factor=300,
+        ...     variability_timescale=0.01, redshift=0.5, duration=10,
+        ...     photon_energy_min=1e-9, photon_energy_max=1e-2,
+        ...     photon_energy_brk=1e-6, baryonic_loading=10)
+        >>> source.build_core((1e-9, 1e-2), PSB_model())
         """
         from .core import InteractionCore_Source
         self.interaction_core = InteractionCore_Source(
@@ -483,8 +522,21 @@ class UHECRSourceModel(ABC):
         (photodisintegration / photomeson), in Mpc^-1.
 
         Thin passthrough to InteractionCore.rates_by_interaction of the core
-        given as argument — or the one stored by build_core /
+        given as argument, or the one stored by build_core /
         compute_temporal_response / simulate_time_evolution.
+
+        Parameters
+        ----------
+        nucleus : tuple of int, optional
+            (Z, A) to restrict the result to; default all tracked species.
+        interaction_core : InteractionCore_Source, optional
+            Core to query; default `self.interaction_core` (set by
+            `build_core` or the temporal-response methods).
+
+        Returns
+        -------
+        dict
+            Same structure as `InteractionCore.rates_by_interaction`.
         """
         core = self._resolve_core(interaction_core)
         return core.rates_by_interaction(nucleus=nucleus)
@@ -498,7 +550,18 @@ class UHECRSourceModel(ABC):
         return core
 
     def observed_energy(self, E_comoving):
-        """Observer-frame energy of a comoving energy: E Gamma_bulk / (1 + z)."""
+        """Observer-frame energy of a comoving energy: E Gamma_bulk / (1 + z).
+
+        Parameters
+        ----------
+        E_comoving : array_like
+            Comoving-frame energy, any consistent unit.
+
+        Returns
+        -------
+        ndarray
+            Observer-frame energy, same unit and shape as `E_comoving`.
+        """
         return (np.asarray(E_comoving) * self.get_parameter('Gamma').m
                 / (1 + self.get_parameter('redshift').m))
 
@@ -510,11 +573,19 @@ class UHECRSourceModel(ABC):
 
         Consumes the schema parameters volume, duration and redshift;
         duration goes through the frame machinery (kind='time'), so any
-        native frame — engine (InternalShockModel family) or observer
-        (OneZoneISModel) — yields the observed duration.
+        native frame (engine for the InternalShockModel family, observer
+        for OneZoneISModel) yields the observed duration.
 
-        cosmology : astropy cosmology for d_L(z); default is the paper's
-        flat LambdaCDM (H0 = 67.4 km/s/Mpc, Omega_M = 0.315).
+        Parameters
+        ----------
+        cosmology : astropy.cosmology instance, optional
+            Cosmology used for d_L(z). Default: the paper's flat
+            LambdaCDM (H0 = 67.4 km/s/Mpc, Omega_M = 0.315).
+
+        Returns
+        -------
+        float
+            Fluence factor in cm s.
         """
         from astropy.cosmology import FlatLambdaCDM
 
@@ -542,32 +613,42 @@ class UHECRSourceModel(ABC):
         constructed for per-shell steady comoving rates evaluated at
         E (1+z)/Gamma.
 
-        Arguments:
+        Parameters
         ----------
-        E_nu    : comoving neutrino energy grid [GeV] (log-uniform), as
-                  returned by InteractionCore.neutrino_production.
-        Q_nu_mu : nu_mu + nubar_mu steady production rate per bin
-                  [cm^-3 s^-1]; Q_nu_e likewise for nu_e + nubar_e (add
-                  neutron_decay_neutrinos output here — beta decays feed
-                  the electron flavor).
-        detail  : ALTERNATIVE to Q_nu_mu/Q_nu_e — the nu/nubar-resolved
-                  dict of neutrino_production's 'detail' ('nu_mu',
-                  'nubar_mu', 'nu_e', 'nubar_e'; same per-bin rate units;
-                  add neutron-decay antineutrinos to 'nubar_e'). The same
-                  averaged matrix applies per CP sector, and the returned
-                  dict carries all six species separately.
-        rebin   : merge groups of `rebin` bins before differencing
-                  (display smoothing of sparse comb spectra).
-        theta12 : solar mixing angle [deg].
-        cosmology : forwarded to fluence_factor.
+        E_nu : array_like
+            Comoving neutrino energy grid [GeV] (log-uniform), as returned
+            by InteractionCore.neutrino_production.
+        Q_nu_mu : array_like, optional
+            nu_mu + nubar_mu steady production rate per bin [cm^-3 s^-1];
+            Q_nu_e likewise for nu_e + nubar_e (add neutron_decay_neutrinos
+            output here: beta decays feed the electron flavor). Give
+            either this pair or `detail`, not both.
+        Q_nu_e : array_like, optional
+            See Q_nu_mu.
+        detail : dict, optional
+            Alternative to Q_nu_mu/Q_nu_e: the nu/nubar-resolved dict from
+            neutrino_production's 'detail' ('nu_mu', 'nubar_mu', 'nu_e',
+            'nubar_e'; same per-bin rate units; add neutron-decay
+            antineutrinos to 'nubar_e'). The same averaged matrix applies
+            per CP sector, and the returned dict carries all six species
+            separately.
+        rebin : int, optional
+            Merge groups of `rebin` bins before differencing (display
+            smoothing of sparse comb spectra). Default 1.
+        theta12 : float, optional
+            Solar mixing angle in degrees. Default 33.5.
+        cosmology : astropy.cosmology instance, optional
+            Forwarded to `fluence_factor`.
 
-        Returns:
-        --------
-        (E_obs, F) : observer-frame energies [GeV] and a dict of fluences
-                     per comoving energy [GeV^-1 cm^-2] on that grid —
-                     {'nu_mu','nu_e','nu_tau'} (each flavor + its
-                     antineutrinos) for the summed input, or the six
-                     species separately for detail= input.
+        Returns
+        -------
+        E_obs : ndarray
+            Observer-frame energies [GeV].
+        F : dict
+            Fluences per comoving energy [GeV^-1 cm^-2] on that grid:
+            {'nu_mu', 'nu_e', 'nu_tau'} (each flavor plus its
+            antineutrinos) for the summed input, or the six species
+            separately for `detail=` input.
         """
         E_nu = np.asarray(E_nu)
         s2 = np.sin(2 * np.radians(theta12))**2
@@ -634,11 +715,27 @@ class UHECRSourceModel(ABC):
         (Moderski et al. 2005). Included in 'total' when requested;
         off by default (same convention as include_pair).
 
-        Returns:
-        --------
-        dict with 'E' (comoving energies, GeV), 'photodisintegration',
-        'photomeson', 'photonuclear', 'synchrotron', 'adiabatic'
-        [, 'pair'], 'total'
+        Parameters
+        ----------
+        species : tuple of int
+            (Z, A) of the species to compute loss rates for.
+        interaction_core : InteractionCore_Source, optional
+            Core to query; default `self.interaction_core`.
+        include_pair : bool, optional
+            Add the Bethe-Heitler pair-production rate. Default False.
+        include_ic : bool, optional
+            Add the inverse-Compton rate. Default False.
+        kappa : bool, optional
+            Convert the photonuclear entries to energy-loss (cooling)
+            rates by the exact inelasticity, instead of interaction
+            rates. Default False.
+
+        Returns
+        -------
+        dict
+            'E' (comoving energies, GeV), 'photodisintegration',
+            'photomeson', 'photonuclear', 'synchrotron', 'adiabatic'
+            [, 'pair'] [, 'inverse_compton'], 'total'.
         """
         from scipy.constants import c, e, parsec, physical_constants
         core = self._resolve_core(interaction_core)
@@ -758,17 +855,20 @@ class UHECRSourceModel(ABC):
         synchrotron/pair/IC: both vanish exactly for Z = 0, but pair's own
         integral is expensive to run just to multiply the result by zero.
 
-        Arguments:
+        Parameters
         ----------
-        species_list : sequence of (Z, A) tuples, in the order the
-                      caller's true_range columns are in.
-        interaction_core, include_pair, include_ic : as in loss_rates.
+        species_list : sequence of (Z, A) tuples
+            In the order the caller's true_range columns are in.
+        interaction_core, include_pair, include_ic
+            As in `loss_rates`.
 
-        Returns:
-        --------
-        coherent : float [1/Mpc] (the adiabatic rate).
-        dispersive : ndarray (n_boosts, len(species_list)) [1/Mpc], on the
-                     core's boost grid.
+        Returns
+        -------
+        coherent : float
+            The adiabatic rate [1/Mpc].
+        dispersive : ndarray
+            Shape (n_boosts, len(species_list)) [1/Mpc], on the core's
+            boost grid.
         """
         from scipy.constants import c, parsec
         core = self._resolve_core(interaction_core)
@@ -828,16 +928,19 @@ class UHECRSourceModel(ABC):
         the closed form of int_0^L exp(-(index-1) b s) ds — always < L, and
         -> L as b -> 0 or index -> 1.
 
-        Arguments:
+        Parameters
         ----------
-        L     : residence length(s) [Mpc]; scalar or array. Ignored when
-                index is None.
-        index : spectral index k of the injection q ~ E^-k, or None.
+        L : float or array_like, optional
+            Residence length(s) [Mpc]; scalar or array. Ignored when
+            `index` is None.
+        index : float, optional
+            Spectral index k of the injection q ~ E^-k, or None.
 
-        Returns:
-        --------
-        index=None : the drift b [1/Mpc] (plain float).
-        else       : delta(L) [Mpc], same shape as L.
+        Returns
+        -------
+        float or ndarray
+            The drift b [1/Mpc] when `index` is None; otherwise delta(L)
+            [Mpc], same shape as `L`.
         """
         try:
             Gam_ad = float(self.get_parameter('bulk_lorentz_factor').to('').m)
@@ -863,22 +966,53 @@ class UHECRSourceModel(ABC):
 
             int E Q(E) dE = baryonic_loading * em_density / t_inj,
 
-        i.e. the baryon budget is injected over the episode t_inj —
-        by default one crossing of the emission region, shell_width / c.
+        i.e. the baryon budget is injected over the episode t_inj, by
+        default one crossing of the emission region, shell_width / c.
         E_max is computed from max_energy() when not given.
 
-        Arguments beyond the spectral shape:
+        Parameters
         ----------
-        injection_time : episode duration [s]; default shell_width / c.
+        species : tuple of int, optional
+            (Z, A) of the injected nucleus. Default (26, 56).
+        index : float, optional
+            Spectral index of Q(E) ~ E^index (note the sign convention:
+            a soft spectrum is a negative `index`). Default -2.0.
+        E_max : float, optional
+            Cutoff energy [GeV]. Default: computed from `max_energy`.
+        boost_range : tuple of float, optional
+            (boost_min, boost_max) grid used to evaluate the
+            normalization integral. Default (1e1, 1e8).
+        interaction_core : InteractionCore_Source, optional
+            Core to query; default `self.interaction_core`.
+        eta_acc : float, optional
+            Acceleration efficiency, forwarded to `max_energy` when
+            `E_max` is not given. Default 1.0.
+        injection_time : float, optional
+            Episode duration [s]. Default shell_width / c.
 
-        Returns:
+        Returns
+        -------
+        q : callable
+            gamma -> injected number density per second and per
+            ln(gamma) [cm^-3 s^-1], ready for `convolve_with_injection` /
+            `simulate_time_evolution` (injection_density=) and, multiplied
+            by the ladder's dln(gamma), for the production folds (weights=).
+        info : dict
+            'C' [GeV^(-index-1) cm^-3 s^-1], 'E_max' [GeV], 'species',
+            'index'.
+
+        Examples
         --------
-        q    : callable gamma -> injected number density per second and per
-               ln(gamma) [cm^-3 s^-1], ready for convolve_with_injection /
-               simulate_time_evolution (injection_density=) and, multiplied
-               by the ladder's dln(gamma), for the production folds (weights=)
-        info : dict with 'C' [GeV^(-index-1) cm^-3 s^-1], 'E_max' [GeV],
-               'species', 'index'
+        >>> from crisp.photonuclear_cross_sections import PSB_model
+        >>> source = OneZoneISModel(
+        ...     photon_luminosity=1e51, bulk_lorentz_factor=300,
+        ...     variability_timescale=0.01, redshift=0.5, duration=10,
+        ...     photon_energy_min=1e-9, photon_energy_max=1e-2,
+        ...     photon_energy_brk=1e-6, baryonic_loading=10)
+        >>> source.build_core((1e-9, 1e-2), PSB_model())
+        >>> q, info = source.injection_spectrum(species=(26, 56), index=-2.0)
+        >>> info['E_max'] > 0
+        True
         """
         from scipy.constants import c
         core = self._resolve_core(interaction_core)
@@ -902,12 +1036,22 @@ class UHECRSourceModel(ABC):
     def compute_temporal_response(self, interactions_core=None, nucinj=(26, 56), boosts=None, distance_grid=np.logspace(-3.5, .5, 50)):
         """Computes the temporal response of the nuclear densities for the source.
 
-           Arguments:
-           ----------
-           interactions_core: InteractionCore_Source instance; defaults to self.interaction_core
-           nucinj: the injected species, injected constantly over the variability timescale of the source.
-           boosts: boost grid for the computation
-           distance_grid: grid of distances for the computation, fraction relative to the total thickness of source
+        Stores the result on `self.boosts`, `self.distances`, and
+        `self.spec_evol`, ready for `convolve_with_injection` /
+        `simulate_time_evolution`.
+
+        Parameters
+        ----------
+        interactions_core : InteractionCore_Source, optional
+            Default `self.interaction_core`.
+        nucinj : tuple of int, optional
+            The injected species, injected constantly over the
+            variability timescale of the source. Default (26, 56).
+        boosts : array_like, optional
+            Boost grid for the computation. Default the core's own grid.
+        distance_grid : array_like, optional
+            Grid of distances for the computation, as a fraction relative
+            to the total thickness of the source.
         """
         if interactions_core is None:
             interactions_core = self.interaction_core
@@ -946,24 +1090,30 @@ class UHECRSourceModel(ABC):
         Requires compute_temporal_response (or simulate_time_evolution with
         update_response=True) to have run, which fixes the injection episode.
 
-        Arguments:
+        Parameters
         ----------
-        response_distances : distances [Mpc] where the response is sampled
-        response : array (..., len(response_distances)), per injected particle
-        timegridsize : resolution of the injection time grid
-        injection_density : injected number density per second [cm^-3 s^-1]
-            during the episode. Default (None) keeps the legacy convention of
-            injecting the em_density magnitude as a number density — note that
-            overstates the baryon content by a factor E_particle/loading: an
-            injection consistent with the baryonic loading is
-            baryonic_loading * em_density / E_particle(boost) with E in GeV.
-            An array is broadcast against the leading axes of the response
-            (e.g. one value per boost row).
+        response_distances : array_like
+            Distances [Mpc] where the response is sampled.
+        response : ndarray
+            Shape (..., len(response_distances)), per injected particle.
+        timegridsize : int, optional
+            Resolution of the injection time grid. Default 1000.
+        injection_density : float or array_like, optional
+            Injected number density per second [cm^-3 s^-1] during the
+            episode. Default (None) keeps the legacy convention of
+            injecting the em_density magnitude as a number density (note
+            that this overstates the baryon content by a factor
+            E_particle/loading: an injection consistent with the baryonic
+            loading is baryonic_loading * em_density / E_particle(boost)
+            with E in GeV). An array is broadcast against the leading
+            axes of the response (e.g. one value per boost row).
 
-        Returns:
-        --------
-        conv_time_grid : times [s] (same grid as simulate_time_evolution)
-        convolved : array (..., len(conv_time_grid))
+        Returns
+        -------
+        conv_time_grid : ndarray
+            Times [s] (same grid as simulate_time_evolution).
+        convolved : ndarray
+            Shape (..., len(conv_time_grid)).
         """
         injection_time = self.distances[-1] / c_SI.to('Mpc/s').m
         tgrid = np.cumsum(injection_time / timegridsize * np.ones(timegridsize))
@@ -990,15 +1140,29 @@ class UHECRSourceModel(ABC):
     def simulate_time_evolution(self, update_response=False, interactions_core=None, nucinj=(26, 56), boosts=None, distance_grid=np.logspace(-3.5, .5, 50), timegridsize=1000, injection_density=None):
         """Computes the temporal evolution of the nuclear densities for the source.
 
-           Arguments:
-           ----------
-           update_response: is responso should be recomputed, default False
-           interactions_core: instance of InteractionCore_Source
-           nucinj: the injected species, injected constantly over the variability timescale of the source.
-           boosts: boost grid for the computation
-           distance_grid: grid of distances for the computation, fraction relative to the total thickness of source
-           injection_density: injected number density per second [cm^-3 s^-1],
-               scalar or one value per boost; see convolve_with_injection.
+        Stores the result on `self.conv_time_grid` and `self.convolved`.
+
+        Parameters
+        ----------
+        update_response : bool, optional
+            Whether `compute_temporal_response` should be (re)run first.
+            Default False, reusing whatever response is already stored.
+        interactions_core : InteractionCore_Source, optional
+            Forwarded to `compute_temporal_response` when
+            `update_response` is True.
+        nucinj : tuple of int, optional
+            The injected species, injected constantly over the
+            variability timescale of the source. Default (26, 56).
+        boosts : array_like, optional
+            Boost grid for the computation.
+        distance_grid : array_like, optional
+            Grid of distances for the computation, as a fraction relative
+            to the total thickness of the source.
+        timegridsize : int, optional
+            Resolution of the injection time grid. Default 1000.
+        injection_density : float or array_like, optional
+            Injected number density per second [cm^-3 s^-1], scalar or
+            one value per boost; see `convolve_with_injection`.
         """
         if update_response:
             self.compute_temporal_response(interactions_core, nucinj, boosts, distance_grid)
@@ -1598,12 +1762,16 @@ class VariablePhotonSource:
     from the supplied photon field. Past states can be swapped back in
     via recall(), which repopulates the active core in place.
 
-    Arguments:
+    Parameters
     ----------
-    source_model : UHECRSourceModel instance with self.target_photons set
-    epsrange     : (e_min, e_max) photon energy range in GeV
-    xsec_model   : cross-section model instance (e.g. CRPropa_model)
-    storage_dir  : directory where serialized cores are written
+    source_model : UHECRSourceModel
+        Instance with `self.target_photons` set.
+    epsrange : tuple of float
+        (e_min, e_max) photon energy range in GeV.
+    xsec_model : Cross_Section_Model
+        Cross section model instance (e.g. `CRPropa_model`).
+    storage_dir : str
+        Directory where serialized cores are written.
     """
 
     def __init__(self, source_model: UHECRSourceModel, epsrange, xsec_model, storage_dir: str):
@@ -1625,10 +1793,12 @@ class VariablePhotonSource:
         Saves the current InteractionCore to disk, then builds a new one
         from photon_field and makes it the active core.
 
-        Arguments:
+        Parameters
         ----------
-        photon_field : callable (energy in GeV) → photon number density
-        label        : optional identifier for this state (e.g. timestamp)
+        photon_field : callable
+            Energy in GeV -> photon number density.
+        label : optional
+            Identifier for this state (e.g. a timestamp).
         """
         import os
         from .core import InteractionCore_Source
@@ -1657,13 +1827,15 @@ class VariablePhotonSource:
         Repopulates self.interaction_core in place — the existing object
         reference remains valid.
 
-        Arguments:
+        Parameters
         ----------
-        index        : position in self.history (negative indexing supported)
-        save_current : if True (default), the current active core is saved to
-                       disk and appended to history before the swap, so it can
-                       be recalled later. Set to False only if you are sure the
-                       current state is already in history or is expendable.
+        index : int
+            Position in `self.history` (negative indexing supported).
+        save_current : bool, optional
+            If True (default), the current active core is saved to disk
+            and appended to history before the swap, so it can be
+            recalled later. Set to False only if you are sure the
+            current state is already in history or is expendable.
         """
         import os
 
@@ -1695,11 +1867,14 @@ class VariablePhotonSource:
         self.interaction_core. Results are stored on self.source_model
         as .boosts, .distances, and .spec_evol.
 
-        Arguments:
+        Parameters
         ----------
-        nucinj        : injected species (Z, A)
-        boosts        : boost grid; defaults to self.interaction_core.boosts
-        distance_grid : fractional distance grid relative to source thickness
+        nucinj : tuple of int, optional
+            Injected species (Z, A). Default (26, 56).
+        boosts : array_like, optional
+            Boost grid; default `self.interaction_core.boosts`.
+        distance_grid : array_like, optional
+            Fractional distance grid relative to source thickness.
         """
         self.source_model.compute_temporal_response(
             interactions_core=self.interaction_core,
@@ -1716,13 +1891,18 @@ class VariablePhotonSource:
         Delegates to self.source_model.simulate_time_evolution(). Results are
         stored on self.source_model as .conv_time_grid and .convolved.
 
-        Arguments:
+        Parameters
         ----------
-        update_response : recompute temporal response before evolving
-        nucinj          : injected species (Z, A)
-        boosts          : boost grid; defaults to self.interaction_core.boosts
-        distance_grid   : fractional distance grid relative to source thickness
-        timegridsize    : number of time steps in the convolution
+        update_response : bool, optional
+            Recompute the temporal response before evolving. Default False.
+        nucinj : tuple of int, optional
+            Injected species (Z, A). Default (26, 56).
+        boosts : array_like, optional
+            Boost grid; default `self.interaction_core.boosts`.
+        distance_grid : array_like, optional
+            Fractional distance grid relative to source thickness.
+        timegridsize : int, optional
+            Number of time steps in the convolution. Default 1000.
         """
         self.source_model.simulate_time_evolution(
             update_response=update_response,
