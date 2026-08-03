@@ -1,3 +1,28 @@
+"""Nuclear masses and decay channels from the NUBASE2016 table
+(nubase2016.txt, bundled in this data directory).
+
+`nuclear_data_parser` reads the fixed-width NUBASE text table into a
+pandas DataFrame; `NuclearDataTable` wraps it with the derived views
+`InteractionCore` and the source models actually use:
+
+- `nuclear_mass_GeV` / `nuclear_masses_GeV` give the nuclear ground-state
+  mass of a (Z, A) nuclide in GeV (mass excess converted from the table),
+  used wherever an energy needs to be converted to or from a boost
+  (`InteractionCore`'s default mass function, and
+  `source_models.py`'s synchrotron timescale).
+- `NuclearDataTable.prepare_decay_table()` turns the table's decay-channel
+  strings into the branching-ratio dictionary `InteractionCore(decays=...)`
+  consumes for beta and particle-emission decays of unstable species
+  (restricted to A <= 56, the range without known parsing errors; data
+  quality issues elsewhere are logged at DEBUG level on the
+  'crisp.data.nucleardecays' logger rather than raised).
+- `NuclearDataTable.get_stable_species()` / `get_no_isomers_table()`
+  support building species lists from the table directly.
+
+Most users only need `NuclearDataTable().prepare_decay_table()`, passed
+as `InteractionCore(decays=...)`.
+"""
+
 import logging
 from pathlib import Path
 from numpy import nan, inf, log, isclose, logical_and
