@@ -1,4 +1,29 @@
-"""Production and testing the interaction matrices
+"""Nuclear cascade transport: the InteractionCore class.
+
+This module defines `InteractionCore`, the class that assembles a cross
+section model (see `photonuclear_cross_sections`), an optional photon
+field, decay data, and photomeson kernels into interaction tensors, and
+solves the resulting transport equation exactly as a matrix exponential.
+Given an injected composition, `InteractionCore.species_evolution_boost_range`
+returns the surviving and fragment nuclear population at any distance
+from the source, and a family of related methods
+(`pion_production`, `reprocessed_nucleons`, `neutrino_production`,
+`light_cascade_production`, and others) fold that population against the
+relevant secondary production kernel to return pions, nucleons,
+neutrinos, or light nuclei produced along the way.
+
+The same interaction tensors also support a second, complementary view
+of the cascade: instead of "how much of the injected population is left
+at distance L", `cdf_boost_range`/`pdf_boost_range` (and their moments,
+`pdf_moments_boost_range`/`pdf_variance_boost_range`) give the closed
+form probability distribution of the distance itself at which a nucleus
+first interacts or is absorbed, i.e. a survival-analysis style
+"distance until absorption" distribution for a given injected species
+and boost.
+
+See the package docstring (`crisp/__init__.py`, `import crisp; help(crisp)`)
+for a minimal worked example and how this module fits with the rest of
+the package.
 """
 
 import logging
@@ -777,7 +802,23 @@ def generate_decay_tables(nuclei, nboosts=41, boosts=None):
     return df_rates_pmes#, pmes_branchings, merged_yields
 
 class InteractionCore():
-    """Base class to produce interaction matrices
+    """Assembles interaction tensors from a cross section model, photon
+    field, decay data, and photomeson kernels, and solves the resulting
+    nuclear cascade transport equation exactly as a matrix exponential.
+
+    Two families of methods are built on the same underlying tensors:
+    `species_evolution_boost_range` and the secondary production methods
+    on top of it (`pion_production`, `reprocessed_nucleons`,
+    `neutrino_production`, `light_cascade_production`, and others) give
+    the propagated population, or a secondary yield, at chosen
+    distances; `cdf_boost_range`/`pdf_boost_range` (and their moments,
+    `pdf_moments_boost_range`/`pdf_variance_boost_range`) give the
+    complementary distance-until-absorption probability distribution for
+    an injected species and boost.
+
+    See `__init__` for the constructor arguments and a worked example,
+    and the package docstring (`import crisp; help(crisp)`) for how this
+    class fits with the rest of the package.
     """
 
     def __init__(self, nuclear_decay_On=False, ftype=np.float64, decays=None,
@@ -785,7 +826,7 @@ class InteractionCore():
                  photomeson_scaling=None, photomeson_spectra=None,
                  boosts=None, eps=None, masses='nubase', rate_method='fft'):
         """
-        Arguments:
+        Parameters
         ----------
         nuclear_decay_On : if True, spontaneous decays of the TRACKED species
                  enter the main tensor as jump rates lambda(gamma) =
@@ -857,6 +898,23 @@ class InteractionCore():
                  at the percent level below the boost where 2*Gamma*eps_peak
                  reaches the sigma support, above which 'direct' progressively
                  underestimates the rates. Only used with xsec_model.
+
+        Examples
+        --------
+        The self-contained PSB cross sections need no external data
+        download, so this constructs and uses a core in one step:
+
+        >>> from crisp.core import InteractionCore
+        >>> from crisp.photonuclear_cross_sections import PSB_model
+        >>> core = InteractionCore(xsec_model=PSB_model())
+        >>> len(core.species)
+        53
+
+        A core with photomeson kernels active (needed for
+        `pion_production`/`neutrino_production`/`proton_recoil_production`)
+        and the CMB as the default photon field:
+
+        >>> core = InteractionCore(xsec_model=PSB_model(), photomeson='kernels')
         """
         self.ftype = ftype
 
@@ -1336,9 +1394,10 @@ class InteractionCore():
         untracked, so the Z imbalance reflects that physics on racks with
         proton-rich daughters while A must always balance.
 
-        Returns:
-        --------
-        (imbalance_A, imbalance_Z) : floats, relative to max|tensor|
+        Returns
+        -------
+        tuple of float
+            `(imbalance_A, imbalance_Z)`, each relative to `max(abs(tensor))`.
         """
         A_sp = np.array([s[1] for s in self.species], float)
         Z_sp = np.array([s[0] for s in self.species], float)
@@ -1367,16 +1426,19 @@ class InteractionCore():
         given species on the core's photon field (free p/n absorption in the
         light sector is the separate self.photomeson_rates_pn attribute).
 
-        Arguments:
+        Parameters
         ----------
-        nucleus : optional (Z, A); restrict the output to that nucleus.
+        nucleus : tuple of int, optional
+            `(Z, A)`. Restrict the output to that nucleus.
 
-        Returns:
-        --------
-        dict mapping interaction type -> rates in Mpc^-1, arrays of shape
-        (n_nuclei, n_boosts), or (n_boosts,) when nucleus= is given.  Both
-        'photodisintegration' and 'photomeson' keys are always present
-        (zeros when the model has no members of that type).
+        Returns
+        -------
+        dict
+            Maps interaction type to rates in Mpc^-1, arrays of shape
+            `(n_nuclei, n_boosts)`, or `(n_boosts,)` when `nucleus` is
+            given. Both `'photodisintegration'` and `'photomeson'` keys
+            are always present (zeros when the model has no members of
+            that type).
         """
         if getattr(self, 'xsec_model', None) is None:
             raise ValueError('rates_by_interaction needs a core constructed '
@@ -1437,33 +1499,57 @@ class InteractionCore():
 
         Requires the photomeson kernels (construct with photomeson='kernels').
 
-        Arguments:
+        Parameters
         ----------
-        L          : 1-D array of distances [Mpc]
-        alpha      : injection spectrum (must sum to 1), shape (n_species_full,)
-        mass_range : list of species indices (as from get_distribution_parameters)
-        boost_range: parent boost values [default: self.boosts]
-        true_range : non-absorbed subset of mass_range
-        P          : optional precomputed heavy evolution, as returned by
-                     species_evolution_boost_range with the same arguments;
-                     avoids re-solving the cascade ODE.
-        weights    : optional per-parent-boost injection weights, shape
-                     (len(boost_range),) — e.g. the injected number per slice,
-                     dQ/dlnΓ · ΔlnΓ. The parent slices are then summed as a
-                     weighted ladder total instead of unit injections.
-        method     : passed straight through to species_evolution_boost_range
-                     when P is None (ignored otherwise) -- None (default)
-                     evaluates the heavy cascade exactly, matching this
-                     method's historical behavior; 'auto'/'substep' let a
-                     large species count over a wide L range trade a little
-                     precision for a lot of speed, same tradeoff documented
-                     there.
+        L : ndarray
+            1-D array of distances [Mpc].
+        alpha : ndarray
+            Injection spectrum (must sum to 1), shape `(n_species_full,)`.
+        mass_range : list of int
+            Species indices, as returned by `get_distribution_parameters`.
+        boost_range : ndarray, optional
+            Parent boost values. Default `self.boosts`.
+        true_range : list of int
+            Non-absorbed subset of `mass_range`.
+        P : ndarray, optional
+            Precomputed heavy evolution, as returned by
+            `species_evolution_boost_range` with the same arguments.
+            Avoids re-solving the cascade ODE.
+        weights : ndarray, optional
+            Per-parent-boost injection weights, shape `(len(boost_range),)`,
+            e.g. the injected number per slice, `dQ/dlnGamma * dlnGamma`.
+            The parent slices are then summed as a weighted ladder total
+            instead of unit injections.
+        method : {None, 'exact', 'substep', 'auto'}, optional
+            Passed straight through to `species_evolution_boost_range` when
+            `P` is None (ignored otherwise). None (default) evaluates the
+            heavy cascade exactly, matching this method's historical
+            behavior; 'auto'/'substep' let a large species count over a
+            wide `L` range trade a little precision for a lot of speed,
+            the same tradeoff documented there.
 
-        Returns:
+        Returns
+        -------
+        ndarray
+            `N_pion`, shape `(n_boost_pion, n_L)` with `n_boost_pion =
+            len(self.boosts)`. `N_pion[j, l]` is the cumulative number of
+            pions produced in boost bin `j` up to distance `L[l]`.
+
+        Examples
         --------
-        N_pion : ndarray, shape (n_boost_pion, n_L)
-                 n_boost_pion = len(self.boosts); N_pion[j, l] is the cumulative
-                 number of pions produced in boost bin j up to distance L[l].
+        >>> import numpy as np
+        >>> from crisp.core import InteractionCore
+        >>> from crisp.photonuclear_cross_sections import PSB_model
+        >>> core = InteractionCore(xsec_model=PSB_model(), photomeson='kernels')
+        >>> alpha, mr, tr, _ = core.get_distribution_parameters(
+        ...     mass_lims=(56, 0), injection_type=('only species', (26, 56)),
+        ...     absorption_type=('only mass', [1]))
+        >>> L = np.array([10.0, 50.0, 200.0])  # Mpc
+        >>> N_pion = core.pion_production(
+        ...     L, alpha=alpha, mass_range=mr, boost_range=core.boosts[80:120],
+        ...     true_range=tr)
+        >>> N_pion.sum(axis=0)  # total pions produced by each distance
+        array([0.        , 0.08670962, 0.09320204])
         """
         if not hasattr(self, 'pion_prod_tensor'):
             raise AttributeError('pion_prod_tensor not available; rebuild or load from file.')
@@ -1478,11 +1564,23 @@ class InteractionCore():
         """Cumulative production of one photomeson secondary species along L:
         the charge/species-resolved kernel folded with the heavy cascade.
 
-        species : one of 'pi+', 'pi-', 'pi0', 'p', 'n'
-                  (self.photomeson_kernels); other arguments as in
-                  pion_production, including method (see there).
-                  cumulative=False returns the local production rate per
-                  unit path instead of the L-integral.
+        Parameters
+        ----------
+        species : {'pi+', 'pi-', 'pi0', 'p', 'n'}
+            Key into `self.photomeson_kernels`.
+        cumulative : bool, optional
+            True (default) integrates the production along `L`; False
+            returns the local production rate per unit path instead of
+            the `L`-integral.
+        L, alpha, mass_range, boost_range, true_range, P, weights, method :
+            As in `pion_production` (which this method mirrors, just for
+            a chosen photomeson secondary instead of the lumped pion
+            spectrum).
+
+        Returns
+        -------
+        ndarray
+            Same shape convention as `pion_production`'s return value.
         """
         group = {'pi+': 'pi+', 'pi-': 'pi-', 'pi0': 'pi0', 'p': 'N', 'n': 'N'}[species]
         return self._photomeson_fold(self.photomeson_kernels[species], L, alpha=alpha,
@@ -1582,12 +1680,17 @@ class InteractionCore():
         through self.photomeson_kernels['p'] / ['n'] with _photomeson_fold.
 
         Requires the photomeson kernels (construct with photomeson='kernels').
-        Arguments as in pion_production.
 
-        Returns:
-        --------
-        N_nucleon : ndarray, shape (n_boost, n_L) — cumulative secondary
-                    nucleon count per boost bin of self.boosts up to L[l].
+        Parameters
+        ----------
+        L, alpha, mass_range, boost_range, true_range, P, weights :
+            As in `pion_production`.
+
+        Returns
+        -------
+        ndarray
+            `N_nucleon`, shape `(n_boost, n_L)`: cumulative secondary
+            nucleon count per boost bin of `self.boosts` up to `L[l]`.
         """
         if not hasattr(self, 'proton_recoil_tensor'):
             raise AttributeError('proton_recoil_tensor not available; rebuild or load from file.')
@@ -1610,6 +1713,11 @@ class InteractionCore():
         fallback 880 s as in the light sector when no table was given).
         Every row still sums to zero, so nucleon number is conserved
         identically. Cached.
+
+        Returns
+        -------
+        ndarray
+            The generator `M`, shape `(2 * n_boost, 2 * n_boost)`.
         """
         if not hasattr(self, 'photomeson_kernels'):
             raise AttributeError("photomeson kernels not available; "
@@ -1642,50 +1750,56 @@ class InteractionCore():
     def reprocessed_nucleons(self, L, injection=None, source=None,
                              energy_loss=None):
         """Multi-generation photomeson transport of free nucleons along the
-        path: after every p/n + gamma -> pi + N' the struck nucleon re-enters
-        at its recoil placement and keeps interacting until it degrades below
-        the photomeson threshold (where the kernel rows vanish and the
-        occupation freezes out) — the nucleon reprocessing of De Lia &
-        Tamborra (2024) / Biehl et al. (2018), replacing the one-generation
-        exp(-tau) depletion.
+        path. After every p/n + gamma -> pi + N' event, the struck nucleon
+        re-enters at its recoil placement and keeps interacting until it
+        degrades below the photomeson threshold, where the kernel rows
+        vanish and the occupation freezes out. This is the nucleon
+        reprocessing of De Lia and Tamborra (2024) and Biehl et al. (2018),
+        replacing the one-generation exp(-tau) depletion.
 
         Solves dn/dx = n M + q with the transport generator of
-        nucleon_transport_matrix, chained per L-interval; the source is
-        treated exactly for its interval-mean (augmented-matrix Duhamel), so
-        total nucleon number matches the trapezoid integral of the source at
-        machine precision. (A piecewise-linear source needs one extra
-        augmented row; not implemented.)
+        `nucleon_transport_matrix`, chained per L-interval. The source is
+        treated exactly for its interval mean (augmented-matrix Duhamel),
+        so the total nucleon number matches the trapezoid integral of the
+        source at machine precision. (A piecewise-linear source needs one
+        extra augmented row, not implemented.)
 
         Included beyond the interactions: neutron beta decay in flight
-        (n -> p at the same boost, nubase mean lifetime — decay length
-        gamma x 8.6e-12 Mpc: irrelevant inside a shell crossing, decisive
-        over extragalactic distances), and, when energy_loss= is given,
-        continuous cooling (synchrotron / adiabatic) as a conservative
-        upwind drift in log-boost. The photomeson_scaling='inclusive'
-        factors are 1 for A = 1 parents, so scaled and unscaled cores
-        transport identically.
+        (n -> p at the same boost, nubase mean lifetime; decay length
+        gamma times 8.6e-12 Mpc, irrelevant inside a shell crossing but
+        decisive over extragalactic distances), and, when `energy_loss` is
+        given, continuous cooling (synchrotron or adiabatic) as a
+        conservative upwind drift in log-boost. The
+        `photomeson_scaling='inclusive'` factors are 1 for A = 1 parents,
+        so scaled and unscaled cores transport identically.
 
-        Arguments:
+        Parameters
         ----------
-        L : path positions [Mpc]; the state at L[0] is the injection.
-        injection : optional standing spectrum at L[0], shape (n_b, 2) [p, n]
-                    on self.boosts (absolute or per-unit — caller's units).
-        source : optional production-rate density along the path, shape
-                 (n_b, 2) constant or (n_b, n_L, 2), per Mpc (e.g. from
-                 cascade_nucleon_source), integrated from L[0].
-        energy_loss : optional continuous fractional energy-loss rate
-                 b(gamma) = -dln(gamma)/dx [1/Mpc] on self.boosts (uniform
-                 log grid): shape (n_b,) applied to both species, or
-                 (n_b, 2) as [p, n] — e.g. (synchrotron + adiabatic)/c for
-                 protons, adiabatic/c only for neutrons, from a source
-                 model's loss_rates. Implemented as one-bin-down hops at
-                 rate b/dln(gamma): nucleon number is conserved identically
-                 and the mean ln(gamma) drifts at exactly -b (first-order
-                 upwind, ~one-bin numerical spreading).
+        L : ndarray
+            Path positions [Mpc]. The state at `L[0]` is the injection.
+        injection : ndarray, optional
+            Standing spectrum at `L[0]`, shape `(n_b, 2)` for `[p, n]` on
+            `self.boosts` (absolute or per-unit, in the caller's units).
+        source : ndarray, optional
+            Production-rate density along the path, shape `(n_b, 2)`
+            constant or `(n_b, n_L, 2)`, per Mpc (e.g. from
+            `cascade_nucleon_source`), integrated from `L[0]`.
+        energy_loss : ndarray, optional
+            Continuous fractional energy-loss rate `b(gamma) =
+            -dln(gamma)/dx` [1/Mpc] on `self.boosts` (uniform log grid):
+            shape `(n_b,)` applied to both species, or `(n_b, 2)` as
+            `[p, n]`, e.g. (synchrotron + adiabatic)/c for protons,
+            adiabatic/c only for neutrons, from a source model's
+            `loss_rates`. Implemented as one-bin-down hops at rate
+            `b / dln(gamma)`: nucleon number is conserved identically and
+            the mean ln(gamma) drifts at exactly `-b` (first-order upwind,
+            about one-bin numerical spreading).
 
-        Returns:
-        --------
-        n : ndarray (n_b, n_L, 2) — standing [p, n] spectra at each L.
+        Returns
+        -------
+        ndarray
+            `n`, shape `(n_b, n_L, 2)`: standing `[p, n]` spectra at each
+            `L`.
         """
         M = self.nucleon_transport_matrix()
         lam = self._nucleon_transport_lam
@@ -1771,34 +1885,36 @@ class InteractionCore():
         return np.transpose(out.reshape(n_L, 2, n_b), (2, 0, 1))
 
     def neutron_decay_neutrinos(self, neutrons):
-        """Electron antineutrinos from neutron beta decay, n -> p e- nubar_e:
-        each neutron yields exactly one nubar_e with the boosted three-body
-        decay spectrum (allowed shape, Q = 0.782 MeV; mean E_nu ~ 5.1e-4 E_n),
-        deposited on the same neutrino energy grid as neutrino_production
-        (E_nu = m_pi x self.boosts).
+        """Electron antineutrinos from neutron beta decay, n -> p e- nubar_e.
+        Each neutron yields exactly one nubar_e with the boosted
+        three-body decay spectrum (allowed shape, Q = 0.782 MeV, mean
+        E_nu about 5.1e-4 E_n), deposited on the same neutrino energy
+        grid as `neutrino_production` (E_nu = m_pi times `self.boosts`).
 
-        The caller chooses the neutron census: for a source with advective
-        escape, the standing neutron spectrum at the end of the crossing
-        (they all decay in transit long before Earth — the decay length
-        gamma x 8.6e-12 Mpc dwarfs any shell but not the way to the
-        observer), in the same units as the neutrino_production folds so the
-        output adds directly to the 'detail' nubar_e; for in-flight decays
-        along a tracked path, the lambda-weighted path integral of the
-        occupations instead.
+        The caller chooses the neutron census. For a source with
+        advective escape, pass the standing neutron spectrum at the end
+        of the crossing (they all decay in transit long before Earth,
+        since the decay length gamma times 8.6e-12 Mpc dwarfs any shell
+        but not the way to the observer), in the same units as the
+        `neutrino_production` folds so the output adds directly to the
+        'detail' nubar_e. For in-flight decays along a tracked path, pass
+        the lambda-weighted path integral of the occupations instead.
 
         Antineutrinos from neutrons whose decay products fall below the
-        grid floor (E_nu < m_pi, i.e. gamma_n <~ 300 at the mean fraction)
-        are dropped with the deposit convention.
+        grid floor (E_nu < m_pi, i.e. gamma_n less than about 300 at the
+        mean fraction) are dropped with the deposit convention.
 
-        Arguments:
+        Parameters
         ----------
-        neutrons : array whose FIRST axis is the boost grid — e.g. (n_b,)
-                   escaping counts, or any (n_b, ...) stack.
+        neutrons : ndarray
+            Array whose first axis is the boost grid, e.g. `(n_b,)`
+            escaping counts, or any `(n_b, ...)` stack.
 
-        Returns:
-        --------
-        nubar_e : same shape with the boost axis mapped onto the neutrino
-                  energy grid (one antineutrino per neutron).
+        Returns
+        -------
+        ndarray
+            `nubar_e`, the same shape with the boost axis mapped onto the
+            neutrino energy grid (one antineutrino per neutron).
         """
         if not hasattr(self, '_neutron_decay_D'):
             Q, m_e, m_n = 0.782e-3, 0.511e-3, 0.93957     # GeV
@@ -1830,26 +1946,36 @@ class InteractionCore():
     def cascade_nucleon_source(self, L, alpha=None, mass_range=None,
                                boost_range=None, true_range=None, P=None,
                                weights=None, LC=None):
-        """Free-nucleon production rate of a heavy cascade on the self.boosts
-        grid — the source term for reprocessed_nucleons. Three contributions:
+        """Free-nucleon production rate of a heavy cascade on the
+        `self.boosts` grid, the source term for `reprocessed_nucleons`.
+        Three contributions:
 
         1. narrow: boost-preserving photodisintegration nucleons
-           (light_secondaries_production rows p, n), deposited from the
+           (`light_secondaries_production` rows p, n), deposited from the
            parent rungs onto the grid bins (CIC in log boost);
         2. conversion: standing light nuclei (He4, He3, H3, H2 of
-           light_cascade_production) decaying / disintegrating into p, n
-           (the light-matrix coupling), deposited like the narrow term;
+           `light_cascade_production`) decaying or disintegrating into
+           p, n (the light-matrix coupling), deposited like the narrow
+           term;
         3. wide: photomeson-ejected nucleons with their recoil-kernel
-           placement (charge-resolved folds, scaling_group='N' — consistent
-           with the photomeson_ejecta budget and the inclusive scaling).
+           placement (charge-resolved folds, `scaling_group='N'`,
+           consistent with the `photomeson_ejecta` budget and the
+           inclusive scaling).
 
-        Arguments as in pion_production; weights are the per-rung injection
-        (dQ/dlnGamma dlnGamma). LC: optional precomputed
-        light_cascade_production result (same arguments) to avoid re-solving.
+        Parameters
+        ----------
+        L, alpha, mass_range, boost_range, true_range, P :
+            As in `pion_production`.
+        weights : ndarray, optional
+            Per-rung injection (`dQ/dlnGamma * dlnGamma`).
+        LC : ndarray, optional
+            Precomputed `light_cascade_production` result (same
+            arguments), to avoid re-solving it.
 
-        Returns:
-        --------
-        q : ndarray (n_b, n_L, 2) — [p, n] production rate per Mpc.
+        Returns
+        -------
+        ndarray
+            `q`, shape `(n_b, n_L, 2)`: `[p, n]` production rate per Mpc.
         """
         if boost_range is None:
             boost_range = self.boosts
@@ -1900,20 +2026,27 @@ class InteractionCore():
     def photomeson_ejecta_production(self, L, alpha=None, mass_range=None,
                                      boost_range=None, true_range=None, P=None,
                                      weights=None, cumulative=False):
-        """Production rate of the wide-spectrum photomeson nucleons along the
-        cascade, per parent boost — the self.photomeson_ejecta budget folded
-        with the cascade occupation like the light yields.
+        """Production rate of the wide-spectrum photomeson nucleons along
+        the cascade, per parent boost: the `self.photomeson_ejecta` budget
+        folded with the cascade occupation like the light yields.
 
-        Counts only (used e.g. by per-boost nucleon ledgers): the ejected
-        nucleons' spectral placement is proton_recoil_production.
+        Counts only (used e.g. by per-boost nucleon ledgers). The ejected
+        nucleons' spectral placement is `proton_recoil_production`.
 
-        Arguments as in light_secondaries_production, plus weights (see
-        pion_production) and cumulative (integrate the rate along L).
+        Parameters
+        ----------
+        L, alpha, mass_range, boost_range, true_range, P :
+            As in `light_secondaries_production`.
+        weights : ndarray, optional
+            As in `pion_production`.
+        cumulative : bool, optional
+            If True, integrate the rate along `L`. Default False.
 
-        Returns:
-        --------
-        production : ndarray, shape (2, n_boosts, n_L) — [p, n] ejecta
-                     production rates per injected particle, /Mpc
+        Returns
+        -------
+        ndarray
+            `production`, shape `(2, n_boosts, n_L)`: `[p, n]` ejecta
+            production rates per injected particle, per Mpc.
         """
         if boost_range is None:
             boost_range = self.boosts
@@ -2143,57 +2276,65 @@ class InteractionCore():
         irrelevant; a lumped N_pion= input follows the legacy convention
         (charged_fraction of it charged, split evenly between pi+-).
 
-        Optional synchrotron cooling before decay (B_gauss=): pions and muons
-        are suppressed per energy bin by the closed-form
-        decay_before_cooling factors — the classic pi/mu spectral breaks at
-        photospheric field strengths, at O(n_boosts) extra cost.
+        Optional synchrotron cooling before decay (`B_gauss`): pions and
+        muons are suppressed per energy bin by the closed-form
+        `decay_before_cooling` factors, the classic pi/mu spectral breaks
+        at photospheric field strengths, at O(n_boosts) extra cost.
 
-        The default cooling treatment ('drop') deletes the cooled fraction
-        — the no-migration approximation, which discards real flux: cooled
-        secondaries do not vanish, they decay at lower energy.
-        cooling='migrate' instead applies the exact cooled-decay transport
-        (cooled_decay_matrix): every secondary decays somewhere, piling up
-        at ~E_br / sqrt(3) and filling the spectrum below the breaks — the
-        treatment that matches kinetic codes (NeuCosmA) around and below
-        the cooling breaks. Same omissions as 'drop': no escape/adiabatic
-        term in the secondary kinetics (decay times are far shorter than
-        the dynamical times at all relevant energies) and helicity labels
-        preserved through cooling.
+        The default cooling treatment ('drop') deletes the cooled
+        fraction: the no-migration approximation, which discards real
+        flux, since cooled secondaries do not vanish, they decay at lower
+        energy. `cooling='migrate'` instead applies the exact cooled-decay
+        transport (`cooled_decay_matrix`): every secondary decays
+        somewhere, piling up at about E_br / sqrt(3) and filling the
+        spectrum below the breaks, the treatment that matches kinetic
+        codes (NeuCosmA) around and below the cooling breaks. Same
+        omissions as 'drop': no escape or adiabatic term in the secondary
+        kinetics (decay times are far shorter than the dynamical times at
+        all relevant energies) and helicity labels preserved through
+        cooling.
 
-        Optional kaon component (kaons=True): K+ and K- from the SOPHIA
-        tables (requires photomeson_spectra= at construction — the
+        Optional kaon component (`kaons=True`): K+ and K- from the SOPHIA
+        tables (requires `photomeson_spectra` at construction, since the
         interaction-type kernels carry no strangeness channel), decaying
         through the leading mode K -> mu nu_mu (BR 0.636, the Huemmer et
         al. treatment); the kaon muons share the pion muon pipeline. Being
-        3.5x heavier and shorter-lived than pions, kaons largely evade the
-        B_gauss cooling suppression and dominate the extreme end of the
+        3.5x heavier and shorter lived than pions, kaons largely evade the
+        `B_gauss` cooling suppression and dominate the extreme end of the
         spectrum in strongly magnetized sources.
 
-        Arguments:
+        Parameters
         ----------
         L, alpha, mass_range, boost_range, true_range, P, weights :
-                 propagation arguments forwarded to the pion folds when
-                 N_pion is not given (requires photomeson='kernels').
-        N_pion : optional lumped pion yields (n_boosts, n_L), legacy path.
-        charged_fraction : charged share of a lumped N_pion= input only.
-        B_gauss : comoving magnetic field for the cooling factors (None: off).
-        kaons : include the K -> mu nu_mu component (default off; needs the
-                SOPHIA kernels). True carries both K+ and K-; 'K+' is the
-                Huemmer et al. / NeuCosmA scope (K- dropped) — the kaon
-                shoulder then exists only in the neutrino channels, the
-                antineutrino shoulder vanishing (charge-tagged: only
-                K- -> mu- nubar_mu feeds antineutrinos directly).
-        cooling : 'drop' (default) discards the cooled secondaries;
-                'migrate' transports them to their decay energies
-                (requires B_gauss=).
+            Propagation arguments forwarded to the pion folds when
+            `N_pion` is not given (requires `photomeson='kernels'`).
+        N_pion : ndarray, optional
+            Lumped pion yields `(n_boosts, n_L)`, legacy path.
+        charged_fraction : float, optional
+            Charged share of a lumped `N_pion` input only.
+        B_gauss : float, optional
+            Comoving magnetic field for the cooling factors. None (default)
+            turns cooling off.
+        kaons : {False, True, 'K+'}, optional
+            Include the K -> mu nu_mu component. Default False, which
+            needs the SOPHIA kernels. True carries both K+ and K-; 'K+'
+            is the Huemmer et al. and NeuCosmA scope (K- dropped), so the
+            kaon shoulder then exists only in the neutrino channels, the
+            antineutrino shoulder vanishing (charge tagged: only
+            K- -> mu- nubar_mu feeds antineutrinos directly).
+        cooling : {'drop', 'migrate'}, optional
+            'drop' (default) discards the cooled secondaries; 'migrate'
+            transports them to their decay energies (requires `B_gauss`).
 
-        Returns:
-        --------
-        E_nu : neutrino energy grid in GeV (m_pi * self.boosts)
-        N_nu : dict with cumulative yields, shape of the pion input:
-               'nu_mu', 'nu_e' (neutrino + antineutrino totals, backward
-               compatible) and 'detail' with the separate 'nu_mu',
-               'nubar_mu', 'nu_e', 'nubar_e' components.
+        Returns
+        -------
+        E_nu : ndarray
+            Neutrino energy grid in GeV (`m_pi * self.boosts`).
+        N_nu : dict
+            Cumulative yields, shape of the pion input: `'nu_mu'`,
+            `'nu_e'` (neutrino plus antineutrino totals, backward
+            compatible) and `'detail'` with the separate `'nu_mu'`,
+            `'nubar_mu'`, `'nu_e'`, `'nubar_e'` components.
         """
         if cooling not in ('drop', 'migrate'):
             raise ValueError("cooling must be 'drop' or 'migrate'")
@@ -2303,18 +2444,60 @@ class InteractionCore():
 
     @property
     def species_masses(self):
-        """Masses of self.species in GeV, per the masses= argument (default: nubase)."""
+        """Masses of `self.species` in GeV, per the `masses` constructor
+        argument (default 'nubase').
+
+        Returns
+        -------
+        ndarray
+            Shape `(len(self.species),)`.
+        """
         if not hasattr(self, '_species_masses'):
             self._species_masses = np.array([self._mass_fn(Z, A) for Z, A in self.species])
         return self._species_masses
 
     def energy_of_boost(self, species, boost):
-        """Total energy E = boost * m(Z, A) in GeV for the species (Z, A)."""
+        """Total energy E = boost * m(Z, A) in GeV for the species (Z, A).
+
+        Parameters
+        ----------
+        species : tuple of int
+            `(Z, A)`.
+        boost : float or ndarray
+            Lorentz factor(s).
+
+        Returns
+        -------
+        float or ndarray
+            Energy in GeV, same shape as `boost`.
+
+        Examples
+        --------
+        >>> from crisp.core import InteractionCore
+        >>> from crisp.photonuclear_cross_sections import PSB_model
+        >>> core = InteractionCore(xsec_model=PSB_model())
+        >>> core.energy_of_boost((26, 56), 1e11)  # Fe-56 at Gamma = 1e11
+        np.float64(5208977673560.206)
+        """
         Z, A = species
         return np.asarray(boost) * self._mass_fn(Z, A)
 
     def boost_of_energy(self, species, energy_GeV):
-        """Lorentz factor E / m(Z, A) for the species (Z, A)."""
+        """Lorentz factor E / m(Z, A) for the species (Z, A). The inverse
+        of `energy_of_boost`.
+
+        Parameters
+        ----------
+        species : tuple of int
+            `(Z, A)`.
+        energy_GeV : float or ndarray
+            Energy in GeV.
+
+        Returns
+        -------
+        float or ndarray
+            Lorentz factor(s), same shape as `energy_GeV`.
+        """
         Z, A = species
         return np.asarray(energy_GeV) / self._mass_fn(Z, A)
 
@@ -2476,118 +2659,153 @@ class InteractionCore():
     def species_evolution_boost_range(self, L, alpha=None, mass_range=None, boost_range=None,
                                       true_range=None, coherent_loss=None, energy_loss=None,
                                       resolve_checkpoints=None, method=None):
-        """Returns the probabilities of each species at positions L for a range of boosts.
-        If the distances are negative and in decreasing order, it's equivalent to back propagation.
+        """The core transport call: returns the probability (or population)
+        of each species at positions L for a range of boosts. If the
+        distances are negative and in decreasing order, this is
+        equivalent to back propagation.
 
-        Arguments:
+        Parameters
         ----------
-        L : a float or an array of distances at which the pdf will be evaluated
-        alpha : injection vector (sum of entries must equal one).
-        mass_range : species to be included in the matrix. If None, all species are included.
-        true_range : range of species not part of the absorption range (excluding indices for species that are part of the absorption state)
-                     if none is given, the last species in mass_range is considered the absorption state.
-        boost_range : A two element variable with the limits minimum and maximum. The whole range by default (None).
-        coherent_loss : optional scalar continuous-loss rate b = -dln(gamma)/dx
-                     [1/Mpc], species- and boost-independent (e.g. adiabatic
-                     cooling Gamma/R): applied every sub-step as an exact
-                     rigid shift in ln(gamma) (shift_log_boost's scalar
-                     branch, no numerical diffusion) -- the coherent-
-                     inhomogeneity treatment of the methods paper Sect. 3.1.
-        energy_loss : optional continuous fractional energy-loss rate on
-                     boost_range (uniform log grid): shape (n_b,) applied to
-                     every true_range species, or (n_b, n_true) per species
-                     (e.g. synchrotron and/or pair losses -- both boost-
-                     dependent even for a single species, so no exact
-                     treatment exists). Applied every sub-step via
-                     conservative cloud-in-cell (shift_log_boost's array
-                     branch) -- the dispersive-inhomogeneity treatment of
-                     Sect. 3.2.
-        resolve_checkpoints : only meaningful for a sub-stepped evaluation
-                     (coherent_loss/energy_loss active, or method='auto'/
-                     'substep' choosing the sub-stepped path for a
-                     zero-drift case -- see method below). The sub-step
-                     count is normally chosen from tensor/rate stiffness
-                     alone, independent of how many or how closely spaced
-                     the requested L values are -- fine when only a
-                     handful of checkpoints are requested, but it means
-                     closely-spaced checkpoints can round onto the same
-                     sub-step position (a quantization artifact -- e.g.
-                     visible as a staircase if the returned values are
-                     read off as a smooth function of L). True
-                     additionally floors the sub-step spacing at the
-                     tightest gap between requested checkpoints, so every
-                     one resolves to its own position, at a modest cost
-                     increase. Default None: resolves to True when the
-                     sub-stepped path is standing in for an exact,
-                     zero-drift evaluation (accuracy matters, since
-                     nothing else asked for approximate output), and to
-                     False -- the original, cheaper behavior -- when a
-                     genuine coherent_loss/energy_loss was requested.
-        method : None (default), 'exact', 'substep', or 'auto'. Only
-                     meaningful when coherent_loss/energy_loss represent
-                     no real continuous loss (coherent_loss in (None, 0.0)
-                     and energy_loss is None) -- with an actual loss rate
-                     active, the sub-stepped path is the only option
-                     regardless of this argument (raises ValueError only
-                     if method='exact' is explicitly requested there; no
-                     closed form exists for L-dependent drift -- the
-                     default, None, never raises this, it simply defers to
-                     the sub-stepped path whenever real drift is active,
-                     same as before this argument existed). For the
-                     zero-drift case, both the direct 'exact' expm-per-distance
-                     evaluation below and a chained-substep evaluation
-                     (see _species_evolution_with_drift) solve the
-                     identical equation -- they differ only in cost, which
-                     can favor either one depending on species count,
-                     L_max, tensor stiffness, and how many distances are
-                     requested (see _exact_is_cheaper): 'exact' is cheap
-                     for small-to-moderate species counts and L_max*rate
-                     products, but its cost grows with the number of
-                     scipy expm scaling-and-squaring doublings needed, which
-                     can make it dramatically slower than 'substep' at
-                     large species counts evaluated over a wide distance
-                     range (measured directly: ~20x for a 1184-species
-                     network over 200 Mpc). None resolves to 'exact' in
-                     the zero-drift case, so that every OTHER method built
-                     on top of this one -- several duplicate its exact-path
-                     math inline rather than calling it (_photomeson_fold,
-                     light_cascade_production, light_production_cumulative)
-                     -- keeps agreeing with it to machine precision by
-                     default; pass method='auto' explicitly to let this
-                     call estimate both costs and pick the cheaper one (or
-                     'substep' to force it), accepting that the result will
-                     then only agree with those other methods' internal
-                     computations to substep-level precision, not machine
-                     precision (falls back to 'exact' for back propagation
-                     either way, which 'substep' cannot do).
+        L : float or ndarray
+            Distance(s) [Mpc] at which the population will be evaluated.
+        alpha : ndarray
+            Injection vector (sum of entries must equal one).
+        mass_range : list of int, optional
+            Species to be included in the matrix. If None, all species
+            are included.
+        true_range : list of int
+            Species not part of the absorption range (excludes indices
+            for species that are part of the absorption state). If none
+            is given, the last species in `mass_range` is considered the
+            absorption state.
+        boost_range : ndarray, optional
+            The boost grid to evaluate on. The full grid by default
+            (None).
+        coherent_loss : float, optional
+            Scalar continuous-loss rate `b = -dln(gamma)/dx` [1/Mpc],
+            species- and boost-independent (e.g. adiabatic cooling
+            Gamma/R). Applied every sub-step as an exact rigid shift in
+            ln(gamma) (`shift_log_boost`'s scalar branch, no numerical
+            diffusion), the coherent-inhomogeneity treatment of the
+            methods paper Sect. 3.1.
+        energy_loss : ndarray, optional
+            Continuous fractional energy-loss rate on `boost_range`
+            (uniform log grid): shape `(n_b,)` applied to every
+            `true_range` species, or `(n_b, n_true)` per species (e.g.
+            synchrotron and/or pair losses, both boost-dependent even for
+            a single species, so no exact treatment exists). Applied
+            every sub-step via conservative cloud-in-cell
+            (`shift_log_boost`'s array branch), the dispersive-
+            inhomogeneity treatment of Sect. 3.2.
+        resolve_checkpoints : bool, optional
+            Only meaningful for a sub-stepped evaluation (`coherent_loss`
+            or `energy_loss` active, or `method='auto'`/`'substep'`
+            choosing the sub-stepped path for a zero-drift case, see
+            `method` below). The sub-step count is normally chosen from
+            tensor/rate stiffness alone, independent of how many or how
+            closely spaced the requested `L` values are: fine when only
+            a handful of checkpoints are requested, but it means
+            closely-spaced checkpoints can round onto the same sub-step
+            position (a quantization artifact, visible as a staircase if
+            the returned values are read off as a smooth function of
+            `L`). True additionally floors the sub-step spacing at the
+            tightest gap between requested checkpoints, so every one
+            resolves to its own position, at a modest cost increase.
+            Default None: resolves to True when the sub-stepped path is
+            standing in for an exact, zero-drift evaluation (accuracy
+            matters, since nothing else asked for approximate output),
+            and to False, the original and cheaper behavior, when a
+            genuine `coherent_loss`/`energy_loss` was requested.
+        method : {None, 'exact', 'substep', 'auto'}, optional
+            Only meaningful when `coherent_loss`/`energy_loss` represent
+            no real continuous loss (`coherent_loss` in `(None, 0.0)` and
+            `energy_loss` is None). With an actual loss rate active, the
+            sub-stepped path is the only option regardless of this
+            argument (raises `ValueError` only if `method='exact'` is
+            explicitly requested there, since no closed form exists for
+            L-dependent drift; the default, None, never raises this, it
+            simply defers to the sub-stepped path whenever real drift is
+            active, the same as before this argument existed). For the
+            zero-drift case, both the direct 'exact' expm-per-distance
+            evaluation and a chained-substep evaluation (see
+            `_species_evolution_with_drift`) solve the identical
+            equation: they differ only in cost, which can favor either
+            one depending on species count, `L_max`, tensor stiffness,
+            and how many distances are requested (see
+            `_exact_is_cheaper`). 'exact' is cheap for small to moderate
+            species counts and `L_max * rate` products, but its cost
+            grows with the number of scipy `expm` scaling-and-squaring
+            doublings needed, which can make it dramatically slower than
+            'substep' at large species counts evaluated over a wide
+            distance range (measured directly: about 20x for a
+            1184-species network over 200 Mpc). None resolves to 'exact'
+            in the zero-drift case, so that every other method built on
+            top of this one (several duplicate its exact-path math inline
+            rather than calling it, e.g. `light_cascade_production`,
+            `light_production_cumulative`) keeps agreeing with it to
+            machine precision by default; pass `method='auto'` explicitly
+            to let this call estimate both costs and pick the cheaper one
+            (or `'substep'` to force it), accepting that the result will
+            then only agree with those other methods' internal
+            computations to substep-level precision, not machine
+            precision (falls back to 'exact' for back propagation either
+            way, which 'substep' cannot do).
 
-        When either coherent_loss or energy_loss is a genuine nonzero
-        rate, L must be a non-negative scalar or a non-negative, ascending
-        array (forward propagation only -- back propagation with active
-        continuous losses is not implemented), and the method switches
-        from the single exact expm per boost bin above to a chain of
+        When either `coherent_loss` or `energy_loss` is a genuine nonzero
+        rate, `L` must be a non-negative scalar or a non-negative,
+        ascending array (forward propagation only; back propagation with
+        active continuous losses is not implemented), and the method
+        switches from the single exact `expm` per boost bin to a chain of
         sub-steps (interaction, then drift) between L=0 and each requested
         position, with the sub-step count chosen automatically from the
         stiffness of the tensor and the supplied rates (the same
-        convention as reprocessed_nucleons: every rate * sub-step stays
-        bounded). With coherent_loss=None, energy_loss=None, and
-        method='exact' (or 'auto' resolving to 'exact'), this path is
-        unchanged and bit-identical to before this argument existed.
+        convention as `reprocessed_nucleons`: every rate times sub-step
+        stays bounded). With `coherent_loss=None`, `energy_loss=None`,
+        and `method='exact'` (or 'auto' resolving to 'exact'), this path
+        is unchanged and bit-identical to before this argument existed.
 
-        Injection with losses active: without drift, boost bins never mix,
-        so broadcasting one species-only alpha to every bin and reading off
-        row b is exactly equivalent to injecting alpha at b in isolation --
-        that equivalence is what lets the no-loss path solve every boost
-        bin's independent problem in one batched call. Drift breaks it:
-        shift_log_boost mixes neighboring bins, so a uniformly-broadcast
-        alpha stops meaning "the answer for injection at this bin" and
-        instead means "the state from injecting at every bin at once,
-        summed in by the drift" -- rarely what's wanted. Pass alpha as a
-        (n_boost_range, n_true) array (matching mass_range's true_range
-        columns) for the general, boost-resolved case (e.g. injection
-        confined to a limited boost window); the plain (n_true,) vector
-        remains valid as the special case of a genuinely uniform-in-boost
-        injection, broadcast internally to every bin.
+        Injection with losses active: without drift, boost bins never
+        mix, so broadcasting one species-only alpha to every bin and
+        reading off row b is exactly equivalent to injecting alpha at b
+        in isolation, and that equivalence is what lets the no-loss path
+        solve every boost bin's independent problem in one batched call.
+        Drift breaks it: `shift_log_boost` mixes neighboring bins, so a
+        uniformly-broadcast alpha stops meaning "the answer for injection
+        at this bin" and instead means "the state from injecting at every
+        bin at once, summed in by the drift", rarely what's wanted. Pass
+        alpha as a `(n_boost_range, n_true)` array (matching
+        `mass_range`'s `true_range` columns) for the general,
+        boost-resolved case (e.g. injection confined to a limited boost
+        window); the plain `(n_true,)` vector remains valid as the
+        special case of a genuinely uniform-in-boost injection, broadcast
+        internally to every bin.
+
+        Returns
+        -------
+        ndarray
+            `P`, the population/probability array. Shape
+            `(n_boost, n_L, n_true)` for array `L` (or
+            `(n_boost, n_true)` for scalar `L`) when `coherent_loss` and
+            `energy_loss` are both inactive; one extra "absorbed" column
+            (`n_true + 1`) when the sub-stepped path is used (drop it
+            with `P[..., :len(true_range)]` if not needed, as this
+            module's own callers do).
+
+        Examples
+        --------
+        >>> import numpy as np
+        >>> from crisp.core import InteractionCore
+        >>> from crisp.photonuclear_cross_sections import PSB_model
+        >>> core = InteractionCore(xsec_model=PSB_model())
+        >>> alpha, mr, tr, _ = core.get_distribution_parameters(
+        ...     mass_lims=(56, 0), injection_type=('only species', (26, 56)),
+        ...     absorption_type=('only mass', []))
+        >>> distances = np.array([1.0, 10.0, 50.0, 200.0])  # Mpc
+        >>> P = core.species_evolution_boost_range(
+        ...     distances, alpha, mr, core.boosts, tr)
+        >>> i_fe = tr.index(core.species.index((26, 56)))
+        >>> P[82, :, i_fe]  # Fe-56's own surviving fraction near 99 EeV
+        array([0.99645193, 0.96508049, 0.83717775, 0.49121398])
         """
 
         if boost_range is None:
@@ -2843,19 +3061,30 @@ class InteractionCore():
         absorbed states). Integrating the returned rate along L reproduces the
         cumulative 'emission' tally of light_production_cumulative.
 
-        Arguments:
+        Parameters
         ----------
-        L : a float or an array of distances at which the rate will be evaluated
-        alpha : injection vector (sum of entries must equal one).
-        mass_range : species to be included in the matrix. If None, all species are included.
-        boost_range : boost values to evaluate. The whole grid by default (None).
-        P : optional precomputed heavy evolution, as returned by
-            species_evolution_boost_range with the same arguments; avoids
-            re-solving the cascade ODE.
+        L : float or ndarray
+            Distance(s) [Mpc] at which the rate will be evaluated.
+        alpha : ndarray
+            Injection vector (sum of entries must equal one).
+        mass_range : list of int, optional
+            Species to be included in the matrix. If None, all species
+            are included.
+        boost_range : ndarray, optional
+            Boost values to evaluate. The whole grid by default (None).
+        P : ndarray, optional
+            Precomputed heavy evolution, as returned by
+            `species_evolution_boost_range` with the same arguments.
+            Avoids re-solving the cascade ODE.
+        cumulative : bool, optional
+            If True, integrate the rate along `L` (trapezoid), giving the
+            cumulative counts up to each distance. Default False.
 
-        Returns:
-        --------
-        production : ndarray, shape (6, n_boosts, n_L) — [He4, He3, H3, H2, p, n]
+        Returns
+        -------
+        ndarray
+            `production`, shape `(6, n_boosts, n_L)`: `[He4, He3, H3, H2,
+            p, n]`.
         """
         if boost_range is None:
             boost_range = self.boosts
@@ -2975,23 +3204,36 @@ class InteractionCore():
         evolving produced light particles (H3→He3, n→p) through their disintegration channels.
 
         Solves the coupled heavy + light ODE jointly via matrix exponential.
-        The block rate matrix is [[Λ_heavy, Y, abs], [0, M_light, 0], [0, 0, 0]]
-        where Y[i,k] is the total production rate of light species k from heavy species i.
+        The block rate matrix is [[Lambda_heavy, Y, abs], [0, M_light, 0],
+        [0, 0, 0]], where Y[i,k] is the total production rate of light
+        species k from heavy species i.
 
-        Output shape: (6, n_boosts, n_L) for array L, or (6, n_boosts) for scalar L.
-
-        Arguments:
+        Parameters
         ----------
-        L : float or array of distances at which the distribution will be evaluated
-        alpha : injection vector (must sum to one)
-        mass_range : species indices to include. Must be provided together with true_range.
-        boost_range : boost values to evaluate. Full grid by default.
-        true_range : subset of mass_range that are not absorption states.
+        L : float or ndarray
+            Distance(s) [Mpc] at which the distribution will be evaluated.
+        alpha : ndarray
+            Injection vector (must sum to one).
+        mass_range : list of int
+            Species indices to include. Must be provided together with
+            `true_range`.
+        boost_range : ndarray, optional
+            Boost values to evaluate. Full grid by default.
+        true_range : list of int
+            Subset of `mass_range` that are not absorption states.
 
-        MEMORY: solved via _expm_per_boost on an (n_true+7)x(n_true+7) block
-        (heavy + 6 light species + absorbed), full stack held for array L --
-        see _expm_per_boost's own docstring for the scaling this implies at
-        large n_true.
+        Returns
+        -------
+        ndarray
+            Shape `(6, n_boosts, n_L)` for array `L`, or `(6, n_boosts)`
+            for scalar `L`.
+
+        Notes
+        -----
+        Memory: solved via `_expm_per_boost` on an `(n_true+7)x(n_true+7)`
+        block (heavy plus 6 light species plus absorbed), with the full
+        stack held for array `L`. See `_expm_per_boost`'s own docstring
+        for the scaling this implies at large `n_true`.
         """
         if boost_range is None:
             boost_range = self.boosts
@@ -3044,44 +3286,63 @@ class InteractionCore():
 
     def light_production_cumulative(self, L, alpha=None, mass_range=None, boost_range=None,
                                     true_range=None, channel='total'):
-        """Cumulative number of light particles produced up to L, separated by channel.
+        """Cumulative number of light particles produced up to L, separated
+        by channel.
 
-        Tracks, for each light species [He4, He3, H3, H2, p, n], how many particles
-        were ever created up to distance L — a produced particle stays counted even
-        if it is later destroyed or converted.  Three production channels are
-        tallied separately:
+        Tracks, for each light species [He4, He3, H3, H2, p, n], how many
+        particles were ever created up to distance L (a produced particle
+        stays counted even if it is later destroyed or converted). Three
+        production channels are tallied separately:
 
-        - 'emission'   : particles emitted by photodisintegration of the heavy cascade.
-        - 'conversion' : particles created from other light particles (n→p decay,
-                         H3→He3, photodisintegration of the bound secondaries).
-        - 'leading'    : the heavy-cascade chain itself arriving at the species
-                         (the leading remnant becoming He4/He3/H2 or a free nucleon).
-        - 'total'      : sum of the three.
+        - 'emission': particles emitted by photodisintegration of the
+          heavy cascade.
+        - 'conversion': particles created from other light particles
+          (n to p decay, H3 to He3, photodisintegration of the bound
+          secondaries).
+        - 'leading': the heavy-cascade chain itself arriving at the
+          species (the leading remnant becoming He4/He3/H2 or a free
+          nucleon).
+        - 'total': sum of the three.
 
-        All channels are exact matrix-exponential solutions of the same augmented
-        ODE solved by light_cascade_production: the standing light populations
-        evolve with the full light-block matrix, while accumulator columns
-        integrate each production inflow without outflow.  The standing
-        populations themselves are returned by light_cascade_production; the
-        instantaneous heavy-cascade production rate by light_secondaries_production.
+        All channels are exact matrix-exponential solutions of the same
+        augmented ODE solved by `light_cascade_production`: the standing
+        light populations evolve with the full light-block matrix, while
+        accumulator columns integrate each production inflow without
+        outflow. The standing populations themselves are returned by
+        `light_cascade_production`; the instantaneous heavy-cascade
+        production rate by `light_secondaries_production`.
 
-        Output shape: (6, n_boosts, n_L) for array L, or (6, n_boosts) for scalar L.
-
-        Arguments:
+        Parameters
         ----------
-        L : float or array of distances at which the tallies are evaluated
-        alpha : injection vector (must sum to one)
-        mass_range : species indices to include. Must be provided together with true_range.
-        boost_range : boost values to evaluate. Full grid by default.
-        true_range : subset of mass_range that are not absorption states.
-        channel : 'emission', 'conversion', 'leading' or 'total' (default).
+        L : float or ndarray
+            Distance(s) [Mpc] at which the tallies are evaluated.
+        alpha : ndarray
+            Injection vector (must sum to one).
+        mass_range : list of int
+            Species indices to include. Must be provided together with
+            `true_range`.
+        boost_range : ndarray, optional
+            Boost values to evaluate. Full grid by default.
+        true_range : list of int
+            Subset of `mass_range` that are not absorption states.
+        channel : {'emission', 'conversion', 'leading', 'total'}, optional
+            Default 'total'.
 
-        MEMORY: the largest of this file's augmented systems -- solved via
-        _expm_per_boost on an (n_true+25)x(n_true+25) block (heavy + 6
-        light + 3x6 accumulator tallies + absorbed), full stack held for
-        array L. Hits the same large-n_true memory wall _expm_per_boost's
-        docstring describes, at a smaller n_true than any other method here
-        (its block is the biggest of the four sharing that helper).
+        Returns
+        -------
+        ndarray
+            Shape `(6, n_boosts, n_L)` for array `L`, or `(6, n_boosts)`
+            for scalar `L`.
+
+        Notes
+        -----
+        Memory: the largest of this file's augmented systems, solved via
+        `_expm_per_boost` on an `(n_true+25)x(n_true+25)` block (heavy
+        plus 6 light plus 3x6 accumulator tallies plus absorbed), with
+        the full stack held for array `L`. Hits the same large-`n_true`
+        memory wall `_expm_per_boost`'s docstring describes, at a smaller
+        `n_true` than any other method here (its block is the biggest of
+        the four sharing that helper).
         """
         if channel not in ('emission', 'conversion', 'leading', 'total'):
             raise ValueError(f"channel must be 'emission', 'conversion', 'leading' "
@@ -3162,26 +3423,46 @@ class InteractionCore():
         return np.moveaxis(tally, -1, 0)                     # (6, n_b, n_L) or (6, n_b)
 
     def cdf_boost_range(self, L, alpha=None, mass_range=None, boost_range=None, true_range=None):
-        """Returns the probability (cumulative) distribution values at positions L for a range of boosts
+        """The cumulative distance-until-absorption distribution: the
+        probability that an injected nucleus has already interacted or
+        been absorbed by distance L, for a range of boosts.
 
-        Arguments:
+        Parameters
         ----------
-        L : a float or an array of distances at which the pdf will be evaluated
-        alpha : injection vector (sum of entries must equal one).
-        mass_range : species to be included in the matrix. If None, all species are included.
-        boost_range : A two element variable with the limits minimum and maximum. The whole range by default (None).
+        L : float or ndarray
+            Distance(s) [Mpc] at which the cdf will be evaluated. In
+            practice always called with an array; see the Notes below.
+        alpha : ndarray
+            Injection vector (sum of entries must equal one).
+        mass_range : list of int, optional
+            Species to be included in the matrix. If None, all species
+            are included.
+        boost_range : ndarray, optional
+            The boost grid to evaluate on. The full grid by default
+            (None).
 
-        MEMORY: solved via _expm_per_boost on the bare (n_true)x(n_true)
+        Returns
+        -------
+        boosts : ndarray
+            `self.boosts`.
+        total : ndarray
+            The cdf value at each requested boost and distance.
+
+        Notes
+        -----
+        Memory: solved via `_expm_per_boost` on the bare `(n_true)x(n_true)`
         tensor (no absorption augmentation, the smallest of this file's
-        systems), full stack held for array L -- see _expm_per_boost's own
-        docstring. KNOWN BUG, not fixed here: the scalar-L branch below
-        (the `else` of `if alpha.shape == ones.shape`) reduces expmatL to a
-        2-D result but the einsum pattern used is the one for array L's 3-D
-        result -- raises a shape ValueError for a 1-D alpha and scalar L.
-        Pre-existing (confirmed via git history the einsum branching itself
-        was never touched by this session's refactor); never exercised by
-        any notebook or test in this repo, which only ever call this with
-        array L.
+        systems), with the full stack held for array `L`. See
+        `_expm_per_boost`'s own docstring.
+
+        Known, pre-existing bug, not fixed here: the scalar-`L` branch
+        (the `else` of `if alpha.shape == ones.shape`) reduces `expmatL`
+        to a 2-D result, but the einsum pattern used is the one for array
+        `L`'s 3-D result, so it raises a shape `ValueError` for a 1-D
+        `alpha` and scalar `L`. Confirmed via git history that this
+        einsum branching itself predates and was never touched by any
+        refactor; never exercised by any notebook or test in this repo,
+        which only ever call this with array `L`.
         """
 
         if boost_range is None:
@@ -3201,22 +3482,44 @@ class InteractionCore():
         return self.boosts, total
 
     def pdf_boost_range(self, L, alpha=None, mass_range=None, omega=None, boost_range=None, true_range=None):
-        """Returns the probability density value at positions L for a range of boosts
+        """The distance-until-absorption probability density at positions
+        L for a range of boosts: the complement of `cdf_boost_range`.
 
-        Arguments:
+        Parameters
         ----------
-        L : a float or an array of distances at which the pdf will be evaluated
-        alpha : injection vector (sum of entries must equal one).
-        mass_range : species to be included in the matrix. If None, all species are included.
-        omega : ending or production vector. By default is set to omega=-Te
-        true_range : range of species not part of the absorption range (excluding indices for species that are part of the absorption state)
-                     if none is given, the last species in mass_range is considered the absorption state.
-        boost_range : A two element variable with the limits minimum and maximum. The whole range by default (None).
+        L : float or ndarray
+            Distance(s) [Mpc] at which the pdf will be evaluated. In
+            practice always called with an array; see the Notes below.
+        alpha : ndarray
+            Injection vector (sum of entries must equal one).
+        mass_range : list of int, optional
+            Species to be included in the matrix. If None, all species
+            are included.
+        omega : ndarray, optional
+            Ending or production vector. By default set to `omega = -T e`
+            (the row-sum of the restricted tensor).
+        true_range : list of int
+            Species not part of the absorption range (excludes indices
+            for species that are part of the absorption state). If none
+            is given, the last species in `mass_range` is considered the
+            absorption state.
+        boost_range : ndarray, optional
+            The boost grid to evaluate on. The full grid by default
+            (None).
 
-        MEMORY: same profile as cdf_boost_range (bare (n_true)x(n_true)
-        tensor, full per-boost stack for array L) -- see _expm_per_boost.
-        Shares the same pre-existing, unfixed scalar-L/1-D-alpha shape bug
-        described there too.
+        Returns
+        -------
+        boost_range : ndarray
+            The boost grid actually used.
+        total : ndarray
+            The pdf value at each requested boost and distance.
+
+        Notes
+        -----
+        Memory: same profile as `cdf_boost_range` (bare `(n_true)x(n_true)`
+        tensor, full per-boost stack for array `L`), see
+        `_expm_per_boost`. Shares the same pre-existing, unfixed
+        scalar-`L`/1-D-`alpha` shape bug described there too.
         """
 
         if boost_range is None:
@@ -3238,16 +3541,32 @@ class InteractionCore():
         return boost_range, total
 
     def pdf_moments_boost_range(self, alpha=None, mass_range=None, boost_range=None, true_range=None, degree=1):
-        """Returns the moments for a range of boosts
+        """The moments of the distance-until-absorption distribution
+        (`pdf_boost_range`) for a range of boosts.
 
-        Arguments:
+        Parameters
         ----------
-        alpha : injection vector (sum of entries must equal one).
-        mass_range : species to be included in the matrix. If None, all species are included.
-        true_range : range of species not part of the absorption range (excluding indices for species that are part of the absorption state)
-                     if none is given, the last species in mass_range is considered the absorption state.
-        boost_range : A two element variable with the limits minimum and maximum. The whole range by default (None). 
-        degree : the order of the moment n as in  mu_n = E[X^n]
+        alpha : ndarray
+            Injection vector (sum of entries must equal one).
+        mass_range : list of int, optional
+            Species to be included in the matrix. If None, all species
+            are included.
+        true_range : list of int
+            Species not part of the absorption range (excludes indices
+            for species that are part of the absorption state). If none
+            is given, the last species in `mass_range` is considered the
+            absorption state.
+        boost_range : ndarray, optional
+            The boost grid to evaluate on. The full grid by default
+            (None).
+        degree : int, optional
+            The order n of the moment, as in `mu_n = E[X^n]`. Default 1
+            (the mean).
+
+        Returns
+        -------
+        ndarray
+            The n-th moment at each boost.
         """
 
         if boost_range is None:
@@ -3274,15 +3593,29 @@ class InteractionCore():
         return moment
     
     def pdf_variance_boost_range(self, alpha=None, mass_range=None, boost_range=None, true_range=None):
-        """Returns the variance for a range of boosts
+        """The variance of the distance-until-absorption distribution
+        (`pdf_boost_range`) for a range of boosts.
 
-        Arguments:
+        Parameters
         ----------
-        alpha : injection vector (sum of entries must equal one).
-        mass_range : species to be included in the matrix. If None, all species are included.
-        boost_range : A two element variable with the limits minimum and maximum. The whole range by default (None). 
-        true_range : range of species not part of the absorption range (excluding indices for species that are part of the absorption state)
-                     if none is given, the last species in mass_range is considered the absorption state.
+        alpha : ndarray
+            Injection vector (sum of entries must equal one).
+        mass_range : list of int, optional
+            Species to be included in the matrix. If None, all species
+            are included.
+        boost_range : ndarray, optional
+            The boost grid to evaluate on. The full grid by default
+            (None).
+        true_range : list of int
+            Species not part of the absorption range (excludes indices
+            for species that are part of the absorption state). If none
+            is given, the last species in `mass_range` is considered the
+            absorption state.
+
+        Returns
+        -------
+        ndarray
+            The variance at each boost.
         """
 
         if boost_range is None:
@@ -3436,16 +3769,17 @@ class InteractionCore():
     def save(self, path):
         """Saves the data to a .npz file.
 
-        Saves all arrays needed to reconstruct an instance with load().
-        Construction-time secondaries machinery is NOT persisted (same policy
-        as the photomeson kernels): photomeson_kernels, pion_prod_tensor,
-        proton_recoil_tensor, photomeson_rates_pn and the
-        photomeson_scaling='inclusive' factor tables — rebuild from the
-        xsec_model to use the production folds.
+        Saves all arrays needed to reconstruct an instance with `load()`.
+        Construction-time secondaries machinery is NOT persisted (same
+        policy as the photomeson kernels): `photomeson_kernels`,
+        `pion_prod_tensor`, `proton_recoil_tensor`, `photomeson_rates_pn`,
+        and the `photomeson_scaling='inclusive'` factor tables. Rebuild
+        from the `xsec_model` to use the production folds.
 
-        Arguments:
+        Parameters
         ----------
-        path : str or path-like — destination file (.npz appended if absent)
+        path : str or path-like
+            Destination file (`.npz` appended if absent).
         """
         path = str(path)
         if not path.endswith('.npz'):
@@ -3475,15 +3809,16 @@ class InteractionCore():
         np.savez(path, **data)
 
     def load(self, path):
-        """Populate an instance from a file saved with save().
+        """Populate an instance from a file saved with `save()`.
 
         Replaces all computed attributes in place, bypassing
-        _construct_from_files() and _generate_complete_matrices().
+        `_construct_from_files()` and `_generate_complete_matrices()`.
         The existing object reference remains valid after the call.
 
-        Arguments:
+        Parameters
         ----------
-        path : str or path-like — source file (.npz appended if absent)
+        path : str or path-like
+            Source file (`.npz` appended if absent).
         """
         path = str(path)
         if not path.endswith('.npz'):
@@ -3517,22 +3852,64 @@ class InteractionCore():
         self.interpyields = lambda boostval: interp1d(self.boosts, self.light_prod_tensor, 'previous')(boostval)
 
     def get_distribution_parameters(self, mass_lims=(56, 11), injection_type=('only species', (26, 56)), absorption_type=('only mass', [54]), boost_range=None):
-        """Produces the injection vector and mass_range required to
-        produce the distribution of nuclei starting from a certain mass
-        and producing mass lower than a minimum given value.
+        """Builds the injection vector `alpha`, `mass_range`, and
+        `true_range` arguments that `species_evolution_boost_range` and
+        the other propagation methods need, for a cascade starting from
+        a chosen mass range and absorbing below a chosen threshold.
 
-        Arguments:
+        Parameters
         ----------
-        species : The list of species (Z, A) that are included in the full nuclear cascade.
-        mass_lims : a tuple (Amax, Amin) with the starting mass and the lower limit for mass
-        injection type : (type, params) (str, dict) info specifying the injection. Possible values
-                    - 'flat' : equal injection of all species included within the mass range mass_lims
-                    - 'only mass' : equal injection of all species specified by a mass value in a list
-                    - 'only species' : equal injection of all species specified as (Z, A)
-        absorption type : (type, params) (str, dict) info specifying the absorbing state. Possible values
-                    - 'only mass' : equal injection of all species specified by a mass value in a list
-                    - 'only species' : equal injection of all species specified as (Z, A)
-            
+        mass_lims : tuple of int, optional
+            `(Amax, Amin)`, the starting mass and the lower limit for
+            mass. Species with `Amin < A <= Amax` are included in
+            `mass_range`. Default `(56, 11)`.
+        injection_type : tuple, optional
+            `(type, params)` specifying the injection. `type` is one of:
+
+            - `'flat'`: equal injection of every species in `mass_lims`.
+            - `'only mass'`: equal injection of the species whose mass
+              is in the list `params`.
+            - `'only species'`: injection concentrated on the single
+              species `(Z, A) = params`.
+
+            Default `('only species', (26, 56))` (Fe-56 only).
+        absorption_type : tuple, optional
+            `(type, params)` specifying the absorbing state, the species
+            excluded from `true_range`. `type` is one of `'only mass'`,
+            `'only species'` (as above), or `'only charge'` (species
+            whose charge is in the list `params`). Default
+            `('only mass', [54])`.
+        boost_range : ndarray, optional
+            The boost grid to build the reduced tensor on. The full grid
+            by default (None).
+
+        Returns
+        -------
+        alpha : ndarray
+            The injection vector, normalized to sum to 1, indexed like
+            `mass_range`.
+        mass_range : list of int
+            Indices into `self.species` for every species between
+            `mass_lims`.
+        true_range : list of int
+            The subset of `mass_range` not excluded by `absorption_type`
+            (the non-absorbed species).
+        reduced_tensor : ndarray
+            The interaction tensor restricted to `true_range`, on
+            `boost_range`.
+
+        Examples
+        --------
+        >>> from crisp.core import InteractionCore
+        >>> from crisp.photonuclear_cross_sections import PSB_model
+        >>> core = InteractionCore(xsec_model=PSB_model())
+        >>> alpha, mass_range, true_range, reduced_tensor = core.get_distribution_parameters(
+        ...     mass_lims=(56, 0), injection_type=('only species', (26, 56)),
+        ...     absorption_type=('only mass', [1]))
+        >>> alpha.sum()
+        np.float64(1.0)
+        >>> len(mass_range), len(true_range)
+        (53, 51)
         """
         Amax, Amin = mass_lims
         

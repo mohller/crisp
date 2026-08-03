@@ -7,10 +7,15 @@ light, or a custom photon field). Given an injected composition and
 energy spectrum, it returns the exact, closed-form probability
 distribution of surviving and fragment nuclei, and of secondary
 particles (pions, nucleons, neutrinos, light nuclei) produced along the
-way, at any distance from the source. The core transport equation is
-solved as a matrix exponential rather than by Monte Carlo sampling, so a
-result at one distance, or a thousand distances at once, costs the same
-kind of calculation and carries no statistical noise.
+way, at any distance from the source. The same interaction tensors also
+give the closed form probability distribution of the distance itself at
+which a nucleus first interacts or is absorbed (a "distance until
+absorption" distribution, with its cdf, pdf, and moments), the
+complementary, survival-analysis style view of the same cascade. The
+core transport equation is solved as a matrix exponential rather than by
+Monte Carlo sampling, so a result at one distance, or a thousand
+distances at once, costs the same kind of calculation and carries no
+statistical noise.
 
 Main pieces, and how they fit together
 ---------------------------------------
@@ -22,7 +27,11 @@ Main pieces, and how they fit together
 - `core` defines `InteractionCore`, the class that assembles those
   cross sections (plus optional photon fields, decay data, and
   photomeson kernels) into interaction tensors, then solves the
-  transport equation. This is the class most calculations start from.
+  transport equation, both for the propagated population at a distance
+  (`species_evolution_boost_range` and the secondary production methods
+  built on it) and for the distance-until-absorption distributions
+  (`cdf_boost_range`/`pdf_boost_range` and their moments). This is the
+  class most calculations start from.
 - `source_models` defines astrophysical source classes (GRB jet
   models and related injection spectra) that produce the injection
   vector `InteractionCore` needs, for users who want a physically
