@@ -2030,6 +2030,155 @@ def test_extragalactic_ci():
     assert abs(s_ci - s_bf) < 0.01
 
 
+def test_ebl_tensor_additivity():
+    """InteractionCore's cascade tensor is additive in the target photon
+    field, and decays are additive as a redshift-independent, zero-field
+    term: both underpin ExtragalacticPropagation's ebl_scaling fast path."""
+    from crisp.core import InteractionCore
+    from crisp.background_photon_models import cmb_photon_density_GeVcm3
+    from crisp.data.nucleardecays import NuclearDataTable
+
+    boosts = np.logspace(7.3, 11.5, 20)
+    psb = psb_xsec()
+    field_a = cmb_photon_density_GeVcm3
+    field_b = lambda e: 0.3 * cmb_photon_density_GeVcm3(e)
+
+    core_combined = InteractionCore(xsec_model=psb, target_photons=(field_a, field_b), boosts=boosts)
+    core_a = InteractionCore(xsec_model=psb, target_photons=field_a, boosts=boosts)
+    core_b = InteractionCore(xsec_model=psb, target_photons=field_b, boosts=boosts)
+    scale = np.abs(core_combined.tensor).max()
+    mask = np.abs(core_combined.tensor) > 1e-6 * scale
+    rel = np.abs(core_combined.tensor[mask] - (core_a.tensor + core_b.tensor)[mask]) \
+        / np.abs(core_combined.tensor[mask])
+    assert rel.max() < 1e-8
+    print(f'  field additivity: max rel diff {rel.max():.2e} ({mask.sum()} entries checked)')
+
+    dec = NuclearDataTable().prepare_decay_table()
+    zero_field = lambda e: np.zeros_like(np.atleast_1d(np.asarray(e, dtype=float)))
+    core_field_decay = InteractionCore(xsec_model=psb, target_photons=field_a, boosts=boosts,
+                                       decays=dec, nuclear_decay_On=True)
+    core_field_only = InteractionCore(xsec_model=psb, target_photons=field_a, boosts=boosts,
+                                      decays=None, nuclear_decay_On=False)
+    core_decay_only = InteractionCore(xsec_model=psb, target_photons=zero_field, boosts=boosts,
+                                      decays=dec, nuclear_decay_On=True)
+    scale = np.abs(core_field_decay.tensor).max()
+    mask = np.abs(core_field_decay.tensor) > 1e-6 * scale
+    sum_tensor = core_field_only.tensor + core_decay_only.tensor
+    rel = np.abs(core_field_decay.tensor[mask] - sum_tensor[mask]) / np.abs(core_field_decay.tensor[mask])
+    assert rel.max() < 1e-8
+    print(f'  decay additivity: max rel diff {rel.max():.2e} ({mask.sum()} entries checked)')
+
+
+def test_species_topology_needs_real_decay_table():
+    """_resolve_unstable_products falls back to a same-mass tracked
+    stand-in for any untracked channel remnant absent from the decay
+    table (crisp/core.py, ~line 4025) -- correct for a true beta
+    descendant, wrong for a particle-unstable remnant whose decay changes
+    mass number (e.g. B-9, a proton emitter, wrongly redirected onto the
+    untracked-otherwise Be-9 when no decay table is given). This makes
+    species topology depend on whether *any* decay table is present, not
+    just on nuclear_decay_On -- so InteractionCore.tensor is only
+    guaranteed additive across builds that share the same decays= value.
+    ExtragalacticPropagation.ebl_scaling relies on this: its CMB-only and
+    EBL-only reference cores keep the user's own decays= and only toggle
+    nuclear_decay_On, rather than forcing decays=None."""
+    from crisp.core import InteractionCore
+    from crisp.photonuclear_cross_sections import CRPropa_model, Model_Rack
+    from crisp.data_download import get_tables_path
+    from crisp.data.nucleardecays import NuclearDataTable
+    from crisp.background_photon_models import cmb_photon_density_GeVcm3
+
+    tables = get_tables_path(verbose=False)
+    crp = Model_Rack(models=(
+        CRPropa_model(path=tables + 'PD_external', filter_nuclei=lambda za: za[1] <= 25),
+        CRPropa_model(path=tables + 'PD_Talys1.9', filter_nuclei=lambda za: za[1] <= 25)))
+    assert crp.channels[crp.nuclei.index((6, 10))] == [(5, 9)], \
+        'C-10 should have exactly one real channel, to B-9'
+
+    boosts = np.logspace(7.3, 11.5, 20)
+    eps = 1e-3 * np.logspace(-1, 2.1, 80)
+    dec = NuclearDataTable().prepare_decay_table()
+
+    core_no_table = InteractionCore(xsec_model=crp, target_photons=cmb_photon_density_GeVcm3,
+                                    boosts=boosts, eps=eps, decays=None, nuclear_decay_On=False)
+    core_table_off = InteractionCore(xsec_model=crp, target_photons=cmb_photon_density_GeVcm3,
+                                     boosts=boosts, eps=eps, decays=dec, nuclear_decay_On=False)
+    i_c10, i_be9 = core_no_table.species.index((6, 10)), core_no_table.species.index((4, 9))
+    misrouted = core_no_table.tensor[i_c10, i_be9, :]
+    assert np.abs(misrouted).max() > 1e-6, \
+        'expected the known decays=None misroute onto Be-9 to reproduce; ' \
+        'if this now fails, the underlying core.py fallback may have changed'
+
+    i_c10b, i_be9b = core_table_off.species.index((6, 10)), core_table_off.species.index((4, 9))
+    assert np.abs(core_table_off.tensor[i_c10b, i_be9b, :]).max() < 1e-10, \
+        'decays=<real table>, nuclear_decay_On=False should NOT misroute C-10 onto Be-9'
+    print('  confirmed: decays=None misroutes C-10->B-9 onto Be-9; '
+         'decays=<table>, nuclear_decay_On=False does not')
+
+
+def test_ebl_segment_rate_scaling():
+    """EBLSegmentRateScaling: boost-resolved correction calibrated on a
+    small probe set predicts held-out species' rates within a documented
+    error bound, with coverage_ correctly flagging tabulation gaps."""
+    from crisp.extragalactic import EBLSegmentRateScaling, ebl_gilmore_at_z, ebl_saldana_at_z
+
+    boosts = np.logspace(7.3, 11.5, 60)
+    psb = psb_xsec()
+
+    scaler = EBLSegmentRateScaling(ebl_gilmore_at_z, boosts, probe_species=[(2, 4), (26, 56)],
+                                   xsec_model=psb)
+    result = scaler.validate([0.0, 0.65, 1.65, 3.0], [(7, 14), (14, 28)], xsec_model=psb)
+    s = result['summary']
+    assert s['n_points'] > 0
+    assert s['max_relative_error'] < 0.15         # documented worst case, this session's audit
+    assert s['median_relative_error'] < 0.02
+    print(f'  Gilmore12: median {s["median_relative_error"]:.1%}, '
+          f'worst {s["max_relative_error"]:.1%} ({s["n_points"]} points)')
+
+    # SaldanaLopez21 has no usable tabulation right at z -> 6: confirm the
+    # coverage gap is flagged, not silently swallowed into a bad factor
+    scaler2 = EBLSegmentRateScaling(ebl_saldana_at_z, boosts, probe_species=[(2, 4), (26, 56)],
+                                    xsec_model=psb)
+    scaler2.factor(5.32, 6.0)
+    assert scaler2.coverage_[(5.32, 6.0)] == 0.0
+    print('  SaldanaLopez21 z=5.32->6.00 coverage gap correctly flagged')
+
+
+def test_extragalactic_ebl_scaling_fast_path():
+    """ExtragalacticPropagation's ebl_scaling='auto' fast path (a handful
+    of EBL reference cores, rescaled) against the exact per-segment chain
+    (ebl_scaling=None): same species, exact number conservation in both,
+    and physical output within the calibration's documented error bound."""
+    from crisp.extragalactic import ExtragalacticPropagation, ebl_gilmore_at_z
+
+    boosts = np.logspace(6.0, 10.5, 40)
+    psb = psb_xsec()
+    ep_exact = ExtragalacticPropagation(xsec_model=psb, ebl_model=ebl_gilmore_at_z,
+                                        boosts=boosts, decays=None, verbose=False)
+    ep_fast = ExtragalacticPropagation(xsec_model=psb, ebl_model=ebl_gilmore_at_z,
+                                       boosts=boosts, decays=None, verbose=False,
+                                       ebl_scaling='auto')
+
+    injection = {(26, 56): np.exp(-0.5 * ((np.log(boosts) - np.log(3e8)) / 0.3) ** 2)}
+    out_exact = ep_exact.propagate(1.5, injection, n_seg=6)
+    out_fast = ep_fast.propagate(1.5, injection, n_seg=6)
+
+    assert out_exact['species'] == out_fast['species']
+    for label, res in [('exact', out_exact), ('fast', out_fast)]:
+        leak = res['diagnostics']['number_leakage']
+        assert abs(leak) < 1e-8, f'{label}: number_leakage {leak}'
+
+    occ_exact, occ_fast = out_exact['occupations'], out_fast['occupations']
+    mask = occ_exact > 1e-4 * occ_exact.max()
+    rel = np.abs(occ_fast[mask] - occ_exact[mask]) / occ_exact[mask]
+    print(f'  bin-level vs exact chain: max rel diff {rel.max():.1%}, '
+          f'mean {rel.mean():.2%} ({mask.sum()} bins)')
+    assert rel.max() < 0.15
+    assert rel.mean() < 0.03
+    assert out_fast['diagnostics']['ebl_scaling'] == 'auto'
+    assert len(out_fast['diagnostics']['ebl_refs']) == 5
+
+
 def test_crpropa_removed():
     """The CRPropa file-driven cores were testing scaffolding (user decision,
     2026-07-09) and were deleted in phase 5, not replicated."""
