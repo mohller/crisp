@@ -2030,6 +2030,56 @@ def test_extragalactic_ci():
     assert abs(s_ci - s_bf) < 0.01
 
 
+def test_extragalactic_expm_apply_sparse_branch():
+    """ExtragalacticPropagation._expm_apply picks scipy.sparse.linalg.
+    expm_multiply over dense expm only above a species-count floor
+    (_SPARSE_SIZE_MIN=100) and a norm ceiling (_NORM_THRESHOLD=50) --
+    below the floor dense wins outright (measured up to 70x at n~50), so
+    a size-only gate would regress small networks. Pins both branches
+    against a dense-expm reference on a random conservative generator
+    (rows sum to zero, ~5% filled, matching the real cascade tensor's
+    sparsity) at n=150 (above the floor): one matrix picked to fall
+    below _NORM_THRESHOLD (exercises the sparse branch) and one picked
+    above it (exercises the dense fallback even though n qualifies)."""
+    from scipy.linalg import expm as dense_expm
+    from crisp.extragalactic import ExtragalacticPropagation as EP
+
+    rng = np.random.default_rng(0)
+
+    def random_generator(n, nnz_per_row=15, scale=1.0):
+        M = np.zeros((n, n))
+        for i in range(n):
+            cols = rng.choice(n, size=min(nnz_per_row, n), replace=False)
+            cols = cols[cols != i]
+            vals = rng.uniform(0.0, scale, size=len(cols))
+            M[i, cols] = vals
+            M[i, i] = -vals.sum()
+        return M
+
+    n = 150
+    v0 = rng.uniform(0, 1, size=n)
+    for label, scale, dL in [('below norm threshold', 1e-3, 1.0),
+                             ('above norm threshold', 5.0, 1.0)]:
+        M = random_generator(n, scale=scale)
+        norm = np.abs(M).sum(axis=1).max() * dL
+        used_sparse = norm < EP._NORM_THRESHOLD
+        got = EP._expm_apply(v0, M, dL)
+        ref = v0 @ dense_expm(M * dL)
+        rel = np.abs(got - ref) / np.maximum(np.abs(ref), 1e-300)
+        print(f'  {label}: ||M dL||~{norm:.2e}, sparse branch used: '
+             f'{used_sparse}, max rel diff {rel.max():.2e}')
+        assert rel.max() < 1e-8
+
+    # below the size floor, the sparse branch is never used regardless of norm
+    n_small = 50
+    v0s = rng.uniform(0, 1, size=n_small)
+    M_small = random_generator(n_small, scale=1e-3)
+    assert n_small < EP._SPARSE_SIZE_MIN
+    got_small = EP._expm_apply(v0s, M_small, 1.0)
+    ref_small = v0s @ dense_expm(M_small * 1.0)
+    assert np.abs(got_small - ref_small).max() / np.abs(ref_small).max() < 1e-10
+
+
 def test_ebl_tensor_additivity():
     """InteractionCore's cascade tensor is additive in the target photon
     field, and decays are additive as a redshift-independent, zero-field
@@ -2177,6 +2227,133 @@ def test_extragalactic_ebl_scaling_fast_path():
     assert rel.mean() < 0.03
     assert out_fast['diagnostics']['ebl_scaling'] == 'auto'
     assert len(out_fast['diagnostics']['ebl_refs']) == 5
+
+
+def test_tensor_at_lookup():
+    """InteractionCore._tensor_at (the fused restrict-then-lookup replacing
+    the old interpolator(boost_range)-then-restrict pattern in
+    _diagonal_fixed_tensor, species_evolution_boost_range,
+    pdf_moments_boost_range, pdf_variance_boost_range,
+    get_distribution_parameters, and ExtragalacticPropagation._reduced_tensor)
+    matches the original interp1d-based behavior exactly: same values,
+    same restriction semantics, same out-of-range error."""
+    from scipy.interpolate import interp1d
+
+    core = InteractionCore(xsec_model=psb_xsec())
+    b = core.boosts
+
+    probe = np.array([b[0], b[5] * 1.3, b[-1]])   # knot, in-between, knot
+    ref = interp1d(b, core.tensor, 'previous')(probe)
+    got = core._tensor_at(probe)
+    assert np.array_equal(ref, got), 'unrestricted _tensor_at must match interp1d exactly'
+
+    mr = list(range(0, len(core.species), 3))
+    ref_restricted = ref[np.ix_(mr, mr, range(len(probe)))]
+    got_restricted = core._tensor_at(probe, mr)
+    assert np.array_equal(ref_restricted, got_restricted), \
+        'restricting before vs after the boost lookup must commute exactly'
+
+    # interpolator()/interpyields() still behave like the old lambdas
+    assert np.array_equal(core.interpolator(probe), ref)
+    ref_light = interp1d(b, core.light_prod_tensor, 'previous')(probe)
+    assert np.array_equal(core.interpyields(probe), ref_light)
+
+    for bad in (b[0] - 1.0, b[-1] + 1.0):
+        try:
+            core._tensor_at(np.array([bad]))
+            assert False, f'boost {bad} is out of range and should have raised'
+        except ValueError:
+            pass
+
+
+def test_interaction_core_picklable():
+    """InteractionCore (and the Cross_Section_Model it wraps) round-trip
+    through pickle: fixes three previously-unpicklable per-instance
+    lambda/closure attributes (InteractionCore.interpolator/interpyields,
+    InteractionCore._mass_fn under masses='legacy',
+    Cross_Section_Model.filter_nuclei's default). A caller-supplied
+    filter_nuclei=<lambda> remains unpicklable by construction (out of
+    scope -- the library can't fix a caller's own lambda), so this test
+    uses the default filter_nuclei only."""
+    import pickle
+
+    for masses in ('nubase', 'legacy'):
+        core = InteractionCore(xsec_model=PSB_model(), masses=masses)
+        blob = pickle.dumps(core)
+        core2 = pickle.loads(blob)
+        assert np.array_equal(core2.interpolator(core.boosts[:5]),
+                              core.interpolator(core.boosts[:5]))
+        assert core2._mass_fn(26, 56) == core._mass_fn(26, 56)
+        L = np.array([1.0, 10.0])
+        alpha, mr, tr, _ = core.get_distribution_parameters(
+            mass_lims=(56, 0), injection_type=('only species', (26, 56)),
+            absorption_type=('only mass', [1]))
+        P1 = core.species_evolution_boost_range(L, alpha, mr, core.boosts, tr)
+        P2 = core2.species_evolution_boost_range(L, alpha, mr, core.boosts, tr)
+        assert np.array_equal(P1, P2)
+
+
+def test_pair_auto_di_gate():
+    """ExtragalacticPropagation's pair='auto' (Appendix C, Eq. C.4-gated
+    switch between the existing pair=False and pair=True paths):
+    _windowed_gradient_1d recovers an exact linear slope; pair_tolerance
+    forces both branches deterministically; the boost this session found
+    to be off-resonance/on-resonance for a Fe-56 injection at z_src=0.3
+    resolve to the expected mode and closely match their OWN target path
+    (pair=False for off-resonance, pair=True at the SAME n_seg for
+    on-resonance) -- not the higher-n_seg reference, since 'auto' does
+    not itself change n_seg (see the class docstring)."""
+    from crisp.extragalactic import ExtragalacticPropagation
+
+    ep = ExtragalacticPropagation(xsec_model=psb_xsec(), verbose=False)
+
+    # _windowed_gradient_1d: exact on a genuinely linear function
+    x = np.linspace(1.0, 10.0, 30)
+    y = 3.5 * x + 2.0
+    grad = ep._windowed_gradient_1d(y, x, window=5)
+    assert np.allclose(grad, 3.5, rtol=1e-8)
+
+    boosts = np.logspace(6, 11.5, 120)
+    epk = dict(xsec_model=psb_xsec(), boosts=boosts, verbose=False)
+    prop_cmb = ExtragalacticPropagation(**epk)
+    prop_pair = ExtragalacticPropagation(pair=True, **epk)
+
+    z_src, n_seg = 0.3, 24
+    w = np.zeros(len(boosts))
+
+    # pair_tolerance forces both branches deterministically, independent
+    # of the physics estimate's own value
+    b_mid = len(boosts) // 2
+    w[:] = 0.0; w[b_mid] = 1.0
+    forced_fast = ExtragalacticPropagation(pair='auto', pair_tolerance=1e30, **epk)
+    forced_exact = ExtragalacticPropagation(pair='auto', pair_tolerance=0.0, **epk)
+    r_fast = forced_fast.propagate(z_src, {(26, 56): w}, n_seg=n_seg)
+    r_exact = forced_exact.propagate(z_src, {(26, 56): w}, n_seg=n_seg)
+    assert r_fast['diagnostics']['pair_mode'] == 'auto_fast'
+    assert r_exact['diagnostics']['pair_mode'] == 'auto_exact'
+    r_cmb = prop_cmb.propagate(z_src, {(26, 56): w}, n_seg=n_seg)
+    r_pair = prop_pair.propagate(z_src, {(26, 56): w}, n_seg=n_seg)
+    assert np.array_equal(r_fast['occupations'], r_cmb['occupations'])
+    assert np.array_equal(r_exact['occupations'], r_pair['occupations'])
+
+    # real gate: off-resonance and on-resonance boosts (this session's own
+    # finding for a Fe-56 injection at z_src=0.3) resolve to the expected
+    # mode and closely match their own target path
+    prop_auto = ExtragalacticPropagation(pair='auto', **epk)
+    for gamma_c, expect_mode, target in [
+        (3e8, 'auto_fast', prop_cmb), (1e10, 'auto_fast', prop_cmb),
+        (3.26e9, 'auto_exact', prop_pair),
+    ]:
+        b = int(np.argmin(np.abs(boosts - gamma_c)))
+        w[:] = 0.0; w[b] = 1.0
+        r_auto = prop_auto.propagate(z_src, {(26, 56): w}, n_seg=n_seg)
+        r_target = target.propagate(z_src, {(26, 56): w}, n_seg=n_seg)
+        assert r_auto['diagnostics']['pair_mode'] == expect_mode, \
+            f'gamma_c={gamma_c:.2e}: expected {expect_mode}, got {r_auto["diagnostics"]["pair_mode"]}'
+        assert np.array_equal(r_auto['occupations'], r_target['occupations'])
+        assert np.array_equal(r_auto['absorbed'], r_target['absorbed'])
+    print('  pair=auto gate: off-resonance -> auto_fast, resonance -> auto_exact, '
+         'both matching their own target path exactly')
 
 
 def test_crpropa_removed():
