@@ -233,11 +233,19 @@ def black_body_spectral_radiance_wavelength(T, lamrange):
 
 To = 2.725 # Kelvin, CMB temperature
 
-# CMB photon density in m^-3, takes energy in eV
-cmb_photon_density = lambda T, erange: 4 * pi / h / c * black_body_spectral_radiance(T, erange) / erange
+def cmb_photon_density(T, erange):
+    """CMB photon density in m^-3, takes energy in eV. A real function
+    rather than a module-level lambda: a lambda's __qualname__ is always
+    '<lambda>' regardless of the name it's assigned to, which breaks
+    pickle's by-reference lookup for anything holding it (e.g.
+    InteractionCore.target_photons, which defaults to
+    cmb_photon_density_GeVcm3 below)."""
+    return 4 * pi / h / c * black_body_spectral_radiance(T, erange) / erange
 
-# CMB photon energy density in cm^-3 takes energy in GeV
-cmb_photon_density_GeVcm3 = lambda erange: cmb_photon_density(To, erange * 1e9) / 1e6 * 1e9 # 1e6 for m3 to cm3 and 1e9 for eV to GeV
+def cmb_photon_density_GeVcm3(erange):
+    """CMB photon energy density in cm^-3, takes energy in GeV."""
+    # 1e6 for m3 to cm3 and 1e9 for eV to GeV
+    return cmb_photon_density(To, erange * 1e9) / 1e6 * 1e9
 
 cmb = black_body_spectral_radiance
 

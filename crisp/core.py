@@ -821,6 +821,14 @@ class InteractionCore():
     class fits with the rest of the package.
     """
 
+    @staticmethod
+    def _legacy_mass_GeV(Z, A):
+        """masses='legacy' mass function (A * 0.939 GeV), kept for
+        equivalence tests against the pre-consolidation classes. A
+        staticmethod rather than a lambda so InteractionCore stays
+        picklable."""
+        return A * 0.939
+
     def __init__(self, nuclear_decay_On=False, ftype=np.float64, decays=None,
                  xsec_model=None, target_photons=None, photomeson=None,
                  photomeson_scaling=None, photomeson_spectra=None,
@@ -928,7 +936,7 @@ class InteractionCore():
             from .data.nucleardecays import nuclear_mass_GeV
             self._mass_fn = nuclear_mass_GeV
         elif masses == 'legacy':
-            self._mass_fn = lambda Z, A: A * 0.939
+            self._mass_fn = InteractionCore._legacy_mass_GeV
         elif callable(masses):
             self._mass_fn = masses
         else:
@@ -2528,6 +2536,58 @@ class InteractionCore():
         """
         pass
 
+    def _previous_index(self, boost_range):
+        """Index of the nearest tabulated boost <= boost_range (the
+        'previous'-kind lookup interp1d used to perform), without
+        constructing an interp1d object every call. Replicates
+        interp1d(kind='previous')'s bounds-checking exactly (raises
+        ValueError out of range) so existing callers relying on that
+        guard keep it."""
+        x = np.asarray(boost_range, dtype=float)
+        oob = (x < self.boosts[0]) | (x > self.boosts[-1])
+        if np.any(oob):
+            bad = x[oob][0]
+            raise ValueError(
+                f'A value ({bad}) in x_new is out of the interpolation '
+                f'range [{self.boosts[0]}, {self.boosts[-1]}].')
+        return np.clip(np.searchsorted(self.boosts, x, side='right') - 1,
+                       0, len(self.boosts) - 1)
+
+    def _tensor_at(self, boost_range, mass_range=None, which='tensor'):
+        """self.tensor (or self.light_prod_tensor if which='light') at
+        boost_range, optionally restricted to mass_range along both
+        species axes (mass_range is only ever used with which='tensor':
+        self.tensor is (n_species, n_species, n_boosts), but
+        self.light_prod_tensor is (n_light, n_species, n_species,
+        n_boosts) -- one extra leading axis -- so its species axes are
+        never restricted here today). Restriction is FUSED into the
+        lookup via one fancy-index when mass_range is given, so the full
+        species axis is never materialized -- exact/bit-identical to
+        calling self.interpolator(boost_range) and restricting
+        afterward: the 'previous' lookup is independent per species
+        pair, along the boost axis only, so restricting before or after
+        it commutes. The boost axis is always LAST regardless of which
+        tensor (indexed via an ellipsis, not a fixed axis position), so
+        this is correct for both shapes."""
+        idx = self._previous_index(boost_range)
+        t = self.tensor if which == 'tensor' else self.light_prod_tensor
+        if mass_range is not None:
+            return t[np.ix_(mass_range, mass_range, idx)]
+        return t[..., idx]
+
+    def interpolator(self, boostval):
+        """self.tensor at boostval ('previous'-step lookup along the
+        boost axis, unrestricted). A real method rather than a
+        per-instance lambda, so InteractionCore stays picklable."""
+        return self._tensor_at(boostval)
+
+    def interpyields(self, boostval):
+        """self.light_prod_tensor at boostval. Must use the same
+        'previous' lookup as interpolator: the destruction (tensor) and
+        production (light-yield) rates have to come from the same boost
+        bin, or nucleon conservation breaks at interpolated boosts."""
+        return self._tensor_at(boostval, which='light')
+
     def _diagonal_fixed_tensor(self, boost_range, mass_range, guard_single=False):
         """Interaction tensor restricted to mass_range (if given), with the
         diagonal zeroed then recomputed as total outflow (row-sum, still
@@ -2545,9 +2605,7 @@ class InteractionCore():
         pre-existing special case for a degenerate 1x1 tensor; every other
         caller never had this guard, so it defaults off to preserve their
         exact prior behavior)."""
-        reduced_tensor = self.interpolator(boost_range)
-        if mass_range is not None:
-            reduced_tensor = reduced_tensor[np.ix_(mass_range, mass_range, range(len(boost_range)))]
+        reduced_tensor = self._tensor_at(boost_range, mass_range)
 
         if not guard_single or len(reduced_tensor[:, :, 0]) > 1:
             reduced_tensor -= np.dstack([np.diag(np.diag(reduced_tensor[:, :, k]))
@@ -2812,10 +2870,7 @@ class InteractionCore():
             boost_range = self.boosts
         boost_range = np.asarray(boost_range, dtype=float)
 
-        reduced_tensor = self.interpolator(boost_range)
-
-        if mass_range is not None:
-            reduced_tensor = reduced_tensor[np.ix_(mass_range, mass_range, range(len(boost_range)))]
+        reduced_tensor = self._tensor_at(boost_range, mass_range)
 
         # make diagonal zero
         reduced_tensor -= np.dstack([np.diag(np.diag(reduced_tensor[:, :, k])) for k in range(reduced_tensor.shape[-1])])
@@ -3570,15 +3625,12 @@ class InteractionCore():
         """
 
         if boost_range is None:
-            boost_range = self.boosts       
+            boost_range = self.boosts
 
-        reduced_tensor = self.interpolator(boost_range)
-        
-        if mass_range is not None:
-            reduced_tensor = reduced_tensor[np.ix_(mass_range, mass_range, range(len(boost_range)))]
+        reduced_tensor = self._tensor_at(boost_range, mass_range)
 
         # make diagonal zero
-        reduced_tensor -= np.dstack([np.diag(np.diag(reduced_tensor[:, :, k])) for k in range(reduced_tensor.shape[-1])]) 
+        reduced_tensor -= np.dstack([np.diag(np.diag(reduced_tensor[:, :, k])) for k in range(reduced_tensor.shape[-1])])
         # recompute diagonal including absorption states
         reduced_tensor -= np.stack([np.diag(row) for row in reduced_tensor.sum(axis=1).T], axis=2)
         # reduce excluding absorption states
@@ -3619,15 +3671,12 @@ class InteractionCore():
         """
 
         if boost_range is None:
-            boost_range = self.boosts       
+            boost_range = self.boosts
 
-        reduced_tensor = self.interpolator(boost_range)
-        
-        if mass_range is not None:
-            reduced_tensor = reduced_tensor[np.ix_(mass_range, mass_range, range(len(boost_range)))]
+        reduced_tensor = self._tensor_at(boost_range, mass_range)
 
         # make diagonal zero
-        reduced_tensor -= np.dstack([np.diag(np.diag(reduced_tensor[:, :, k])) for k in range(reduced_tensor.shape[-1])]) 
+        reduced_tensor -= np.dstack([np.diag(np.diag(reduced_tensor[:, :, k])) for k in range(reduced_tensor.shape[-1])])
         # recompute diagonal including absorption states
         reduced_tensor -= np.stack([np.diag(row) for row in reduced_tensor.sum(axis=1).T], axis=2)
         # reduce excluding absorption states
@@ -3760,11 +3809,6 @@ class InteractionCore():
 
         self.tensor = tensor.astype(self.ftype)
         self.light_prod_tensor = np.stack([lyt.astype(self.ftype) for lyt in ly_all_mats])
-        self.interpolator = lambda boostval: interp1d(self.boosts, self.tensor, 'previous')(boostval)
-        # 'previous', like self.interpolator: the destruction (tensor) and production
-        # (light-yield) rates must come from the same boost bin, or nucleon
-        # conservation breaks at interpolated boosts
-        self.interpyields = lambda boostval: interp1d(self.boosts, self.light_prod_tensor, 'previous')(boostval)
 
     def save(self, path):
         """Saves the data to a .npz file.
@@ -3844,12 +3888,6 @@ class InteractionCore():
 
         if 'pm_ejecta_p' in d:
             self.photomeson_ejecta = {'p': d['pm_ejecta_p'], 'n': d['pm_ejecta_n']}
-
-        self.interpolator = lambda boostval: interp1d(self.boosts, self.tensor, 'previous')(boostval)
-        # 'previous', like self.interpolator: the destruction (tensor) and production
-        # (light-yield) rates must come from the same boost bin, or nucleon
-        # conservation breaks at interpolated boosts
-        self.interpyields = lambda boostval: interp1d(self.boosts, self.light_prod_tensor, 'previous')(boostval)
 
     def get_distribution_parameters(self, mass_lims=(56, 11), injection_type=('only species', (26, 56)), absorption_type=('only mass', [54]), boost_range=None):
         """Builds the injection vector `alpha`, `mass_range`, and
@@ -3946,8 +3984,7 @@ class InteractionCore():
         if boost_range is None:
             boost_range = self.boosts
 
-        reduced_tensor = self.interpolator(boost_range)
-        reduced_tensor = reduced_tensor[np.ix_(mass_range, mass_range, range(len(boost_range)))]
+        reduced_tensor = self._tensor_at(boost_range, mass_range)
 
         # if it is a matrix
         if len(reduced_tensor[:, :, 0]) > 1:

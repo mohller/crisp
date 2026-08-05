@@ -468,8 +468,7 @@ class ExtragalacticPropagation:
         # blueshifted boost (1+z) gamma, which can overshoot the grid top by
         # ~ln(1+z); 'previous'-step interpolation continues the top bin flat
         gamma_eval = np.clip(gamma_eval, core.boosts[0], core.boosts[-1])
-        rt = np.array(core.interpolator(gamma_eval))
-        rt = rt[np.ix_(mr, mr, range(rt.shape[-1]))]
+        rt = np.array(core._tensor_at(gamma_eval, mr))
         if boost_scale is not None:
             rt = rt * np.asarray(boost_scale, dtype=float)[None, None, :]
         n_m = len(mr)

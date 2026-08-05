@@ -23,6 +23,12 @@ def energy_weight_sigma(sigma, eps):
     Returns an array of the same shape as np.atleast_2d(sigma)."""
     return 2 / eps**2 * cumulative_trapezoid(np.atleast_2d(sigma) * eps, eps, initial=0)
 
+def _accept_all_nuclei(nuc):
+    """Default Cross_Section_Model.filter_nuclei: keeps every nuclide.
+    A module-level function rather than a per-instance closure, so
+    Cross_Section_Model instances stay picklable by default."""
+    return True
+
 def get_particle_numbers(channel):
     """Extracts the info from the channel number in CRPropa's branching files
     The channel number is a number between 1 and 1000000 where the digits
@@ -84,7 +90,11 @@ class Cross_Section_Model():
             (Z, A) -> bool, applied while building `self.nuclei` so a
             model can be restricted to a subset of species (for example
             `lambda za: za[1] <= 56` to keep only nuclei up to iron).
-            Default keeps every nuclide the model's data provides.
+            Default keeps every nuclide the model's data provides. Pass a
+            module-level function rather than a lambda or nested def if
+            the resulting instance needs to stay picklable -- a lambda
+            here makes it (and anything holding it, like an
+            InteractionCore built from it) unpicklable.
         """
         if 'erange' not in kwargs:
             self.erange = (10, 140) # in MeV
@@ -93,10 +103,7 @@ class Cross_Section_Model():
 
         # filtering function, takes nucleus, returns True if it should be included
         if 'filter_nuclei' not in kwargs:
-            def selection_function(nuc):
-                return True
-
-            self.filter_nuclei = selection_function
+            self.filter_nuclei = _accept_all_nuclei
         else:
             self.filter_nuclei = kwargs['filter_nuclei']
 
