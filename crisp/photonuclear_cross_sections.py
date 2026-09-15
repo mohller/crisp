@@ -1336,6 +1336,39 @@ class CRPropa_model(Cross_Section_Model):
 
         return np.where(np.logical_and(self.erange[0] <= eps, eps < self.erange[1]), np.interp(eps, self.eps, xs), np.zeros_like(eps))
 
+    def light_yield_sigma(self, eps, Z, A):
+        """Cross sections [mb] of the six light species [He4, He3, t, d, p, n]
+        emitted as boost-preserving yields, on eps [MeV], decoded from 
+        CRPropa's channel-number encoding using get_particle_numbers.
+        Unlike Inclusive_model, no inference step is needed here: summing 
+        mult_i * sigma_channel over every channel row of a mother species 
+        conserves mass/charge exactly, since each channel's remnant is 
+        computed from the decoded multiplicity, (Z - Zprod, A - Aprod) (see
+        __init__/cross_section).
+
+        Returns
+        -------
+        ndarray or None
+            Shape (6, len(eps)); None when the mother has no tabulated
+            channels (matches Inclusive_model's contract).
+        """
+        if (Z, A) not in self.nuclei:
+            return None
+        rows = self.xsec_data[np.logical_and(self.xsec_data[:, 0] == Z,
+                                             self.xsec_data[:, 1] == A)]
+        if len(rows) == 0:
+            return None
+        out = np.zeros((6, len(self.eps)))
+        for row in rows:
+            mult = np.asarray(get_particle_numbers(row[2]), dtype=float)
+            if mult.any():
+                out += mult[:, None] * row[3:][None, :]
+        eps = np.asarray(eps, dtype=float)
+        result = np.vstack([np.interp(eps, self.eps, r, left=0.0, right=0.0)
+                            for r in out])
+        window = (self.erange[0] <= eps) & (eps < self.erange[1])
+        return np.where(window[None, :], result, 0.0)
+
 
 def load_astrophomes(model='SingleParticleModel', path=None, auto_download=True,
                      channels=None, **model_kwargs):
@@ -1692,14 +1725,22 @@ class Model_Rack(Cross_Section_Model):
 
         Examples
         --------
-        Combine two CRPropa photodisintegration table sets covering
-        different mass ranges:
+        Combine two photodisintegration table sets. When the
+        mass ranges overlap (e.g. PD_external: A=2-11, PD_Talys1.9: A=2-214)
+        a filter_nuclei function allows the user to restrict each
+        model's coverage so that the rack keeps their coverage disjoint;
+        PD_external is CRPropa's preferred source below A=12, so it should
+        keep its FULL native range (A<12, all of A=2-11), with PD_Talys1.9 
+        extending coverage above that mass:
 
         >>> from crisp.data_download import get_tables_path
         >>> tables = get_tables_path(verbose=False)
+        >>> MASS_BOUNDARY = 12
         >>> rack = Model_Rack(models=(
-        ...     CRPropa_model(path=tables + 'PD_external'),
-        ...     CRPropa_model(path=tables + 'PD_Talys1.9'),
+        ...     CRPropa_model(path=tables + 'PD_external',
+        ...                   filter_nuclei=lambda nuc: nuc[1] < MASS_BOUNDARY),
+        ...     CRPropa_model(path=tables + 'PD_Talys1.9',
+        ...                   filter_nuclei=lambda nuc: nuc[1] >= MASS_BOUNDARY),
         ... ))
         """
         self.models = models
