@@ -42,6 +42,14 @@ mp_in_GeV = (m_p * c**2).to('GeV')
 mn_in_GeV = (m_n * c**2).to('GeV')
 mb_to_cm2 = u.mbarn.to('cm^2')
 
+# the 6 light species tracked by light_prod_tensor / interpyields / the
+# _build_light_*_matrix pair, in the fixed order used in this
+# module (He4, He3, H3, H2, p, n)
+LIGHT_ZA = [(2, 4), (2, 3), (1, 3), (1, 2), (1, 1), (0, 1)]
+# Z^2/A per light species, for Bethe-Heitler-style dispersive drift;
+# (0, 1) = the neutron has Z^2/A = 0, i.e. no such drift at all.
+LIGHT_Z2A = np.array([Z**2 / A if A > 0 else 0.0 for Z, A in LIGHT_ZA])
+
 # construction diagnostics (unmatched products, unresolved decay paths, ...)
 # are logged at DEBUG level; enable with logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
@@ -2587,6 +2595,33 @@ class InteractionCore():
         production (light-yield) rates have to come from the same boost
         bin, or nucleon conservation breaks at interpolated boosts."""
         return self._tensor_at(boostval, which='light')
+
+    def _light_yield_block(self, boost_eval, mass_range, true_range):
+        """Y_k(gamma) (methods paper Eq. 23), evaluated at boost_eval and
+        restricted to the tracked species.
+
+        Restricts BOTH the parent and destination axes of interpyields'
+        raw (6, n_species_full, n_species_full, n_b) tensor to mass_range
+        before summing over destinations (matches light_cascade_production's
+        construction). It bounds memory by len(mass_range)^2 regardless
+        of the underlying model's full species count, important when
+        there are thousands of species (e.g. the A<=208 network). 
+        Then it restricts the parent axis again to true_range.
+
+        Returns
+        -------
+        ndarray
+            Shape `(len(true_range), 6, len(boost_eval))`, ordered
+            [He4, He3, H3, H2, p, n] (`core.LIGHT_ZA`) on the middle axis --
+            Y_block[i, k, b] = production rate of light species k from
+            true_range species i, at boost_eval[b].
+        """
+        idx_true_in_mass = [mass_range.index(t) for t in true_range]
+        Y_full = self.interpyields(boost_eval)
+        Y_mr = Y_full[np.ix_(range(6), mass_range, mass_range, range(len(boost_eval)))]
+        Y_tr = Y_mr[np.ix_(range(6), idx_true_in_mass, range(len(mass_range)),
+                           range(len(boost_eval)))].sum(axis=2)
+        return np.moveaxis(Y_tr, 0, 1)
 
     def _diagonal_fixed_tensor(self, boost_range, mass_range, guard_single=False):
         """Interaction tensor restricted to mass_range (if given), with the
