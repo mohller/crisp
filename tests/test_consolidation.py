@@ -2139,9 +2139,15 @@ def test_species_topology_needs_real_decay_table():
     from crisp.background_photon_models import cmb_photon_density_GeVcm3
 
     tables = get_tables_path(verbose=False)
+    # PD_external/PD_Talys1.9 overlap; using a mass-boundary 
+    # filter_nuclei to keep them disjoint.
+    # PD_external keeps its info as it is more accurate (A<12, all of A=2-11).
+    MASS_BOUNDARY = 12
     crp = Model_Rack(models=(
-        CRPropa_model(path=tables + 'PD_external', filter_nuclei=lambda za: za[1] <= 25),
-        CRPropa_model(path=tables + 'PD_Talys1.9', filter_nuclei=lambda za: za[1] <= 25)))
+        CRPropa_model(path=tables + 'PD_external',
+                      filter_nuclei=lambda za: za[1] < MASS_BOUNDARY and za[1] <= 25),
+        CRPropa_model(path=tables + 'PD_Talys1.9',
+                      filter_nuclei=lambda za: za[1] >= MASS_BOUNDARY and za[1] <= 25)))
     assert crp.channels[crp.nuclei.index((6, 10))] == [(5, 9)], \
         'C-10 should have exactly one real channel, to B-9'
 
