@@ -267,7 +267,7 @@ def test_dynamic_three_way_balance():
     H = core.species_evolution_boost_range(L, alpha, mr, br, tr)
     N = core.light_cascade_production(L, alpha, mass_range=mr, boost_range=br, true_range=tr)
     tot = (np.einsum('i,bli->bl', A_tr, H[:, :, :-1])
-           + np.einsum('l,lbi->bi', A_LIGHT, N) + (-H[:, :, -1]))
+           + np.einsum('l,lbi->bi', A_LIGHT, N) + H[:, :, -1])
     res = np.abs(tot - 56.0).max() / 56.0
     print(f'  dynamic three-way balance residual: {res:.2e}')
     assert res < 1e-8

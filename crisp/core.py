@@ -2943,7 +2943,39 @@ class InteractionCore():
 
         if use_exact:
             _, c, d = reduced_tensor.shape
-            t_vs_boost = np.atleast_3d(reduced_tensor.sum(axis=1))
+            # absorbed-column rate: POSITIVE inflow into the lumped
+            # absorption state, matching the convention this class uses
+            # everywhere else (_species_evolution_with_drift's own Mb
+            # construction a few hundred lines below:
+            # `Mb[:n_true, n_true] = -reduced_tensor[:, :, b].sum(axis=1)`;
+            # ExtragalacticPropagation._reduced_tensor's own
+            # `absorbed_in = -red.sum(axis=1)  # (n_tr, n_b), >= 0`, whose
+            # docstring calls this the "positive-inflow convention").
+            # reduced_tensor's row sum (over the KEPT true_range columns
+            # only) is <= 0 -- the deficit that flows to the DROPPED
+            # (absorbed) columns -- so the un-negated row sum used here
+            # before this fix put a NEGATIVE value in a column meant to
+            # hold a nonnegative rate. Confirmed directly this was
+            # consequential, not just a sign-convention nitpick: it has no
+            # effect on any LIVE-species entry (c is a pure sink, no
+            # outgoing edges, so by the structure of the matrix exponential
+            # the live x live sub-block of expm(bigLambda) depends only on
+            # reduced_tensor itself, never on this column -- which is why
+            # this went uncaught by this class's own doctest and the full
+            # test suite, neither of which reads the absorbed column), but
+            # it corrupts the absorbed column's own value, and -- checked
+            # directly on this package's stiff GRB-sweep cases -- the
+            # resulting small, wrongly-signed entries get explosively
+            # amplified by scipy.linalg.expm's scaling-and-squaring once
+            # L * max(-diag(bigLambda)) is large, producing exactly the
+            # catastrophic (-1.0-saturated or NaN) failures this was found
+            # through. Cross-checked directly against method='substep'
+            # (whose own Mb already used the correct sign) on a known-
+            # broken case: the un-negated column gave sum()=4.8e-5
+            # (unphysical, most of the injected population vanishing);
+            # negating it gives sum()=1.0000000000000007, matching
+            # substep's 0.9999999999999991 to ~1e-11.
+            t_vs_boost = -np.atleast_3d(reduced_tensor.sum(axis=1))
             bigLambda = np.append(np.append(reduced_tensor, np.swapaxes(t_vs_boost, 1, 2), axis=1), np.zeros((1, c+1, d)), axis=0)
 
             alpha_arr = np.asarray(alpha, dtype=float)
@@ -3349,8 +3381,23 @@ class InteractionCore():
         # Light particle evolution matrix: radioactive decay + photodisintegration
         M_light = self._build_light_matrix(boost_range)  # (6, 6, n_b)
 
-        # Outflow from each heavy species to absorption (negative values)
-        heavy_abs = reduced_tensor.sum(axis=1)               # (n_sp, n_b)
+        # Rate from each heavy species INTO absorption -- positive-inflow
+        # convention (same fix and same reasoning as
+        # species_evolution_boost_range's own bigLambda construction, see
+        # the comment there: reduced_tensor's row sum over the kept
+        # true_range columns is <= 0, the deficit that flows to the
+        # dropped/absorbed columns, so it must be NEGATED to serve as a
+        # nonnegative absorption rate here -- this call builds its own
+        # separate augmented matrix rather than reusing that one, so it
+        # carried an independent copy of the same bug (the old comment
+        # here, "(negative values)", documented the symptom without it
+        # being recognized as wrong). Confirmed directly this was
+        # consequential: IS/Gamma=10's y array had 59/65 negative fluence
+        # entries (min -6.2e-2) before this fix, despite
+        # species_evolution_boost_range's own evol_min diagnostic being
+        # clean -- the corruption was happening here, downstream, not
+        # caught by that check at all.
+        heavy_abs = -reduced_tensor.sum(axis=1)               # (n_sp, n_b), >= 0
 
         # Full augmented matrix: (n_sp + 7) × (n_sp + 7) × n_b
         # state ordering: [heavy_0..n_sp-1, light_0..5, absorbed]
@@ -3474,7 +3521,18 @@ class InteractionCore():
             lead_block[:, lk, :] = rates
 
         reduced_tensor = reduced_tensor[np.ix_(indices, indices, range(n_b))]
-        heavy_abs = reduced_tensor.sum(axis=1)               # (n_sp, n_b)
+        # Rate from each heavy species INTO absorption -- positive-inflow
+        # convention (same fix and same reasoning as
+        # species_evolution_boost_range's own bigLambda construction, see
+        # the comment there: reduced_tensor's row sum over the kept
+        # true_range columns is <= 0, the deficit that flows to the
+        # dropped/absorbed columns, so it must be NEGATED to serve as a
+        # nonnegative absorption rate here -- this call builds its own
+        # separate augmented matrix rather than reusing that one, so it
+        # carried an independent copy of the same bug pattern, since
+        # this method builds its own augmented matrix rather than reusing
+        # species_evolution_boost_range's or light_cascade_production's.
+        heavy_abs = -reduced_tensor.sum(axis=1)               # (n_sp, n_b), >= 0
 
         # light standing evolution and its production couplings (off-diagonal part)
         M_light = self._build_light_matrix(boost_range)      # (6, 6, n_b)
