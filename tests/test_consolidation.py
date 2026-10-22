@@ -1932,6 +1932,64 @@ def test_species_evolution_uniformization_validation():
     print('  uniformization + active drift raises, unknown method string raises')
 
 
+def test_light_cascade_production_rate():
+    """light_cascade_production(rate=True)'s exact d(light)/dL, added
+    because a caller (GRB_Jet_Gamma_Dependence.ipynb's fe_jet_fluence)
+    was differentiating a separately interpolated copy of `light` with
+    np.gradient on a fixed, coarse grid -- confirmed directly to break at
+    extreme stiffness, where the cumulative light yield can transition
+    from near its max to numerically zero within a fraction of a decade,
+    landing entirely between grid points. `rate=True` instead uses the
+    exact identity d/dL expm(M*L) = expm(M*L) @ M, reusing this method's
+    own already-computed `result`/`big_mat` -- no grid, no resolution
+    dependence, no finite difference at all.
+
+    Checks: (1) `rate=False` (the default) is numerically unchanged, a
+    plain regression check that adding the new branch didn't perturb the
+    existing, already-validated path; (2) `light_rate` agrees with an
+    independent central-difference reference to the reference's OWN
+    truncation accuracy (not exact -- the reference itself is only
+    second-order accurate), for both array and scalar L."""
+    old, core = source_pair()
+    alpha, mr, tr, _ = core.get_distribution_parameters(
+        mass_lims=(56, 0), injection_type=('only species', (26, 56)),
+        absorption_type=('only mass', [1]))
+    # L chosen directly to give non-negligible light yield with this
+    # core's own (mild CMB) rates -- checked directly, L ~ O(1) gives
+    # light.max() ~ 1e-14 (numerically meaningless for a ratio test).
+    L = np.array([2.0, 10.0, 20.0, 40.0, 100.0])
+
+    light_only = core.light_cascade_production(L, alpha=alpha, mass_range=mr,
+                                                boost_range=core.boosts, true_range=tr)
+    light, light_rate = core.light_cascade_production(
+        L, alpha=alpha, mass_range=mr, boost_range=core.boosts, true_range=tr, rate=True)
+    assert np.array_equal(light, light_only), \
+        "rate=True changed the existing `light` output"
+    assert light_rate.shape == light.shape
+
+    h = 1e-4
+    light_m = core.light_cascade_production(L - h, alpha=alpha, mass_range=mr,
+                                             boost_range=core.boosts, true_range=tr)
+    light_p = core.light_cascade_production(L + h, alpha=alpha, mass_range=mr,
+                                             boost_range=core.boosts, true_range=tr)
+    fd_rate = (light_p - light_m) / (2 * h)
+    mask = np.abs(fd_rate) > 1e-6 * np.abs(fd_rate).max()
+    rel = np.abs(light_rate - fd_rate)[mask] / np.abs(fd_rate)[mask]
+    print(f'  array L: max rel diff vs central-difference reference: {rel.max():.2e}')
+    assert rel.max() < 1e-2
+
+    # scalar L branch
+    light_s, rate_s = core.light_cascade_production(
+        20.0, alpha=alpha, mass_range=mr, boost_range=core.boosts, true_range=tr, rate=True)
+    assert rate_s.shape == light_s.shape == (6, len(core.boosts))
+    i_L = list(L).index(20.0)
+    rel_s_mask = np.abs(fd_rate[:, :, i_L]) > 1e-6 * np.abs(fd_rate).max()
+    rel_s = (np.abs(rate_s - fd_rate[:, :, i_L])[rel_s_mask]
+            / np.abs(fd_rate[:, :, i_L])[rel_s_mask])
+    print(f'  scalar L: max rel diff vs central-difference reference: {rel_s.max():.2e}')
+    assert rel_s.max() < 1e-2
+
+
 def test_species_evolution_with_losses():
     """species_evolution_boost_range's coherent_loss=/energy_loss= (plan
     mossy-watching-goose): the no-loss path stays bit-identical; the drift

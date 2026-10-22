@@ -3495,7 +3495,8 @@ class InteractionCore():
         """Full 6×6 rate matrix for light species: radioactive decay + photodisintegration."""
         return self._build_light_decay_matrix(boosts) + self._build_light_interaction_matrix(boosts)
 
-    def light_cascade_production(self, L, alpha=None, mass_range=None, boost_range=None, true_range=None):
+    def light_cascade_production(self, L, alpha=None, mass_range=None, boost_range=None,
+                                 true_range=None, rate=False):
         """Returns the distribution of light species at positions L for a range of boosts,
         evolving produced light particles (H3→He3, n→p) through their disintegration channels.
 
@@ -3517,19 +3518,49 @@ class InteractionCore():
             Boost values to evaluate. Full grid by default.
         true_range : list of int
             Subset of `mass_range` that are not absorption states.
+        rate : bool, optional
+            False (default): return only `light`, unchanged from before
+            this argument existed. True: also return `light_rate`, the
+            EXACT d(light)/dL at every requested L -- not a finite-
+            difference approximation. For a fixed generator M, d/dL
+            expm(M*L) = expm(M*L) @ M (M commutes with its own
+            exponential, an exact identity), so d(result)/dL =
+            result @ big_mat[:, :, b] per boost bin b, where `result`
+            and `big_mat` are already fully computed by this method for
+            the cumulative output -- one extra matmul per boost bin,
+            reusing values already in memory, with NO grid-resolution
+            dependence at all (unlike differentiating a separately
+            interpolated/sampled copy of `light` with e.g. `np.gradient`).
+
+            Added because a caller doing exactly that (GRB_Jet_Gamma_
+            Dependence.ipynb's own `fe_jet_fluence`, condensed from
+            GRB_Jet_Composition.ipynb's cell 11) was found to break at
+            extreme stiffness: the cumulative light yield can transition
+            from near its maximum to numerically zero within a fraction
+            of a decade in L, and a coarse, fixed sampling grid can land
+            entirely outside that transition, making any finite-
+            difference derivative of it meaningless (confirmed directly:
+            zero of 14 log-spaced grid points fell inside a transition
+            spanning 0.22 decades, at IS/Gamma=10 in that notebook's own
+            sweep). This option sidesteps the problem rather than tuning
+            around it.
 
         Returns
         -------
-        ndarray
-            Shape `(6, n_boosts, n_L)` for array `L`, or `(6, n_boosts)`
-            for scalar `L`.
+        ndarray or (ndarray, ndarray)
+            `light`, shape `(6, n_boosts, n_L)` for array `L` or
+            `(6, n_boosts)` for scalar `L`. With `rate=True`, returns
+            `(light, light_rate)` instead, `light_rate` the same shape.
 
         Notes
         -----
         Memory: solved via `_expm_per_boost` on an `(n_true+7)x(n_true+7)`
         block (heavy plus 6 light species plus absorbed), with the full
         stack held for array `L`. See `_expm_per_boost`'s own docstring
-        for the scaling this implies at large `n_true`.
+        for the scaling this implies at large `n_true`. `rate=True` adds
+        one more (n_b, n_L, sz) array of the same size as `expmatL`'s own
+        per-call working set (or (n_b, sz) for scalar L) -- negligible
+        next to `expmatL` itself.
         """
         if boost_range is None:
             boost_range = self.boosts
@@ -3587,13 +3618,27 @@ class InteractionCore():
         alpha_aug = np.append(np.append(alpha[indices], np.zeros(6)), 0.0)
 
         expmatL = self._expm_per_boost(big_mat, L)
-        if type(L) is np.ndarray:
+        array_L = type(L) is np.ndarray
+        if array_L:
             result  = np.matmul(alpha_aug, expmatL)          # (n_b, n_L, sz)
             light   = result[:, :, n_sp:n_sp+6]             # (n_b, n_L, 6)
         else:
             result  = np.matmul(alpha_aug, expmatL)          # (n_b, sz)
             light   = result[:, n_sp:n_sp+6]                 # (n_b, 6)
-        return np.moveaxis(light, -1, 0)                     # (6, n_b, n_L) or (6, n_b)
+        light = np.moveaxis(light, -1, 0)                     # (6, n_b, n_L) or (6, n_b)
+        if not rate:
+            return light
+
+        # exact d(result)/dL = result @ big_mat[:, :, b] per boost bin b --
+        # see this method's own docstring for the identity this rests on.
+        if array_L:
+            rate_full = np.einsum('bli,ijb->blj', result, big_mat)    # (n_b, n_L, sz)
+            light_rate = rate_full[:, :, n_sp:n_sp+6]                 # (n_b, n_L, 6)
+        else:
+            rate_full = np.einsum('bi,ijb->bj', result, big_mat)      # (n_b, sz)
+            light_rate = rate_full[:, n_sp:n_sp+6]                    # (n_b, 6)
+        light_rate = np.moveaxis(light_rate, -1, 0)                   # (6, n_b, n_L) or (6, n_b)
+        return light, light_rate
 
     def light_production_cumulative(self, L, alpha=None, mass_range=None, boost_range=None,
                                     true_range=None, channel='total'):
