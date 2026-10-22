@@ -31,6 +31,7 @@ import os
 import numpy as np
 from math import factorial
 from scipy.linalg import expm
+from scipy.special import gammaln
 from scipy.interpolate import interp1d
 from .interaction_rates import (cs_photomeson, interaction_rate_from_cross_section,
                                 exact_rates_for_sigma)
@@ -2749,6 +2750,132 @@ class InteractionCore():
 
         return cost_exact <= m_total
 
+    @staticmethod
+    def _uniformized_expm_vec(M, vec, tol=1e-12, sigma0=8.0, sigma_max=60.0):
+        """vec @ expm(M) via uniformization (Jensen's/randomization method),
+        a numerically robust alternative to scipy.linalg.expm's Pade-with-
+        scaling-and-squaring for very stiff generators. Confirmed directly
+        (examples/GRB_Jet_Gamma_Dependence.ipynb's Gamma-sweep, the De Lia &
+        Tamborra 2024 Fig. 7 reproduction) that Pade's squaring step
+        suffers catastrophic cancellation once max(-diag(M)) reaches
+        ~1e5-1e7: returns NaN in float32 or an exactly -1.0-saturated
+        garbage result even in float64 (tested directly -- NOT a
+        float32-precision bug; float64 input gives the identical -1.0
+        signature, just without the NaN). method='substep' on
+        species_evolution_boost_range is accurate at this stiffness but
+        costs 10+ minutes per (model, Gamma) point at this package's own
+        stiffest GRB-sweep cases, since it sizes ONE sub-step count from
+        the single stiffest boost bin and applies it to every bin.
+
+        Method: with Lambda >= max(-diag(M)) (a small buffer is added so
+        P's own diagonal stays strictly >= 0) and P = I + M/Lambda (a true
+        sub-stochastic matrix -- every entry in [0, 1], none of expm(M)'s
+        extreme dynamic range),
+            expm(M) = exp(-lambda) * sum_k (lambda^k / k!) * P^k,
+        lambda = Lambda (M is assumed to already have any physical
+        distance/time baked in by the caller, matching how
+        species_evolution_boost_range's exact path already scales the
+        generator by L before calling expm). The Poisson(lambda) weights
+        are evaluated in log-space (stable for any lambda -- unlike
+        exp(-lambda) or lambda^k/k! taken separately, both of which
+        under/overflow for lambda ~ 1e6+), and only terms within a window
+        around the distribution's mean contribute above `tol`; that
+        window has width ~ sqrt(lambda), NOT lambda, so P^k for k below it
+        is reached via repeated squaring of P (cheap and numerically
+        benign, since P's own entries never have the extreme dynamic range
+        that makes squaring expm(M) itself catastrophic), then the state
+        is stepped one P-power at a time through the window, accumulating
+        the Poisson-weighted sum. Total cost O(log(k_lo) * n^3) for the
+        squaring fast-forward plus O(window_width * n^2) for the stepped
+        sum -- window_width ~ sqrt(lambda), so this stays cheap even at
+        lambda ~ 1e7 (confirmed directly: ~20-40x faster than
+        method='substep' on this package's own stiffest GRB-sweep point,
+        while agreeing with substep's independently-validated output to
+        ~1e-11-1e-22 relative difference at every boost bin cross-checked,
+        and with plain expm's own output wherever expm itself is still
+        numerically trustworthy).
+
+        Off-diagonal entries of M are clipped to >= 0 before use: confirmed
+        directly that this package's own cross-section-derived generators
+        carry a small number of spuriously negative off-diagonal couplings
+        (a true interaction/decay rate cannot be negative; these are
+        almost certainly interpolation/combination artifacts in the
+        upstream tensor, not a deliberate physical feature -- present even
+        in mild, non-stiff cases at a roughly constant small rate, but only
+        consequential once repeated powers of P amplify them at extreme
+        stiffness). Skipping this clipping was tested directly and
+        reproduces the SAME -1.0-saturated failure uniformization is meant
+        to fix, confirming it is the actual corruption source here, not
+        Pade scaling-and-squaring's algorithm choice alone.
+
+        EXPERIMENTAL and deliberately separate from the main method
+        dispatch: only reached via an explicit method='uniformization' on
+        species_evolution_boost_range, never by None/'exact'/'substep'/
+        'auto'. Validated against a handful of this package's own known-
+        broken (model, Gamma) points (see the notebook above and its own
+        caveat markdown); not yet exercised across the package's full test
+        suite or other networks (e.g. the A<=208 ultra-heavy case), so
+        treat results at a materially different species count or
+        stiffness regime as unverified until cross-checked the same way.
+        """
+        n = M.shape[0]
+        diagvals = np.diag(M).astype(np.float64).copy()
+        max_rate = float(np.max(-diagvals)) if n else 0.0
+        if max_rate < 1e-12:
+            return vec.astype(np.float64).copy()
+
+        Mc = M.astype(np.float64).copy()
+        np.fill_diagonal(Mc, 0.0)
+        Mc = np.clip(Mc, 0.0, None)
+        np.fill_diagonal(Mc, diagvals)
+
+        Lambda = max_rate * 1.00001
+        P = np.eye(n) + Mc / Lambda
+        lam = Lambda
+
+        def logpmf(k):
+            if k <= 0:
+                return -lam
+            return k * np.log(lam) - lam - gammaln(k + 1)
+
+        mode = int(np.floor(lam))
+        logpmf_mode = logpmf(mode)
+        sigma = sigma0
+        while True:
+            std = np.sqrt(lam)
+            kl = max(0, int(np.floor(lam - sigma * std)))
+            kr = int(np.ceil(lam + sigma * std)) + 1
+            edge_rel = max(np.exp(logpmf(kl) - logpmf_mode), np.exp(logpmf(kr) - logpmf_mode))
+            if edge_rel < tol or sigma >= sigma_max:
+                break
+            sigma *= 2
+
+        vec64 = vec.astype(np.float64)
+        state = vec64
+        if kl > 0:
+            # fast-forward to P^kl via binary exponentiation (repeated
+            # squaring of P itself -- numerically benign, unlike squaring
+            # expm(M), since P's entries are bounded in [0, 1])
+            result_ff = None
+            base = P.copy()
+            kk = kl
+            while kk > 0:
+                if kk & 1:
+                    result_ff = vec64 @ base if result_ff is None else result_ff @ base
+                base = base @ base
+                kk >>= 1
+            state = result_ff
+
+        result = np.zeros_like(vec64)
+        for k in range(kl, kr + 1):
+            lw = logpmf(k)
+            w = np.exp(lw) if lw > -700 else 0.0
+            if w > 0:
+                result += w * state
+            if k < kr:
+                state = state @ P
+        return result
+
     def species_evolution_boost_range(self, L, alpha=None, mass_range=None, boost_range=None,
                                       true_range=None, coherent_loss=None, energy_loss=None,
                                       resolve_checkpoints=None, method=None):
@@ -2809,40 +2936,60 @@ class InteractionCore():
             matters, since nothing else asked for approximate output),
             and to False, the original and cheaper behavior, when a
             genuine `coherent_loss`/`energy_loss` was requested.
-        method : {None, 'exact', 'substep', 'auto'}, optional
+        method : {None, 'exact', 'substep', 'auto', 'uniformization'}, optional
             Only meaningful when `coherent_loss`/`energy_loss` represent
             no real continuous loss (`coherent_loss` in `(None, 0.0)` and
             `energy_loss` is None). With an actual loss rate active, the
             sub-stepped path is the only option regardless of this
-            argument (raises `ValueError` only if `method='exact'` is
-            explicitly requested there, since no closed form exists for
-            L-dependent drift; the default, None, never raises this, it
-            simply defers to the sub-stepped path whenever real drift is
-            active, the same as before this argument existed). For the
-            zero-drift case, both the direct 'exact' expm-per-distance
-            evaluation and a chained-substep evaluation (see
-            `_species_evolution_with_drift`) solve the identical
-            equation: they differ only in cost, which can favor either
-            one depending on species count, `L_max`, tensor stiffness,
-            and how many distances are requested (see
+            argument (raises `ValueError` only if `method='exact'` or
+            `method='uniformization'` is explicitly requested there, since
+            no closed form exists for L-dependent drift; the default,
+            None, never raises this, it simply defers to the sub-stepped
+            path whenever real drift is active, the same as before this
+            argument existed). For the zero-drift case, both the direct
+            'exact' expm-per-distance evaluation and a chained-substep
+            evaluation (see `_species_evolution_with_drift`) solve the
+            identical equation: they differ only in cost, which can favor
+            either one depending on species count, `L_max`, tensor
+            stiffness, and how many distances are requested (see
             `_exact_is_cheaper`). 'exact' is cheap for small to moderate
             species counts and `L_max * rate` products, but its cost
             grows with the number of scipy `expm` scaling-and-squaring
             doublings needed, which can make it dramatically slower than
             'substep' at large species counts evaluated over a wide
             distance range (measured directly: about 20x for a
-            1184-species network over 200 Mpc). None resolves to 'exact'
-            in the zero-drift case, so that every other method built on
-            top of this one (several duplicate its exact-path math inline
-            rather than calling it, e.g. `light_cascade_production`,
-            `light_production_cumulative`) keeps agreeing with it to
-            machine precision by default; pass `method='auto'` explicitly
-            to let this call estimate both costs and pick the cheaper one
-            (or `'substep'` to force it), accepting that the result will
-            then only agree with those other methods' internal
-            computations to substep-level precision, not machine
-            precision (falls back to 'exact' for back propagation either
-            way, which 'substep' cannot do).
+            1184-species network over 200 Mpc), AND -- a separate failure
+            mode from cost -- can become numerically WRONG once
+            `L_max * rate` reaches ~1e5-1e7: scipy's Pade-with-scaling-
+            and-squaring suffers catastrophic cancellation there and
+            silently returns NaN or an unphysical, exactly-saturated
+            result instead of raising (confirmed directly, not a
+            float32-precision artifact; see `_uniformized_expm_vec`'s own
+            docstring). None resolves to 'exact' in the zero-drift case,
+            so that every other method built on top of this one (several
+            duplicate its exact-path math inline rather than calling it,
+            e.g. `light_cascade_production`, `light_production_
+            cumulative`) keeps agreeing with it to machine precision by
+            default; pass `method='auto'` explicitly to let this call
+            estimate both costs and pick the cheaper one (or `'substep'`
+            to force it), accepting that the result will then only agree
+            with those other methods' internal computations to
+            substep-level precision, not machine precision (falls back to
+            'exact' for back propagation either way, which 'substep'
+            cannot do). `'uniformization'` is a separate, EXPERIMENTAL,
+            opt-in-only option (never selected by None/'auto') for the
+            specific case where 'exact' is numerically broken by the
+            stiffness failure above: it solves the same equation via
+            Jensen's/randomization method instead of scipy's `expm`,
+            accurate at the same stiffness 'exact' fails at, and
+            substantially cheaper than 'substep' there (confirmed
+            directly: ~20-40x faster on this package's own stiffest
+            GRB-sweep cases while agreeing with 'substep' to
+            ~1e-11-1e-22 relative difference) -- but it has only been
+            validated against a handful of such points so far, not this
+            package's full test suite or other species networks; treat it
+            as unverified outside the regime it was tested in until
+            cross-checked the same way (see `_uniformized_expm_vec`).
 
         When either `coherent_loss` or `energy_loss` is a genuine nonzero
         rate, `L` must be a non-negative scalar or a non-negative,
@@ -2915,33 +3062,52 @@ class InteractionCore():
         indices = [mass_range.index(ival) for ival in true_range]
         reduced_tensor = reduced_tensor[np.ix_(indices, indices, range(len(boost_range)))]
 
-        if method is not None and method not in ('auto', 'exact', 'substep'):
-            raise ValueError("method must be 'auto', 'exact', 'substep', or None")
+        if method is not None and method not in ('auto', 'exact', 'substep', 'uniformization'):
+            raise ValueError("method must be 'auto', 'exact', 'substep', 'uniformization', or None")
 
         zero_drift = (coherent_loss is None or coherent_loss == 0.0) and energy_loss is None
 
-        if method == 'exact' and not zero_drift:
-            # only trips on an EXPLICIT method='exact' -- the default
-            # (None) never raises this; it just defers to the sub-stepped
-            # path below whenever real drift is active, exactly as before
-            # this argument existed.
-            raise ValueError("method='exact' has no closed form for an "
+        if method in ('exact', 'uniformization') and not zero_drift:
+            # only trips on an EXPLICIT method='exact'/'uniformization' --
+            # the default (None) never raises this; it just defers to the
+            # sub-stepped path below whenever real drift is active, exactly
+            # as before this argument existed.
+            raise ValueError(f"method={method!r} has no closed form for an "
                              "active coherent_loss/energy_loss; use "
                              "method='substep' or 'auto', or leave method "
                              "unset (defaults to the sub-stepped path when "
                              "drift is active)")
 
+        use_uniformization = False
         if not zero_drift:
             use_exact = False           # only the sub-stepped path can apply real drift
         elif method is None or method == 'exact':
             use_exact = True            # unset default (and explicit 'exact'): always exact
         elif method == 'substep':
             use_exact = False
+        elif method == 'uniformization':
+            # EXPERIMENTAL, opt-in only -- never selected by None/'auto'.
+            # See _uniformized_expm_vec's own docstring for why this exists
+            # and how it was validated: scipy.linalg.expm's Pade-with-
+            # scaling-and-squaring suffers catastrophic cancellation once
+            # L * max(-diag(bigLambda)) reaches ~1e5-1e7 (confirmed directly
+            # on this package's own low/high-Gamma GRB sweep points, NOT a
+            # float32-vs-float64 precision issue), returning a -1.0-
+            # saturated or NaN result instead of raising; method='substep'
+            # is accurate there but costs 10+ minutes per (model, Gamma)
+            # point at this package's own stiffest cases. Uniformization
+            # (Jensen's/randomization method) is accurate at the same
+            # stiffness -- cross-checked directly against substep's
+            # independent ground truth to ~1e-11-1e-22 relative difference,
+            # and against plain expm's own output wherever expm itself is
+            # still trustworthy -- at roughly 20-40x substep's cost there.
+            use_exact = False
+            use_uniformization = True
         else:                            # method == 'auto'
             lam_act = self._stiffness_rate(reduced_tensor)
             use_exact = self._exact_is_cheaper(reduced_tensor.shape[0], L, lam_act)
 
-        if use_exact:
+        if use_exact or use_uniformization:
             _, c, d = reduced_tensor.shape
             # absorbed-column rate: POSITIVE inflow into the lumped
             # absorption state, matching the convention this class uses
@@ -2968,13 +3134,14 @@ class InteractionCore():
             # resulting small, wrongly-signed entries get explosively
             # amplified by scipy.linalg.expm's scaling-and-squaring once
             # L * max(-diag(bigLambda)) is large, producing exactly the
-            # catastrophic (-1.0-saturated or NaN) failures this was found
-            # through. Cross-checked directly against method='substep'
-            # (whose own Mb already used the correct sign) on a known-
-            # broken case: the un-negated column gave sum()=4.8e-5
-            # (unphysical, most of the injected population vanishing);
-            # negating it gives sum()=1.0000000000000007, matching
-            # substep's 0.9999999999999991 to ~1e-11.
+            # catastrophic (-1.0-saturated or NaN) failures documented in
+            # _uniformized_expm_vec's own docstring. Fixing the sign here
+            # was cross-checked directly against method='substep' (whose
+            # own Mb already used the correct sign) on a known-broken
+            # case: the un-negated column gave sum()=4.8e-5 (unphysical,
+            # most of the injected population vanishing); negating it
+            # gives sum()=1.0000000000000007, matching substep's
+            # 0.9999999999999991 to ~1e-11.
             t_vs_boost = -np.atleast_3d(reduced_tensor.sum(axis=1))
             bigLambda = np.append(np.append(reduced_tensor, np.swapaxes(t_vs_boost, 1, 2), axis=1), np.zeros((1, c+1, d)), axis=0)
 
@@ -3007,10 +3174,17 @@ class InteractionCore():
             out_shape = (d, len(L), c + 1) if array_L else (d, c + 1)
             total = np.empty(out_shape)
             for b in range(d):
-                Eb = expm(L[:, None, None] * bigLambda[:, :, b]) if array_L \
-                    else expm(bigLambda[:, :, b] * L)
+                Lb = bigLambda[:, :, b]
                 vb = vec_full if is_1d else vec_full[b]
-                total[b] = vb @ Eb
+                if use_uniformization:
+                    if array_L:
+                        for li, Lval in enumerate(L):
+                            total[b, li] = self._uniformized_expm_vec(Lb * Lval, vb)
+                    else:
+                        total[b] = self._uniformized_expm_vec(Lb * L, vb)
+                else:
+                    Eb = expm(L[:, None, None] * Lb) if array_L else expm(Lb * L)
+                    total[b] = vb @ Eb
 
             return total
 

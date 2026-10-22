@@ -1843,6 +1843,95 @@ def test_gdra_construction():
     assert 0.5 < r_g / r_p < 1.5
 
 
+def test_species_evolution_uniformization_benign():
+    """method='uniformization' on a well-conditioned (non-stiff) case: must
+    agree with the default/'exact' path to near machine precision -- a
+    plain regression check that the new, separate code path (reuses
+    'exact's own bigLambda construction, only swaps the expm call) didn't
+    perturb anything for the case every other method in this class already
+    trusts 'exact' to agree with."""
+    old, core = source_pair()
+    alpha, mr, tr, _ = core.get_distribution_parameters(
+        mass_lims=(56, 0), injection_type=('only species', (26, 56)),
+        absorption_type=('only mass', [1]))
+    L = np.array([1.0, 10.0, 50.0, 200.0])
+    # restricted to boost <~ 1.4e9: confirmed directly that this core's own
+    # high-boost tail (boost gtr 1e10) is ALREADY stiff enough to break
+    # 'exact' even at these L -- that regime is what the stiff-case test
+    # below exercises on purpose; this test wants a genuinely well-
+    # conditioned baseline instead.
+    br = core.boosts[:100]
+
+    P_exact = core.species_evolution_boost_range(L, alpha, mr, br, tr, method='exact')
+    assert P_exact.min() > -1e-10, \
+        f"test setup is not actually benign: exact min={P_exact.min():.3e}"
+    P_uni = core.species_evolution_boost_range(L, alpha, mr, br, tr, method='uniformization')
+    assert P_uni.shape == P_exact.shape
+    assert not np.isnan(P_uni).any()
+    d = rel_diff(P_uni, P_exact)
+    print(f'  benign case: uniformization vs exact rel. diff {d:.2e}')
+    assert d < 1e-8
+
+
+def test_species_evolution_uniformization_stiff():
+    """method='uniformization' on a DELIBERATELY stiff case (L chosen so
+    L * max(-diag(bigLambda)) is large enough that 'exact''s scipy.linalg.
+    expm demonstrably breaks down -- scaling-and-squaring Pade suffers
+    catastrophic cancellation and returns an unphysical, exactly
+    -1.0-saturated or NaN entry instead of raising, confirmed directly on
+    this package's own GRB jet Gamma-sweep notebook, see
+    InteractionCore._uniformized_expm_vec's docstring).
+
+    Checks: (1) 'exact' genuinely IS broken here (negative entries) -- so
+    this test actually exercises the failure regime, not a no-op; (2)
+    'uniformization' stays finite, non-negative, and (species + absorbed)
+    conserving; (3) 'uniformization' agrees with 'substep' (the pre-
+    existing, independently-validated sub-stepped path) to tight
+    tolerance -- cross-checking the new code against a DIFFERENT existing
+    implementation of the identical equation, not just against itself."""
+    old, core = source_pair()
+    alpha, mr, tr, _ = core.get_distribution_parameters(
+        mass_lims=(56, 0), injection_type=('only species', (26, 56)),
+        absorption_type=('only mass', [1]))
+    L = 100.0   # confirmed directly: 'exact' is already saturated (min=-1.0) here
+
+    P_exact = core.species_evolution_boost_range(L, alpha, mr, core.boosts, tr, method='exact')
+    assert (P_exact < 0).any(), \
+        "test setup no longer exercises the stiff failure -- 'exact' is sane at this L"
+    print(f'  exact IS broken here: min={P_exact.min():.3e} (expected deeply negative)')
+
+    P_uni = core.species_evolution_boost_range(L, alpha, mr, core.boosts, tr, method='uniformization')
+    assert not np.isnan(P_uni).any()
+    assert P_uni.min() >= -1e-9, f'uniformization produced a negative entry: {P_uni.min():.3e}'
+    row_sum = P_uni.sum(axis=1)
+    assert np.all(row_sum <= 1.0 + 1e-6) and np.all(row_sum >= -1e-9), \
+        f'uniformization not conserving: row sums in [{row_sum.min():.3e}, {row_sum.max():.3e}]'
+
+    P_sub = core.species_evolution_boost_range(L, alpha, mr, core.boosts, tr, method='substep')
+    d = rel_diff(P_uni, P_sub)
+    print(f'  stiff case: uniformization vs substep rel. diff {d:.2e}, '
+         f'uniformization row sums in [{row_sum.min():.6f}, {row_sum.max():.6f}]')
+    assert d < 1e-6
+
+
+def test_species_evolution_uniformization_validation():
+    """method='uniformization' shares 'exact's own-closed-form restriction:
+    no active coherent_loss/energy_loss (same reason -- no closed form for
+    L-dependent drift), and rejects an unknown method string."""
+    old, core = source_pair()
+    alpha, mr, tr, _ = core.get_distribution_parameters(
+        mass_lims=(56, 0), injection_type=('only species', (26, 56)),
+        absorption_type=('only mass', [1]))
+
+    with np.testing.assert_raises(ValueError):
+        core.species_evolution_boost_range(10.0, alpha, mr, core.boosts, tr,
+                                           method='uniformization', coherent_loss=0.01)
+    with np.testing.assert_raises(ValueError):
+        core.species_evolution_boost_range(10.0, alpha, mr, core.boosts, tr,
+                                           method='not_a_real_method')
+    print('  uniformization + active drift raises, unknown method string raises')
+
+
 def test_species_evolution_with_losses():
     """species_evolution_boost_range's coherent_loss=/energy_loss= (plan
     mossy-watching-goose): the no-loss path stays bit-identical; the drift
