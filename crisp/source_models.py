@@ -899,14 +899,23 @@ class UHECRSourceModel(ABC):
         return coherent, dispersive
 
     def max_energy(self, species, interaction_core=None, eta_acc=1.0,
-                   kappa=False):
+                   kappa=False, include_ic=False, include_pair=False):
         """Comoving maximal energy E'_max [GeV]: where the acceleration rate
         equals the sum of all loss rates (cf. paper Appendix D). kappa=True
         balances against the photonuclear energy-loss rates instead of the
         interaction rates (see loss_rates): acceleration then competes with
         cooling, as in De Lia & Tamborra Fig. 1 — E'_max rises where
-        photonuclear-limited."""
-        rates = self.loss_rates(species, interaction_core, kappa=kappa)
+        photonuclear-limited.
+
+        include_ic, include_pair : bool, optional
+            Pass-through to loss_rates: add inverse-Compton and/or
+            Bethe-Heitler pair-production to the cooling sum. Off by
+            default (less important for sources typically). 
+            A complete account of E'_max would balance against all of
+            adiabatic, synchrotron, inverse-Compton, Bethe-Heitler pair,
+            p-p, and photohadronic."""
+        rates = self.loss_rates(species, interaction_core, kappa=kappa,
+                                include_ic=include_ic, include_pair=include_pair)
         acc = self.acceleration_rate(species, rates['E'], eta_acc)
         below = acc < rates['total']
         if not below.any() or below.all():
