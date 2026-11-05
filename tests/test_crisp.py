@@ -211,7 +211,9 @@ class TestContinuousLosses:
     def test_bpp_blumenthal_proton_regression(self):
         """Bpp for a proton at g=1e10, z=0 (regression value in Mpc-1)."""
         bpp = self.cl.Bpp_Blumenthal(1, 1, np.array([1e10]), 0)
-        assert_allclose(bpp[0], 7.002e-4, rtol=1e-2)
+        assert_allclose(bpp[0], 7.187e-4, rtol=1e-3)     # T0 = 2.725 K (package To)
+        bpp27 = self.cl.Bpp_Blumenthal(1, 1, np.array([1e10]), 0, T0=2.7)
+        assert_allclose(bpp27[0], 7.002e-4, rtol=1e-2)   # former hard-coded 2.7 K value
 
     def test_bpp_blumenthal_nuclear_scaling(self):
         """Bpp must scale as Z^2/A relative to a proton at the same boost."""
@@ -251,6 +253,107 @@ class TestContinuousLosses:
         z_out, g_out = self.cl.g_in_z(1e10, Z=1, A=1, z0=1.0)
         # g decreases as z decreases toward 0 (energy lost en route)
         assert g_out[-1] < g_out[0]
+
+    # -- f(nu) table, Eq.-37 characteristic, fixed helpers (B1-B9 audit) --
+
+    @staticmethod
+    def _phi(x):
+        # Chodorowski, Zdziarski & Sikora (1992) fits, written out
+        # independently of the module's own copy
+        x = np.asarray(x, dtype=float)
+        lo = np.pi / 12 * (x - 2)**4 / (1 + np.polyval(
+            [-3.879e-6, 1.137e-3, 0.1459, 0.8048, 0], x - 2))
+        xh = np.maximum(x, 25.0)
+        hi = xh * np.polyval([8/3., -14.45, 50.96, -86.07], np.log(xh)) \
+            / (1 - np.polyval([1837, 78.35, 2.91, 0], 1 / xh))
+        return np.where(x < 25, lo, hi)
+
+    def test_cmb_f_table_matches_quadrature(self):
+        """f(nu) = nu^2 int_2^inf phi/(e^{nu chi}-1) dchi, cached table vs a
+        dense independent quadrature in ln(chi - 2), across the threshold
+        region the old 2.51-based grid missed."""
+        from scipy.integrate import trapezoid
+        s = np.linspace(np.log(1e-7), np.log(1e8), 300001)
+        chi = 2 + np.exp(s)
+        w = self._phi(chi) * np.exp(s)
+        for nu in [0.1, 1.0, 2.0, 3.0, 5.0, 8.0, 12.0, 14.0, 20.0]:
+            exact = nu**2 * trapezoid(w / np.expm1(np.minimum(nu * chi, 700.0)), s)
+            assert_allclose(self.cl._cmb_f(nu), exact, rtol=1e-3,
+                            msg=f"f(nu) table off at nu={nu}")
+
+    def test_bpp_blumenthal_no_clamped_tail(self):
+        """Below the pair threshold the rate must fall exponentially, not as
+        the 1/gamma tail of a clamped table."""
+        g = np.array([3e7, 1e7])
+        bpp = self.cl.Bpp_Blumenthal(1, 1, g, 0)
+        assert np.all(bpp < 1e-30)
+
+    def test_bpp_blumenthal_matches_bpp_generic_cmb(self):
+        """The CMB specialization agrees with the generic photon-field
+        integral on a Planck field at the same temperature (scalar g too)."""
+        from scipy.constants import hbar, c, e, k
+        hbc = hbar * c / e                                   # eV m
+        kT = k * self.cl.T_CMB / e                           # eV
+        planck = lambda eps, z: eps**2 / (np.pi**2 * hbc**3) / np.expm1(
+            np.minimum(eps / kT, 700.0))
+        for g in [3e9, 1e10, 1e11]:
+            gen = self.cl.Bpp_generic(1, 1, g, phot_dens=planck,
+                                      eps_max=1.0, n_eps=3000)
+            assert np.shape(gen) == (1,)
+            assert_allclose(gen[0], self.cl.Bpp_Blumenthal(1, 1, g, 0), rtol=5e-3)
+
+    @pytest.mark.parametrize("z", [0.0, 1.0, 3.0])
+    @pytest.mark.parametrize("k2a", [0.5, 1.0, 12.07])
+    def test_bh_log_boost_shift_matches_ode(self, z, k2a):
+        """Eq.-37 inversion == ODE d ln g/dl = -Z^2/A Bpp_p(g, z) at fixed z,
+        from the Euler regime (tiny L) to segments much longer than 1/B."""
+        from scipy.integrate import solve_ivp
+        g0 = np.logspace(8.5, 12, 8)
+        for L in [1.0, 50.0, 1000.0]:
+            got = self.cl.bh_log_boost_shift(1, 1, g0, z, k2a * L)
+            ref = []
+            for g in g0:
+                sol = solve_ivp(lambda l, y: [-k2a * self.cl.Bpp_Blumenthal(
+                    1, 1, np.exp(y[0]), z)], (0, L), [np.log(g)],
+                    rtol=1e-9, atol=1e-12)
+                ref.append(np.log(g) - sol.y[0, -1])
+            ref = np.array(ref)
+            ok = ref > 1e-9                       # skip frozen sub-threshold bins
+            np.testing.assert_allclose(got[ok], ref[ok], rtol=5e-3, atol=1e-10,
+                                       err_msg=f"z={z} Z2/A={k2a} L={L}")
+
+    def test_dlngdz_tot_nucleus_only_pair_term_scales(self):
+        """-(1 + Z^2/A c B_p / H)/(1+z): only the pair term carries Z^2/A."""
+        z, lng, k2a = 0.5, np.log(1e9), 26**2 / 56
+        prot = self.cl.dlngdz_tot_proton(z, lng)
+        expected = -1 / (1 + z) + k2a * (prot + 1 / (1 + z))
+        got = self.cl.dlngdz_tot_nucleus(z, lng, 26, 56)
+        assert_allclose(got, expected, rtol=1e-10)
+        # the former (1 - Z^2/A) sign gave a value 2 k2a/(1+z) more negative
+        assert got > expected - (k2a - 1) / (1 + z)
+        assert_allclose(self.cl.dlngdz_tot_nucleus(z, lng, 1, 1), prot, rtol=1e-12)
+
+    @pytest.mark.parametrize("Z,A", [(1, 1), (26, 56)])
+    def test_g_in_z_follows_trajectory(self, Z, A):
+        """g_in_z == an independent ODE, d ln g/dz = (1 + Z^2/A c B_p/H)/(1+z),
+        with the loss rate evaluated along the path (not frozen at g0)."""
+        from scipy.integrate import solve_ivp
+        c_kms = 299792.458
+        k2a = Z**2 / A
+        rhs = lambda z, y: [(1 + k2a * c_kms * self.cl.Bpp_Blumenthal(
+            1, 1, np.exp(y[0]), z) / self.cl.cosmo.H(z).value) / (1 + z)]
+        for g0 in [1e10, 1e11]:
+            z_out, g_out = self.cl.g_in_z(g0, Z=Z, A=A, z0=1.0)
+            sol = solve_ivp(rhs, (1.0, z_out[-1]), [np.log(g0)],
+                            rtol=1e-9, atol=1e-12)
+            assert_allclose(g_out[-1], np.exp(sol.y[0, -1]), rtol=1e-4)
+
+    def test_g_in_z_evolution_runs_and_is_monotone(self):
+        """No NameError; z decreases monotonically as gamma_c drops."""
+        g, zg = self.cl.g_in_z_evolution(1e11, gf=1e9, z0=0.1)
+        assert len(g) == len(zg)
+        assert np.all(np.diff(zg) <= 0)
+        assert zg[0] == pytest.approx(0.1, rel=1e-6)
 
 
 # ---------------------------------------------------------------------------
