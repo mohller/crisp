@@ -1369,6 +1369,48 @@ class CRPropa_model(Cross_Section_Model):
         window = (self.erange[0] <= eps) & (eps < self.erange[1])
         return np.where(window[None, :], result, 0.0)
 
+    def light_yield_raw_channels(self, eps, Z, A):
+        """Cross sections [mb] of each channel of (Z, A), with the exact 
+        integer multiplicity of each light species [He4, He3, H3, H2, p, n] 
+        (get_particle_numbers) and the derived remnant (Zrem, Arem).
+        Using the same eps/interpolation/ erange convention as 
+        `cross_section`, but without summing together channels that happen
+        to share a remnant.
+
+        `cross_section(..., rem=(Zrem,Arem))` and `light_yield_sigma`
+        both aggregate over channels (by remnant, and by mother
+        respectively) because two physically distinct light-species
+        compositions can land on the same remnant (e.g. losing one
+        deuteron vs. losing one free proton + one free neutron both
+        leave (Zrem, Arem) unchanged). That aggregation is right for 
+        the trunk transition rate and for a mean light yield,
+        but it destroys the per-channel multiplicity resolution needed
+        for an exact species-count distribution. This method preserves
+        that resolution.
+
+        Returns
+        -------
+        list of (Zrem, Arem, mult, sigma)
+            mult : ndarray, shape (6,), int
+            sigma : ndarray, same shape as `eps`
+        Empty list when (Z, A) has no tabulated channels.
+        """
+        if (Z, A) not in self.nuclei:
+            return []
+        rows = self.xsec_data[np.logical_and(self.xsec_data[:, 0] == Z,
+                                             self.xsec_data[:, 1] == A)]
+        eps = np.asarray(eps, dtype=float)
+        window = (self.erange[0] <= eps) & (eps < self.erange[1])
+        out = []
+        for row in rows:
+            mult = np.asarray(get_particle_numbers(row[2]), dtype=int)
+            Zprod = int(mult.dot([Zd for Zd, _ in daughters]))
+            Aprod = int(mult.dot([Ad for _, Ad in daughters]))
+            sigma = np.where(window, np.interp(eps, self.eps, row[3:],
+                                               left=0.0, right=0.0), 0.0)
+            out.append((int(Z - Zprod), int(A - Aprod), mult, sigma))
+        return out
+
 
 def load_astrophomes(model='SingleParticleModel', path=None, auto_download=True,
                      channels=None, **model_kwargs):
