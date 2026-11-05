@@ -812,15 +812,22 @@ class UHECRSourceModel(ABC):
             # adapter: our fields take GeV and return GeV^-1 cm^-3;
             # Bpp_generic wants eV -> eV^-1 m^-3 (x 1e-9 per eV, x 1e6 per m^3)
             dens = lambda e_eV, z: sum(f(e_eV * 1e-9) for f in fields) * 1e-3
-            # Bpp_generic integrates target photons from m_e c^2/gamma up to
-            # 1e4 eV: below gamma ~ m_e c^2 / 1e4 eV the grid inverts, so mask
-            # those boosts (pair losses are negligible against adiabatic there)
+            # Bpp_generic integrates target photons from the pair threshold
+            # m_e c^2/gamma up to eps_max: take eps_max from the field's
+            # supported range (X/gamma rays for GRBs), probed as the highest 
+            # energy where eps^2 n(eps) is within 1e-12 of its peak, and mask 
+            # boosts whose threshold lies above it (no target photons there)
+            e_probe = np.logspace(-6, 12, 721)                      # eV
+            u_probe = e_probe**2 * np.nan_to_num(dens(e_probe, 0.0))
+            sig = np.nonzero(u_probe > 1e-12 * u_probe.max())[0] if u_probe.max() > 0 else []
+            eps_max = float(e_probe[min(sig[-1] + 1, len(e_probe) - 1)]) if len(sig) else 1e4
             r_pair = np.zeros_like(E)
-            valid = boosts > physical_constants['electron mass energy equivalent in MeV'][0] * 1e6 / 1e4
+            valid = boosts > physical_constants['electron mass energy equivalent in MeV'][0] * 1e6 / eps_max
             if valid.any():
                 r_pair[valid] = np.clip(
                     Bpp_generic(species[0], m_A / core.energy_of_boost((1, 1), 1.0),
-                                boosts[valid], phot_dens=dens) * c_Mpc, 0.0, None)
+                                boosts[valid], phot_dens=dens, eps_max=eps_max)
+                    * c_Mpc, 0.0, None)
             out['pair'] = r_pair
             out['total'] = out['total'] + r_pair
 
